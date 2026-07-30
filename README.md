@@ -1,36 +1,78 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Daily Trading — 매매일지
 
-## Getting Started
+Bybit / Binance 청산 포지션을 불러와 Supabase에 자동 기록하는 매매일지입니다.
 
-First, run the development server:
+## 구조
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+거래소 API (Bybit / Binance)
+        ↓  POST /api/sync
+   청산 포지션 변환
+        ↓
+   Supabase `trades` 테이블
+        ↓  GET /api/trades
+   매매일지 UI
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 설정
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 1. Supabase
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. [Supabase](https://supabase.com) 프로젝트 생성
+2. SQL Editor에서 `supabase/migrations/001_trading_journal.sql` 실행
+3. Project Settings → API 에서 URL / anon key / service_role key 복사
 
-## Learn More
+### 2. 거래소 API 키
 
-To learn more about Next.js, take a look at the following resources:
+**읽기 전용** 키를 권장합니다. (포지션/거래 내역 조회만)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| 거래소 | 필요한 권한 |
+|--------|-------------|
+| Bybit  | Position / Trade History Read |
+| Binance Futures | Read |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### 3. 환경변수
 
-## Deploy on Vercel
+```bash
+cp .env.example .env.local
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+`.env.local`에 Supabase + 사용할 거래소 키를 넣습니다. Bybit만 써도 되고, 둘 다 넣어도 됩니다.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### 4. 실행
+
+```bash
+npm install
+npm run dev
+```
+
+http://localhost:3000 접속 후 **거래소 동기화** 버튼을 누르면 최근 7일 청산 포지션이 DB에 저장됩니다.
+
+## API
+
+| Method | Path | 설명 |
+|--------|------|------|
+| `POST` | `/api/sync` | `{ exchange?, symbol?, days? }` — 거래소 → DB 동기화 |
+| `GET` | `/api/trades` | `?limit=&symbol=&exchange=` — 매매일지 목록 |
+| `PATCH` | `/api/trades` | `{ id, notes?, status?, screenshot_url? }` — 메모/상태 수정 |
+
+## 기록되는 필드
+
+스크린샷 매매일지와 동일한 핵심 정보:
+
+- 심볼 / 롱·숏
+- TP / SL / CLOSED 상태
+- 실현 손익 (net PnL)
+- 보유 시간
+- 진입가 · 청산가 · 수량
+- 진입·청산 시각
+
+## 자동 동기화 (선택)
+
+Vercel Cron 또는 외부 스케줄러로 주기적으로 sync를 호출할 수 있습니다.
+
+```bash
+curl -X POST https://your-domain/api/sync \
+  -H "Content-Type: application/json" \
+  -d '{"days":1}'
+```

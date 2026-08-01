@@ -1,13 +1,21 @@
 import type { Trade } from "@/lib/exchanges/types";
-import { formatDuration, formatPnl, formatPrice } from "@/lib/utils/format";
+import {
+  formatDuration,
+  formatKst,
+  formatPnl,
+  formatPrice,
+} from "@/lib/utils/format";
+import { exchangeLabel, statusLabel } from "@/lib/utils/labels";
 
 interface TradeCardProps {
   trade: Trade;
 }
 
 export function TradeCard({ trade }: TradeCardProps) {
-  const isWin = trade.pnl >= 0;
+  const isWin = Number(trade.pnl) >= 0;
   const sideLabel = trade.side === "LONG" ? "롱" : "숏";
+  const sideCls =
+    trade.side === "LONG" ? "text-emerald-400" : "text-rose-400";
   const asset = trade.base_asset ?? trade.symbol.replace(/USDT$/i, "");
 
   return (
@@ -15,7 +23,8 @@ export function TradeCard({ trade }: TradeCardProps) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex flex-wrap items-baseline gap-2">
           <h2 className="text-xl font-semibold tracking-tight text-zinc-50">
-            {asset} {sideLabel}
+            {asset}{" "}
+            <span className={sideCls}>{sideLabel}</span>
           </h2>
           <span
             className={`rounded px-1.5 py-0.5 text-xs font-bold tracking-wide ${
@@ -26,10 +35,10 @@ export function TradeCard({ trade }: TradeCardProps) {
                   : "bg-zinc-700/50 text-zinc-300"
             }`}
           >
-            {trade.status}
+            {statusLabel(trade.status)}
           </span>
-          <span className="text-xs uppercase text-zinc-500">
-            {trade.exchange}
+          <span className="text-xs text-zinc-500">
+            {exchangeLabel(trade.exchange)}
           </span>
         </div>
 
@@ -39,7 +48,7 @@ export function TradeCard({ trade }: TradeCardProps) {
               isWin ? "text-emerald-400" : "text-rose-400"
             }`}
           >
-            net {formatPnl(Number(trade.pnl))}
+            순손익 {formatPnl(Number(trade.pnl))}
           </p>
           <p className="text-xs text-zinc-500">
             보유 {formatDuration(trade.duration_minutes)}
@@ -79,8 +88,7 @@ export function TradeCard({ trade }: TradeCardProps) {
       </div>
 
       <div className="mt-2 text-xs text-zinc-600">
-        {new Date(trade.entry_time).toLocaleString("ko-KR")} →{" "}
-        {new Date(trade.exit_time).toLocaleString("ko-KR")}
+        {formatKst(trade.entry_time)} → {formatKst(trade.exit_time)} KST
       </div>
 
       {trade.notes && (

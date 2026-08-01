@@ -40,12 +40,7 @@ cp .env.example .env.local
 `.env.local`에 Supabase + 사용할 거래소 키를 넣습니다. Bybit만 써도 되고, 둘 다 넣어도 됩니다.
 
 ### 4. 실행
-
-```bash
 npm install
-npm run dev
-```
-
 http://localhost:3000 접속 후 **거래소 동기화** 버튼을 누르면 최근 7일 청산 포지션이 DB에 저장됩니다.
 
 ## API
@@ -59,7 +54,6 @@ http://localhost:3000 접속 후 **거래소 동기화** 버튼을 누르면 최
 ## 기록되는 필드
 
 스크린샷 매매일지와 동일한 핵심 정보:
-
 - 심볼 / 롱·숏
 - TP / SL / CLOSED 상태
 - 실현 손익 (net PnL)
@@ -76,3 +70,9 @@ curl -X POST https://your-domain/api/sync \
   -H "Content-Type: application/json" \
   -d '{"days":1}'
 ```
+
+## 추가 SQL (북마크)
+
+매매일지 테이블 외에 북마크가 필요하면:
+
+`supabase/migrations/002_bookmarks.sql` 도 SQL Editor에서 실행하세요.

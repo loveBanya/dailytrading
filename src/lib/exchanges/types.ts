@@ -1,4 +1,4 @@
-export type Exchange = "bybit" | "binance";
+export type Exchange = "bybit" | "binance" | "okx";
 export type TradeSide = "LONG" | "SHORT";
 export type TradeStatus = "TP" | "SL" | "CLOSED" | "LIQUIDATED";
 
@@ -44,6 +44,11 @@ export interface Trade {
   notes: string | null;
   screenshot_url: string | null;
   tags: string[] | null;
+  is_review?: boolean;
+  /** 원칙매매 | 뇌동 */
+  trade_style?: "원칙" | "뇌동" | null;
+  /** 댓글+답글 수 (목록 API에서 부착) */
+  comment_count?: number;
   created_at: string;
   updated_at: string;
 }

@@ -1,7 +1,9 @@
 import type { ClosedPosition, Exchange, SyncResult } from "./types";
 import { fetchBybitClosedPositions } from "./bybit";
 import { fetchBinanceClosedPositions } from "./binance";
+import { fetchOkxClosedPositions } from "./okx";
 import { durationMinutes } from "@/lib/utils/format";
+import { errorMessage } from "@/lib/utils/labels";
 import { createSupabaseAdmin } from "@/lib/supabase/client";
 
 export async function fetchClosedPositions(
@@ -13,9 +15,8 @@ export async function fetchClosedPositions(
     limit?: number;
   }
 ): Promise<ClosedPosition[]> {
-  if (exchange === "bybit") {
-    return fetchBybitClosedPositions(options);
-  }
+  if (exchange === "bybit") return fetchBybitClosedPositions(options);
+  if (exchange === "okx") return fetchOkxClosedPositions(options);
   return fetchBinanceClosedPositions(options);
 }
 
@@ -73,7 +74,15 @@ export async function syncExchangeTrades(
       })
       .select("id");
 
-    if (error) throw error;
+    if (error) {
+      return {
+        exchange,
+        fetched: positions.length,
+        inserted: 0,
+        skipped: 0,
+        error: errorMessage(error),
+      };
+    }
 
     const inserted = data?.length ?? 0;
     const skipped = positions.length - inserted;
@@ -83,19 +92,23 @@ export async function syncExchangeTrades(
       status: "success",
       fetched_count: positions.length,
       inserted_count: inserted,
-      message: `${inserted}건 저장, ${skipped}건 스킵`,
+      message: `${inserted}건 저장, ${skipped}건 건너뜀`,
     });
 
     return { exchange, fetched: positions.length, inserted, skipped };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    await supabase.from("sync_logs").insert({
-      exchange,
-      status: "error",
-      fetched_count: 0,
-      inserted_count: 0,
-      message,
-    });
+    const message = errorMessage(err);
+    try {
+      await supabase.from("sync_logs").insert({
+        exchange,
+        status: "error",
+        fetched_count: 0,
+        inserted_count: 0,
+        message,
+      });
+    } catch {
+      // sync_logs 테이블이 없어도 동기화 에러는 반환
+    }
     return { exchange, fetched: 0, inserted: 0, skipped: 0, error: message };
   }
 }
@@ -114,6 +127,9 @@ export async function syncAllExchanges(options?: {
   if (process.env.BINANCE_API_KEY && process.env.BINANCE_API_SECRET) {
     exchanges.push("binance");
   }
+  if (process.env.OKX_API_KEY && process.env.OKX_API_SECRET) {
+    exchanges.push("okx");
+  }
 
   if (exchanges.length === 0) {
     return [
@@ -123,7 +139,7 @@ export async function syncAllExchanges(options?: {
         inserted: 0,
         skipped: 0,
         error:
-          "설정된 거래소 API 키가 없습니다. BYBIT_* 또는 BINANCE_* 환경변수를 확인하세요.",
+          "설정된 거래소 API 키가 없습니다. BYBIT_* / OKX_* / BINANCE_* 환경변수를 확인하세요.",
       },
     ];
   }

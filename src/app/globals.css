@@ -11,3 +11,42 @@ body {
     #09090b;
   color: #fafafa;
 }
+
+/* 가로/세로 스크롤바 — 얇고 둥근 zinc 톤 */
+.pretty-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(63 63 70 / 0.85) transparent;
+}
+
+.pretty-scroll::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+
+.pretty-scroll::-webkit-scrollbar-track {
+  background: transparent;
+  margin-inline: 4px;
+}
+
+.pretty-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    90deg,
+    rgb(63 63 70 / 0.55),
+    rgb(82 82 91 / 0.9),
+    rgb(63 63 70 / 0.55)
+  );
+  border-radius: 999px;
+}
+
+.pretty-scroll:hover::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    90deg,
+    rgb(82 82 91 / 0.7),
+    rgb(113 113 122 / 0.95),
+    rgb(82 82 91 / 0.7)
+  );
+}
+
+.pretty-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}

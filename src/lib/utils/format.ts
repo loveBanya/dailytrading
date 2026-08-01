@@ -32,7 +32,7 @@ export function baseAssetFromSymbol(symbol: string): string {
     .replace(/-$/, "");
 }
 
-/** 진입/청산 가격으로 TP/SL 추정 (방향 기준) */
+/** 진입/청산 가격 + PnL로 TP/SL 추정 */
 export function inferStatus(
   side: "LONG" | "SHORT",
   entry: number,
@@ -40,11 +40,34 @@ export function inferStatus(
   pnl: number
 ): "TP" | "SL" | "CLOSED" {
   if (Math.abs(pnl) < 0.01) return "CLOSED";
-  const profitable =
-    side === "LONG" ? exit > entry : exit < entry;
-  return profitable || pnl > 0 ? "TP" : "SL";
+  // 수수료 때문에 가격 방향과 PnL이 어긋날 수 있음 → PnL 우선
+  return pnl > 0 ? "TP" : "SL";
 }
 
 export function durationMinutes(entry: Date, exit: Date): number {
   return Math.max(0, Math.round((exit.getTime() - entry.getTime()) / 60_000));
 }
+
+export function formatUsd(n: number): string {
+  return `$${n.toFixed(2)}`;
+}
+
+/** 한국 시간(Asia/Seoul) 표시 */
+export function formatKst(
+  value: string | number | Date,
+  options?: Intl.DateTimeFormatOptions
+): string {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString("ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    ...options,
+  });
+}
+

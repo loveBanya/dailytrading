@@ -40,9 +40,9 @@ function signBinance(apiSecret: string, query: string): string {
   return hmacSha256(apiSecret, query);
 }
 
-async function binanceGet<T>(
+export async function binanceGet<T>(
   path: string,
-  params: Record<string, string | number>
+  params: Record<string, string | number> = {}
 ): Promise<T> {
   const apiKey = process.env.BINANCE_API_KEY;
   const apiSecret = process.env.BINANCE_API_SECRET;

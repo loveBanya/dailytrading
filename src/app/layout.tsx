@@ -14,8 +14,8 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Daily Trading — 매매일지",
-  description: "Bybit / Binance 포지션 자동 매매일지",
+  title: "데일리 트레이딩 — 매매일지",
+  description: "바이비트 / 바이낸스 포지션 자동 매매일지",
 };
 
 export default function RootLayout({

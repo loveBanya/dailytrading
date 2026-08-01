@@ -29,7 +29,6 @@ type Tab =
   | "live"
   | "overview"
   | "cash"
-  | "kelly"
   | "mindset"
   | "posts"
   | "screener"
@@ -417,7 +416,6 @@ export function TradeJournal() {
             ["screener", "코인 스크리너"],
             ["screener-perf", "스크리너 성과"],
             ["cash", "입출금"],
-            ["kelly", "켈리베팅"],
             ["mindset", "매매 마인드"],
             ["posts", "글"],
             ["bookmarks", "즐겨찾기"],
@@ -645,6 +643,9 @@ export function TradeJournal() {
               error={marketError}
             />
           </Section>
+          <Section title="켈리 베팅">
+            <KellyPanel overall={overall} loading={statsLoading} />
+          </Section>
         </div>
       )}
 
@@ -663,12 +664,6 @@ export function TradeJournal() {
       {tab === "cash" && (
         <Section title="현금 입출금">
           <CashLedgerPanel />
-        </Section>
-      )}
-
-      {tab === "kelly" && (
-        <Section title="켈리 베팅">
-          <KellyPanel overall={overall} loading={statsLoading} />
         </Section>
       )}
 

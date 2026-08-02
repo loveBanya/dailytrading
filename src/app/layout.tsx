@@ -16,6 +16,16 @@ const mono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "데일리 트레이딩 — 매매일지",
   description: "바이비트 / 바이낸스 포지션 자동 매매일지",
+  robots: {
+    index: false,
+    follow: false,
+    nocache: true,
+    googleBot: {
+      index: false,
+      follow: false,
+      noimageindex: true,
+    },
+  },
 };
 
 export default function RootLayout({

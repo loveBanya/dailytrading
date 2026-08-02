@@ -42,7 +42,7 @@ export function ScreenerPanel() {
   const [result, setResult] = useState<ScanResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [refreshSec, setRefreshSec] = useState(30);
+  const [refreshSec, setRefreshSec] = useState(60);
   const [sortKey, setSortKey] = useState<SortKey>("scoreTotal");
   const [sortAsc, setSortAsc] = useState(false);
   const [selected, setSelected] = useState<ScreenerCandidate | null>(null);

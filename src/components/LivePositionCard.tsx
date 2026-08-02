@@ -57,7 +57,7 @@ export function LivePositionCard({ position }: LivePositionCardProps) {
       }
     }
     void load();
-    const id = setInterval(() => void load(), 30_000);
+    const id = setInterval(() => void load(), 60_000);
     return () => {
       cancelled = true;
       clearInterval(id);

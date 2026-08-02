@@ -269,7 +269,8 @@ export function TradeJournal() {
 
   useEffect(() => {
     if (tab !== "live" && tab !== "overview") return;
-    const id = setInterval(() => void loadWallet(), 5000);
+    // 거래소 레이트리밋·비용 고려: 5초 → 60초
+    const id = setInterval(() => void loadWallet(), 60_000);
     return () => clearInterval(id);
   }, [tab, loadWallet]);
 
@@ -619,7 +620,7 @@ export function TradeJournal() {
             error={walletError}
             defaultOpen
           />
-          <p className="text-xs text-zinc-600">5초마다 자동 갱신됩니다.</p>
+          <p className="text-xs text-zinc-600">60초마다 자동 갱신됩니다.</p>
         </div>
       )}
 

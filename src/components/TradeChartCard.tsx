@@ -77,6 +77,7 @@ export function TradeChartCard({
           end: String(Math.min(Date.now(), exitMs + 3 * 60 * 60 * 1000)),
           interval: pickFetchInterval(trade.duration_minutes),
           limit: "300",
+          exchange: trade.exchange === "binance" ? "binance" : "auto",
         });
         const res = await fetch(`/api/klines?${qs}`);
         const data = (await res.json()) as {

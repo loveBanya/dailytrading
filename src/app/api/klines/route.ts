@@ -33,6 +33,12 @@ export async function GET(req: NextRequest) {
       start,
       end,
       limit,
+      prefer:
+        sp.get("exchange") === "binance"
+          ? "binance"
+          : sp.get("exchange") === "bybit"
+            ? "bybit"
+            : "auto",
     });
 
     return NextResponse.json({

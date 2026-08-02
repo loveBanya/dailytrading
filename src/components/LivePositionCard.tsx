@@ -30,6 +30,7 @@ export function LivePositionCard({ position }: LivePositionCardProps) {
           end: String(end),
           interval: "15",
           limit: "100",
+          exchange: position.exchange === "binance" ? "binance" : "auto",
         });
         const res = await fetch(`/api/klines?${qs}`);
         const data = (await res.json()) as { candles?: Candle[] };

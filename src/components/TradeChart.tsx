@@ -118,16 +118,19 @@ export function TradeChart({ candles, levels, height = 440 }: TradeChartProps) {
     const tp = levels.tp ?? null;
     const sl = levels.sl ?? null;
 
-    // 가격축을 진입/TP/SL/청산 중심으로 타이트하게
+    // 가격축: 진입/TP/SL/청산 + 캔들 high/low (캔들만 화면 밖으로 잘리지 않게)
     const pricePoints = [levels.entry];
     if (levels.exit != null) pricePoints.push(levels.exit);
     if (tp != null) pricePoints.push(tp);
     if (sl != null) pricePoints.push(sl);
+    for (const c of candles) {
+      if (Number.isFinite(c.low)) pricePoints.push(c.low);
+      if (Number.isFinite(c.high)) pricePoints.push(c.high);
+    }
 
-    // 보이는 구간의 캔들 high/low도 반영하되, levels 기준으로 여유만 조금
     const minP = Math.min(...pricePoints);
     const maxP = Math.max(...pricePoints);
-    const pad = Math.max((maxP - minP) * 0.35, minP * 0.002);
+    const pad = Math.max((maxP - minP) * 0.12, Math.abs(minP) * 0.002, 1e-8);
 
     candleSeries.applyOptions({
       autoscaleInfoProvider: () => ({
@@ -172,7 +175,16 @@ export function TradeChart({ candles, levels, height = 440 }: TradeChartProps) {
     let entryIdx = 0;
     let exitIdx = candles.length - 1;
 
+    const snapOk =
+      levels.entryTime != null &&
+      levels.exitTime != null &&
+      Math.abs(snapTime(candles, levels.entryTime) - levels.entryTime) <=
+        3 * 3600 &&
+      Math.abs(snapTime(candles, levels.exitTime) - levels.exitTime) <=
+        3 * 3600;
+
     if (
+      snapOk &&
       levels.entryTime &&
       levels.exitTime &&
       levels.exit != null &&
@@ -215,17 +227,19 @@ export function TradeChart({ candles, levels, height = 440 }: TradeChartProps) {
       ]);
     }
 
-    // 사진처럼 진입~청산 구간을 크게 확대
-    const span = Math.max(exitIdx - entryIdx, 8);
-    const leftPad = Math.max(Math.ceil(span * 1.8), 12);
-    const rightPad = Math.max(Math.ceil(span * 1.0), 8);
-    const from = Math.max(0, entryIdx - leftPad);
-    const to = Math.min(candles.length - 1, exitIdx + rightPad);
-
-    chart.timeScale().setVisibleLogicalRange({
-      from: from - 0.5,
-      to: to + 0.5,
-    });
+    if (snapOk) {
+      const span = Math.max(exitIdx - entryIdx, 8);
+      const leftPad = Math.max(Math.ceil(span * 1.8), 12);
+      const rightPad = Math.max(Math.ceil(span * 1.0), 8);
+      const from = Math.max(0, entryIdx - leftPad);
+      const to = Math.min(candles.length - 1, exitIdx + rightPad);
+      chart.timeScale().setVisibleLogicalRange({
+        from: from - 0.5,
+        to: to + 0.5,
+      });
+    } else {
+      chart.timeScale().fitContent();
+    }
 
     const ro = new ResizeObserver(() => {
       if (containerRef.current) {

@@ -204,22 +204,32 @@ async function trySources(
     end?: number;
     limit: number;
   }
-): Promise<Candle[]> {
+): Promise<{ candles: Candle[]; source: Source }> {
   const errors: string[] = [];
   for (const src of sources) {
     try {
-      if (src === "bybit") return await fetchBybitKlines(args);
-      if (src === "binance") {
-        return await fetchBinanceUrlKlines(BINANCE_FAPI, "/fapi/v1/klines", args);
-      }
-      if (src === "binance-data") {
-        return await fetchBinanceUrlKlines(
+      let candles: Candle[];
+      if (src === "bybit") candles = await fetchBybitKlines(args);
+      else if (src === "binance") {
+        candles = await fetchBinanceUrlKlines(
+          BINANCE_FAPI,
+          "/fapi/v1/klines",
+          args
+        );
+      } else if (src === "binance-data") {
+        candles = await fetchBinanceUrlKlines(
           BINANCE_DATA,
           "/api/v3/klines",
           args
         );
+      } else {
+        candles = await fetchOkxKlines(args);
       }
-      return await fetchOkxKlines(args);
+      if (candles.length === 0) {
+        errors.push(`${src}: empty`);
+        continue;
+      }
+      return { candles, source: src };
     } catch (err) {
       errors.push(
         `${src}: ${err instanceof Error ? err.message : String(err)}`
@@ -240,8 +250,20 @@ export async function fetchKlines(options: {
   start?: number;
   end?: number;
   limit?: number;
-  prefer?: "bybit" | "binance" | "auto";
+  prefer?: "bybit" | "binance" | "okx" | "auto";
 }): Promise<Candle[]> {
+  const result = await fetchKlinesWithSource(options);
+  return result.candles;
+}
+
+export async function fetchKlinesWithSource(options: {
+  symbol: string;
+  interval?: string;
+  start?: number;
+  end?: number;
+  limit?: number;
+  prefer?: "bybit" | "binance" | "okx" | "auto";
+}): Promise<{ candles: Candle[]; source: Source }> {
   const interval = options.interval ?? "15";
   const limit = options.limit ?? 200;
   const prefer = options.prefer ?? "auto";
@@ -258,6 +280,8 @@ export async function fetchKlines(options: {
     sources = ["binance", "binance-data", "okx", "bybit"];
   } else if (prefer === "bybit") {
     sources = ["bybit", "okx", "binance-data", "binance"];
+  } else if (prefer === "okx") {
+    sources = ["okx", "bybit", "binance-data", "binance"];
   } else {
     // auto: OKX가 클라우드에서 비교적 안정적인 편 → 앞쪽에 배치
     sources = ["okx", "binance-data", "bybit", "binance"];

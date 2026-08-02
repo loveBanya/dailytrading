@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { syncAllExchanges, syncExchangeTrades } from "@/lib/exchanges";
+import { EXCHANGE_API_REGIONS } from "@/lib/exchanges/regions";
 import type { Exchange } from "@/lib/exchanges/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const preferredRegion = [...EXCHANGE_API_REGIONS];
 
 /**
  * POST /api/sync

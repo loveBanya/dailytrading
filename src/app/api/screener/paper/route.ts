@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { EXCHANGE_API_REGIONS } from "@/lib/exchanges/regions";
 import { createSupabaseAdmin } from "@/lib/supabase/client";
 import { getAdapter } from "@/lib/screener/scan";
 import { retPct } from "@/lib/screener/snapshot";
@@ -9,6 +10,7 @@ import { errorMessage } from "@/lib/utils/labels";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+export const preferredRegion = [...EXCHANGE_API_REGIONS];
 
 /** GET ?status=open|closed|all&track_type= */
 export async function GET(req: NextRequest) {

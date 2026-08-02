@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { EXCHANGE_API_REGIONS } from "@/lib/exchanges/regions";
 import { fetchSymbolDetail } from "@/lib/screener/scan";
 import type { ScreenerExchange, Timeframe } from "@/lib/screener/types";
 import { errorMessage } from "@/lib/utils/labels";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const preferredRegion = [...EXCHANGE_API_REGIONS];
 
 /** GET /api/screener/detail?exchange=&symbol=&timeframe= */
 export async function GET(req: NextRequest) {

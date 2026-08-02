@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { chartWindow, fetchKlines } from "@/lib/exchanges/klines";
+import { EXCHANGE_API_REGIONS } from "@/lib/exchanges/regions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const preferredRegion = [...EXCHANGE_API_REGIONS];
 
 /** GET /api/klines?symbol=ORDIUSDT&entry=&exit= 또는 start=&end=&interval= */
 export async function GET(req: NextRequest) {

@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { EXCHANGE_API_REGIONS } from "@/lib/exchanges/regions";
 import { createSupabaseAdmin } from "@/lib/supabase/client";
 import { getAdapter } from "@/lib/screener/scan";
 import { retPct } from "@/lib/screener/snapshot";
@@ -10,7 +9,7 @@ import { errorMessage } from "@/lib/utils/labels";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
-export const preferredRegion = [...EXCHANGE_API_REGIONS];
+export const preferredRegion = ["sin1", "hnd1", "icn1"];
 
 /** GET ?status=open|closed|all&track_type= */
 export async function GET(req: NextRequest) {
@@ -36,9 +35,8 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST
- * - action: "start" — candidates[] 로 가상투자 시작
- * - action: "refresh" — open 포지션 현재가 갱신 + 수익률
- * - action: "close" — id 청산
+ * - action: "start" ??candidates[] �?가?�투???�작
+ * - action: "refresh" ??open ?��????�재가 갱신 + ?�익�? * - action: "close" ??id �?��
  */
 export async function POST(req: NextRequest) {
   try {
@@ -146,7 +144,7 @@ export async function POST(req: NextRequest) {
         );
         return (
           macdHit ||
-          c.macdState.includes("크로스") ||
+          c.macdState.includes("?�로??) ||
           c.strongestStrategy === "golden_cross" ||
           c.strongestStrategy === "dead_cross" ||
           c.strongestStrategy === "macd_momentum"
@@ -156,7 +154,7 @@ export async function POST(req: NextRequest) {
 
     if (candidates.length === 0) {
       return NextResponse.json(
-        { error: "추적할 후보가 없습니다", started: 0 },
+        { error: "추적???�보가 ?�습?�다", started: 0 },
         { status: 400 }
       );
     }

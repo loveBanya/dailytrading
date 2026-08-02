@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { EXCHANGE_API_REGIONS } from "@/lib/exchanges/regions";
 import { createSupabaseAdmin } from "@/lib/supabase/client";
 import { getAdapter } from "@/lib/screener/scan";
 import type { ScreenerExchange } from "@/lib/screener/types";
@@ -8,7 +7,7 @@ import { errorMessage } from "@/lib/utils/labels";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
-export const preferredRegion = [...EXCHANGE_API_REGIONS];
+export const preferredRegion = ["sin1", "hnd1", "icn1"];
 
 const HORIZONS: Array<{ key: string; ms: number }> = [
   { key: "5m", ms: 5 * 60_000 },
@@ -29,7 +28,7 @@ function retFor(
   return direction.startsWith("SHORT") ? -raw : raw;
 }
 
-/** POST /api/screener/track — 미완성 outcome 갱신 */
+/** POST /api/screener/track ??미완??outcome 갱신 */
 export async function POST() {
   try {
     const supabase = createSupabaseAdmin();

@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
-import { EXCHANGE_API_REGIONS } from "@/lib/exchanges/regions";
 import { fetchWalletOverview } from "@/lib/exchanges/wallet";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const preferredRegion = [...EXCHANGE_API_REGIONS];
+export const preferredRegion = ["sin1", "hnd1", "icn1"];
 
-/** GET /api/wallet — 거래소별 잔고 + 오픈 포지션 */
+/** GET /api/wallet ??거래?�별 ?�고 + ?�픈 ?��???*/
 export async function GET() {
   try {
     const overview = await fetchWalletOverview();

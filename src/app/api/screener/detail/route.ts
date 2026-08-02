@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { EXCHANGE_API_REGIONS } from "@/lib/exchanges/regions";
 import { fetchSymbolDetail } from "@/lib/screener/scan";
 import type { ScreenerExchange, Timeframe } from "@/lib/screener/types";
 import { errorMessage } from "@/lib/utils/labels";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const preferredRegion = [...EXCHANGE_API_REGIONS];
+export const preferredRegion = ["sin1", "hnd1", "icn1"];
 
 /** GET /api/screener/detail?exchange=&symbol=&timeframe= */
 export async function GET(req: NextRequest) {
@@ -16,7 +15,7 @@ export async function GET(req: NextRequest) {
     const symbol = sp.get("symbol");
     const timeframe = (sp.get("timeframe") ?? "15m") as Timeframe;
     if (!symbol) {
-      return NextResponse.json({ error: "symbol 필요" }, { status: 400 });
+      return NextResponse.json({ error: "symbol ?�요" }, { status: 400 });
     }
     const detail = await fetchSymbolDetail(exchange, symbol, timeframe);
     return NextResponse.json(detail);

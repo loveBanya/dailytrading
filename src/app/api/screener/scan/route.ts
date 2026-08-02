@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { EXCHANGE_API_REGIONS } from "@/lib/exchanges/regions";
 import { persistSignals } from "@/lib/screener/persist";
 import { runScreenerScan } from "@/lib/screener/scan";
 import type { ScanFilters, StrategyId } from "@/lib/screener/types";
@@ -8,7 +7,7 @@ import { errorMessage } from "@/lib/utils/labels";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
-export const preferredRegion = [...EXCHANGE_API_REGIONS];
+export const preferredRegion = ["sin1", "hnd1", "icn1"];
 
 function parseFilters(req: NextRequest): Partial<ScanFilters> {
   const sp = req.nextUrl.searchParams;

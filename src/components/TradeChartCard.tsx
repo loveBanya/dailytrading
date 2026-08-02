@@ -23,6 +23,10 @@ interface TradeChartCardProps {
   trade: Trade;
   onUpdated?: (trade: Trade) => void;
   defaultOpen?: boolean;
+  /** 제어 모드 — 전체접기/펼치기용 */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  onCommentsMutated?: () => void;
 }
 
 function resolveStyle(trade: Trade): TradeStyle {
@@ -38,9 +42,21 @@ function resolveStyle(trade: Trade): TradeStyle {
 export function TradeChartCard({
   trade,
   onUpdated,
-  defaultOpen = false,
+  defaultOpen = true,
+  open: openProp,
+  onOpenChange,
+  onCommentsMutated,
 }: TradeChartCardProps) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [internalOpen, setInternalOpen] = useState(defaultOpen);
+  const controlled = openProp !== undefined;
+  const open = controlled ? openProp : internalOpen;
+
+  function setOpen(next: boolean | ((prev: boolean) => boolean)) {
+    const value = typeof next === "function" ? next(open) : next;
+    if (!controlled) setInternalOpen(value);
+    onOpenChange?.(value);
+  }
+
   const [candles, setCandles] = useState<Candle[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -393,6 +409,7 @@ export function TradeChartCard({
             tradeId={trade.id}
             legacyNotes={trade.notes}
             onCountChange={setCommentCount}
+            onMutated={onCommentsMutated}
           />
         </>
       )}

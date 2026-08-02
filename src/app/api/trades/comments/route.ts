@@ -13,15 +13,31 @@ export interface TradeComment {
   updated_at: string;
 }
 
-/** GET /api/trades/comments?tradeId= */
+/** GET /api/trades/comments?tradeId= — tradeId 없으면 검색용 전체 인덱스 */
 export async function GET(req: NextRequest) {
   try {
     const tradeId = req.nextUrl.searchParams.get("tradeId");
+    const supabase = createSupabaseAdmin();
+
     if (!tradeId) {
-      return NextResponse.json({ error: "tradeId 필요" }, { status: 400 });
+      const { data, error } = await supabase
+        .from("trade_comments")
+        .select("trade_id, body")
+        .order("created_at", { ascending: false })
+        .limit(5000);
+
+      if (error) {
+        return NextResponse.json(
+          { error: error.message, code: error.code },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({
+        comments: (data ?? []) as Pick<TradeComment, "trade_id" | "body">[],
+      });
     }
 
-    const supabase = createSupabaseAdmin();
     const { data, error } = await supabase
       .from("trade_comments")
       .select("*")

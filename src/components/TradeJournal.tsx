@@ -22,6 +22,7 @@ import { MindsetPanel } from "./MindsetPanel";
 import { JournalPostsPanel } from "./JournalPostsPanel";
 import { ScreenerPanel } from "./screener/ScreenerPanel";
 import { ScreenerPerfPanel } from "./screener/ScreenerPerfPanel";
+import { exchangeLabel, statusLabel } from "@/lib/utils/labels";
 
 type Tab =
   | "trades"
@@ -136,6 +137,41 @@ function monthLabel(key: string): string {
   return `${y}년 ${Number(m)}월`;
 }
 
+function tradeMatchesSearch(
+  trade: Trade,
+  query: string,
+  commentText: string
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+
+  const sideKo = trade.side === "LONG" ? "롱" : "숏";
+  const style = trade.trade_style ?? "";
+  const tags = (trade.tags ?? []).join(" ");
+  const haystack = [
+    trade.symbol,
+    trade.base_asset ?? "",
+    trade.side,
+    sideKo,
+    trade.exchange,
+    exchangeLabel(trade.exchange),
+    trade.status,
+    statusLabel(trade.status),
+    trade.notes ?? "",
+    tags,
+    style,
+    String(trade.pnl ?? ""),
+    String(trade.entry_price ?? ""),
+    String(trade.exit_price ?? ""),
+    commentText,
+    trade.is_review ? "오답노트 오답" : "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return haystack.includes(q);
+}
+
 export function TradeJournal() {
   const [tab, setTab] = useState<Tab>("trades");
   const [sort, setSort] = useState<SortKey>("newest");
@@ -148,6 +184,14 @@ export function TradeJournal() {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [tradesLoading, setTradesLoading] = useState(true);
   const [tradesError, setTradesError] = useState<string | null>(null);
+  const [tradeSearch, setTradeSearch] = useState("");
+  const [cardsExpandedDefault, setCardsExpandedDefault] = useState(true);
+  const [cardOpenOverrides, setCardOpenOverrides] = useState<
+    Record<string, boolean>
+  >({});
+  const [commentTextByTrade, setCommentTextByTrade] = useState<
+    Record<string, string>
+  >({});
 
   const [overall, setOverall] = useState<OverallStats | null>(null);
   const [monthly, setMonthly] = useState<MonthlyStat[]>([]);
@@ -259,9 +303,37 @@ export function TradeJournal() {
     }
   }, []);
 
+  const loadCommentIndex = useCallback(async () => {
+    try {
+      const res = await fetch("/api/trades/comments");
+      const data = (await res.json()) as {
+        comments?: { trade_id: string; body: string }[];
+        error?: string;
+      };
+      if (data.error) return;
+      const map: Record<string, string[]> = {};
+      for (const c of data.comments ?? []) {
+        (map[c.trade_id] ??= []).push(c.body);
+      }
+      setCommentTextByTrade(
+        Object.fromEntries(
+          Object.entries(map).map(([id, bodies]) => [id, bodies.join("\n")])
+        )
+      );
+    } catch {
+      /* 검색 보조 — 실패해도 매매 목록은 유지 */
+    }
+  }, []);
+
   const refreshAll = useCallback(async () => {
-    await Promise.all([loadTrades(), loadStats(), loadWallet(), loadMarket()]);
-  }, [loadTrades, loadStats, loadWallet, loadMarket]);
+    await Promise.all([
+      loadTrades(),
+      loadStats(),
+      loadWallet(),
+      loadMarket(),
+      loadCommentIndex(),
+    ]);
+  }, [loadTrades, loadStats, loadWallet, loadMarket, loadCommentIndex]);
 
   useEffect(() => {
     void refreshAll();
@@ -318,10 +390,31 @@ export function TradeJournal() {
       ),
     [baseList, periodMode, filterYear, filterMonth, rangeFrom, rangeTo]
   );
-  const displayed = useMemo(
-    () => sortTrades(filtered, sort),
-    [filtered, sort]
+  const searched = useMemo(
+    () =>
+      filtered.filter((t) =>
+        tradeMatchesSearch(t, tradeSearch, commentTextByTrade[t.id] ?? "")
+      ),
+    [filtered, tradeSearch, commentTextByTrade]
   );
+  const displayed = useMemo(
+    () => sortTrades(searched, sort),
+    [searched, sort]
+  );
+
+  function isCardOpen(tradeId: string) {
+    return cardOpenOverrides[tradeId] ?? cardsExpandedDefault;
+  }
+
+  function expandAllCards() {
+    setCardsExpandedDefault(true);
+    setCardOpenOverrides({});
+  }
+
+  function collapseAllCards() {
+    setCardsExpandedDefault(false);
+    setCardOpenOverrides({});
+  }
 
   function applyRangePreset(preset: Exclude<RangePreset, "custom">) {
     const { from, to } = rangeForPreset(preset);
@@ -383,6 +476,7 @@ export function TradeJournal() {
             onSynced={() => {
               void loadTrades();
               void loadStats();
+              void loadCommentIndex();
             }}
           />
         </div>
@@ -535,7 +629,21 @@ export function TradeJournal() {
               </div>
             )}
 
-            <div className="ml-auto">
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={expandAllCards}
+                className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
+              >
+                전체펼치기
+              </button>
+              <button
+                type="button"
+                onClick={collapseAllCards}
+                className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
+              >
+                전체접기
+              </button>
               <select
                 value={sort}
                 onChange={(e) => setSort(e.target.value as SortKey)}
@@ -550,13 +658,34 @@ export function TradeJournal() {
             </div>
           </div>
 
+          <div className="relative">
+            <input
+              type="search"
+              value={tradeSearch}
+              onChange={(e) => setTradeSearch(e.target.value)}
+              placeholder="검색: 코인, 롱/숏, 댓글, 원칙/뇌동, 오답…"
+              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-emerald-500/50"
+            />
+            {tradeSearch.trim() && (
+              <button
+                type="button"
+                onClick={() => setTradeSearch("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-zinc-500 hover:text-zinc-300"
+              >
+                지우기
+              </button>
+            )}
+          </div>
+
           <p className="text-xs text-zinc-500">
             {periodSummary}
             {" · "}
             <span className="text-zinc-300">{displayed.length}건</span>
-            {periodMode !== "all" && baseList.length !== displayed.length
-              ? ` (전체 ${baseList.length}건 중)`
-              : ""}
+            {tradeSearch.trim() && filtered.length !== displayed.length
+              ? ` (검색 전 ${filtered.length}건)`
+              : periodMode !== "all" && baseList.length !== filtered.length
+                ? ` (전체 ${baseList.length}건 중)`
+                : ""}
             {" · "}
             정렬 <span className="text-zinc-300">{sortLabel}</span>
             {tab === "review" && " · 오답노트로 지정한 매매만 표시"}
@@ -584,20 +713,24 @@ export function TradeJournal() {
           {!tradesLoading && !tradesError && displayed.length === 0 && (
             <div className="rounded-lg border border-dashed border-zinc-700 p-10 text-center">
               <p className="text-zinc-300">
-                {tab === "review"
-                  ? periodMode !== "all" && reviewTrades.length > 0
-                    ? "선택한 기간에 오답노트가 없습니다"
-                    : "오답노트에 지정된 매매가 없습니다"
-                  : periodMode !== "all" && trades.length > 0
-                    ? "선택한 기간에 매매 기록이 없습니다"
-                    : "아직 기록된 매매가 없습니다"}
+                {tradeSearch.trim()
+                  ? "검색 결과가 없습니다"
+                  : tab === "review"
+                    ? periodMode !== "all" && reviewTrades.length > 0
+                      ? "선택한 기간에 오답노트가 없습니다"
+                      : "오답노트에 지정된 매매가 없습니다"
+                    : periodMode !== "all" && trades.length > 0
+                      ? "선택한 기간에 매매 기록이 없습니다"
+                      : "아직 기록된 매매가 없습니다"}
               </p>
               <p className="mt-2 text-sm text-zinc-500">
-                {tab === "review"
-                  ? "매매 기록에서 「오답노트 지정」을 눌러 추가하세요."
-                  : periodMode !== "all" && trades.length > 0
-                    ? "기간 필터를 「전체」로 바꾸거나 다른 월/연도를 선택하세요."
-                    : "「거래소 동기화」로 기록을 가져오세요."}
+                {tradeSearch.trim()
+                  ? "다른 키워드로 검색하거나 검색어를 지워보세요."
+                  : tab === "review"
+                    ? "매매 기록에서 「오답노트 지정」을 눌러 추가하세요."
+                    : periodMode !== "all" && trades.length > 0
+                      ? "기간 필터를 「전체」로 바꾸거나 다른 월/연도를 선택하세요."
+                      : "「거래소 동기화」로 기록을 가져오세요."}
               </p>
             </div>
           )}
@@ -606,7 +739,12 @@ export function TradeJournal() {
             <TradeChartCard
               key={trade.id}
               trade={trade}
+              open={isCardOpen(trade.id)}
+              onOpenChange={(next) =>
+                setCardOpenOverrides((prev) => ({ ...prev, [trade.id]: next }))
+              }
               onUpdated={handleTradeUpdated}
+              onCommentsMutated={() => void loadCommentIndex()}
             />
           ))}
         </div>

@@ -16,12 +16,15 @@ interface TradeCommentsProps {
   /** 예전 단일 메모 — 댓글이 없을 때 한 번 옮기는 용도 */
   legacyNotes?: string | null;
   onCountChange?: (count: number) => void;
+  /** 등록/수정/삭제 후 — 검색 인덱스 갱신용 */
+  onMutated?: () => void;
 }
 
 export function TradeComments({
   tradeId,
   legacyNotes,
   onCountChange,
+  onMutated,
 }: TradeCommentsProps) {
   const [comments, setComments] = useState<TradeComment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -116,6 +119,7 @@ export function TradeComments({
         setDraft("");
       }
       await load();
+      onMutated?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "등록 실패");
     } finally {
@@ -136,6 +140,7 @@ export function TradeComments({
       if (data.error) throw new Error(data.error);
       setEditingId(null);
       await load();
+      onMutated?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "수정 실패");
     } finally {
@@ -153,6 +158,7 @@ export function TradeComments({
       const data = (await res.json()) as { error?: string };
       if (data.error) throw new Error(data.error);
       await load();
+      onMutated?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "삭제 실패");
     } finally {

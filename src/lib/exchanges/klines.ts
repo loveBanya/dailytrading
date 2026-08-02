@@ -12,10 +12,24 @@ interface KlineResult {
   list?: string[][];
 }
 
-const BINANCE_FAPI = "https://fapi.binance.com";
+interface OkxEnvelope {
+  code: string;
+  msg: string;
+  data?: string[][];
+}
 
-/** Bybit interval → Binance futures interval */
-function toBinanceInterval(interval: string): string {
+const BINANCE_FAPI = "https://fapi.binance.com";
+/** 선물 fapi가 451일 때 쓰는 공개 데이터 호스트 (스팟 캔들) */
+const BINANCE_DATA = "https://data-api.binance.vision";
+const OKX_BASE = process.env.OKX_BASE_URL ?? "https://www.okx.com";
+
+const FETCH_HEADERS: HeadersInit = {
+  Accept: "application/json",
+  "User-Agent": "DailyTradingJournal/1.0",
+};
+
+/** Bybit interval → Binance interval */
+export function toBinanceInterval(interval: string): string {
   const map: Record<string, string> = {
     "1": "1m",
     "3": "3m",
@@ -31,9 +45,36 @@ function toBinanceInterval(interval: string): string {
     W: "1w",
     M: "1M",
   };
-  return map[interval] ?? (interval.includes("m") || interval.includes("h")
-    ? interval
-    : "15m");
+  return map[interval] ?? (/\d+[mhHdDwW]/.test(interval) ? interval : "15m");
+}
+
+/** Bybit interval → OKX bar */
+function toOkxBar(interval: string): string {
+  const map: Record<string, string> = {
+    "1": "1m",
+    "3": "3m",
+    "5": "5m",
+    "15": "15m",
+    "30": "30m",
+    "60": "1H",
+    "120": "2H",
+    "240": "4H",
+    "360": "6H",
+    "720": "12H",
+    D: "1D",
+    W: "1W",
+    M: "1M",
+  };
+  return map[interval] ?? "15m";
+}
+
+function toOkxInstId(symbol: string): string {
+  const base = symbol.replace(/USDT$/i, "").toUpperCase();
+  return `${base}-USDT-SWAP`;
+}
+
+function sortCandles(candles: Candle[]): Candle[] {
+  return candles.sort((a, b) => a.time - b.time);
 }
 
 async function fetchBybitKlines(options: {
@@ -57,24 +98,28 @@ async function fetchBybitKlines(options: {
     params
   );
 
-  return (result.list ?? [])
-    .map((row) => ({
+  return sortCandles(
+    (result.list ?? []).map((row) => ({
       time: Math.floor(Number(row[0]) / 1000),
       open: Number(row[1]),
       high: Number(row[2]),
       low: Number(row[3]),
       close: Number(row[4]),
     }))
-    .sort((a, b) => a.time - b.time);
+  );
 }
 
-async function fetchBinanceKlines(options: {
-  symbol: string;
-  interval: string;
-  start?: number;
-  end?: number;
-  limit: number;
-}): Promise<Candle[]> {
+async function fetchBinanceUrlKlines(
+  base: string,
+  path: string,
+  options: {
+    symbol: string;
+    interval: string;
+    start?: number;
+    end?: number;
+    limit: number;
+  }
+): Promise<Candle[]> {
   const params: Record<string, string> = {
     symbol: options.symbol.toUpperCase(),
     interval: toBinanceInterval(options.interval),
@@ -84,31 +129,110 @@ async function fetchBinanceKlines(options: {
   if (options.end) params.endTime = String(options.end);
 
   const qs = new URLSearchParams(params).toString();
-  const res = await fetch(`${BINANCE_FAPI}/fapi/v1/klines?${qs}`, {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "DailyTradingJournal/1.0",
-    },
+  const res = await fetch(`${base}${path}?${qs}`, {
+    headers: FETCH_HEADERS,
     cache: "no-store",
   });
   if (!res.ok) {
-    throw new Error(`Binance public klines HTTP ${res.status}`);
+    throw new Error(`Binance klines HTTP ${res.status}`);
   }
   const rows = (await res.json()) as unknown[][];
-  return rows
-    .map((row) => ({
+  return sortCandles(
+    rows.map((row) => ({
       time: Math.floor(Number(row[0]) / 1000),
       open: Number(row[1]),
       high: Number(row[2]),
       low: Number(row[3]),
       close: Number(row[4]),
     }))
-    .sort((a, b) => a.time - b.time);
+  );
+}
+
+async function fetchOkxKlines(options: {
+  symbol: string;
+  interval: string;
+  start?: number;
+  end?: number;
+  limit: number;
+}): Promise<Candle[]> {
+  const params: Record<string, string> = {
+    instId: toOkxInstId(options.symbol),
+    bar: toOkxBar(options.interval),
+    limit: String(Math.min(options.limit, 300)),
+  };
+  // OKX: after/before are candle ids (ms). before = end
+  if (options.end) params.before = String(options.end);
+
+  const qs = new URLSearchParams(params).toString();
+  const res = await fetch(`${OKX_BASE}/api/v5/market/candles?${qs}`, {
+    headers: FETCH_HEADERS,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`OKX klines HTTP ${res.status}`);
+  }
+  const data = (await res.json()) as OkxEnvelope;
+  if (data.code !== "0") {
+    throw new Error(`OKX klines: ${data.msg || data.code}`);
+  }
+
+  // OKX: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm] newest first
+  let candles = (data.data ?? []).map((row) => ({
+    time: Math.floor(Number(row[0]) / 1000),
+    open: Number(row[1]),
+    high: Number(row[2]),
+    low: Number(row[3]),
+    close: Number(row[4]),
+  }));
+
+  if (options.start) {
+    const startSec = Math.floor(options.start / 1000);
+    candles = candles.filter((c) => c.time >= startSec);
+  }
+
+  return sortCandles(candles);
+}
+
+type Source = "bybit" | "binance" | "binance-data" | "okx";
+
+async function trySources(
+  sources: Source[],
+  args: {
+    symbol: string;
+    interval: string;
+    start?: number;
+    end?: number;
+    limit: number;
+  }
+): Promise<Candle[]> {
+  const errors: string[] = [];
+  for (const src of sources) {
+    try {
+      if (src === "bybit") return await fetchBybitKlines(args);
+      if (src === "binance") {
+        return await fetchBinanceUrlKlines(BINANCE_FAPI, "/fapi/v1/klines", args);
+      }
+      if (src === "binance-data") {
+        return await fetchBinanceUrlKlines(
+          BINANCE_DATA,
+          "/api/v3/klines",
+          args
+        );
+      }
+      return await fetchOkxKlines(args);
+    } catch (err) {
+      errors.push(
+        `${src}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  throw new Error(`캔들 조회 실패 — ${errors.join(" · ")}`);
 }
 
 /**
  * 차트용 캔들 조회.
- * Vercel 등에서 Bybit 공개 API가 403인 경우가 많아 Binance로 폴백합니다.
+ * Vercel IP에서 Bybit 403 / Binance 451이 흔해 여러 공개 소스를 순서대로 시도합니다.
+ * (차트 라이브러리 lightweight-charts 와는 별개 — 이미 package.json에 포함)
  */
 export async function fetchKlines(options: {
   symbol: string;
@@ -116,7 +240,6 @@ export async function fetchKlines(options: {
   start?: number;
   end?: number;
   limit?: number;
-  /** preferred: bybit | binance | auto */
   prefer?: "bybit" | "binance" | "auto";
 }): Promise<Candle[]> {
   const interval = options.interval ?? "15";
@@ -130,22 +253,20 @@ export async function fetchKlines(options: {
     limit,
   };
 
-  const tryBybit = prefer !== "binance";
-  const tryBinance = prefer !== "bybit";
-
-  if (tryBybit) {
-    try {
-      return await fetchBybitKlines(args);
-    } catch (err) {
-      if (!tryBinance) throw err;
-      // fall through to Binance
-    }
+  let sources: Source[];
+  if (prefer === "binance") {
+    sources = ["binance", "binance-data", "okx", "bybit"];
+  } else if (prefer === "bybit") {
+    sources = ["bybit", "okx", "binance-data", "binance"];
+  } else {
+    // auto: OKX가 클라우드에서 비교적 안정적인 편 → 앞쪽에 배치
+    sources = ["okx", "binance-data", "bybit", "binance"];
   }
 
-  return fetchBinanceKlines(args);
+  return trySources(sources, args);
 }
 
-/** 매매 구간에 맞는 interval — 사진처럼 캔들이 크게 보이도록 세밀하게 */
+/** 매매 구간에 맞는 interval */
 export function pickInterval(entryMs: number, exitMs: number): string {
   const durMin = Math.max(1, (exitMs - entryMs) / 60_000);
   if (durMin <= 90) return "1";
@@ -156,10 +277,9 @@ export function pickInterval(entryMs: number, exitMs: number): string {
   return "240";
 }
 
-/** 차트용 시간 윈도우 (진입 전후 적당히 — 너무 넓지 않게) */
+/** 차트용 시간 윈도우 */
 export function chartWindow(entryMs: number, exitMs: number) {
   const hold = Math.max(exitMs - entryMs, 30 * 60 * 1000);
-  // 사진처럼: 보유시간의 약 2~2.5배 전후
   const padBefore = Math.max(hold * 2.2, 3 * 60 * 60 * 1000);
   const padAfter = Math.max(hold * 1.2, 2 * 60 * 60 * 1000);
   return {

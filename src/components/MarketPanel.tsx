@@ -146,7 +146,20 @@ function SymbolChartPanel({
           candles?: Candle[];
           error?: string;
         };
-        if (data.error) throw new Error(data.error);
+        if (data.error || !res.ok) {
+          const { fetchKlinesBrowser } = await import(
+            "@/lib/exchanges/klines-browser"
+          );
+          const candles = await fetchKlinesBrowser({
+            symbol: ticker.symbol,
+            start,
+            end,
+            interval,
+            limit: 200,
+          });
+          if (!cancelled) setCandles(candles);
+          return;
+        }
         if (!cancelled) setCandles(data.candles ?? []);
       } catch (err) {
         if (!cancelled) {

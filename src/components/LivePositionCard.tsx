@@ -33,7 +33,24 @@ export function LivePositionCard({ position }: LivePositionCardProps) {
           exchange: position.exchange === "binance" ? "binance" : "auto",
         });
         const res = await fetch(`/api/klines?${qs}`);
-        const data = (await res.json()) as { candles?: Candle[] };
+        const data = (await res.json()) as {
+          candles?: Candle[];
+          error?: string;
+        };
+        if (data.error || !res.ok) {
+          const { fetchKlinesBrowser } = await import(
+            "@/lib/exchanges/klines-browser"
+          );
+          const candles = await fetchKlinesBrowser({
+            symbol: position.symbol,
+            start,
+            end,
+            interval: "15",
+            limit: 100,
+          });
+          if (!cancelled) setCandles(candles);
+          return;
+        }
         if (!cancelled) setCandles(data.candles ?? []);
       } finally {
         if (!cancelled) setLoading(false);

@@ -84,7 +84,20 @@ export function TradeChartCard({
           candles?: Candle[];
           error?: string;
         };
-        if (data.error) throw new Error(data.error);
+        if (data.error || !res.ok) {
+          const { fetchKlinesBrowser } = await import(
+            "@/lib/exchanges/klines-browser"
+          );
+          const candles = await fetchKlinesBrowser({
+            symbol: trade.symbol,
+            start: exitMs - lookbackMs,
+            end: Math.min(Date.now(), exitMs + 3 * 60 * 60 * 1000),
+            interval: pickFetchInterval(trade.duration_minutes),
+            limit: 300,
+          });
+          if (!cancelled) setCandles(candles);
+          return;
+        }
         if (!cancelled) setCandles(data.candles ?? []);
       } catch (err) {
         if (!cancelled) {

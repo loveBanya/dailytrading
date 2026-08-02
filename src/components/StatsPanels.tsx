@@ -254,11 +254,15 @@ function DailyPnlCalendar({
   }, [daily]);
 
   const [month, setMonth] = useState(months[0] ?? "");
-  const [hoverDate, setHoverDate] = useState<string | null>(null);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   useEffect(() => {
     if (!months.includes(month) && months[0]) setMonth(months[0]);
   }, [months, month]);
+
+  useEffect(() => {
+    setSelectedDate(null);
+  }, [month]);
 
   const byDate = useMemo(() => {
     const map = new Map<string, DailyPnl>();
@@ -299,8 +303,10 @@ function DailyPnlCalendar({
   }, [daily, month]);
 
   const cells = useMemo(() => buildMonthCells(month), [month]);
-  const hoverTrades = hoverDate ? (tradesByDate.get(hoverDate) ?? []) : [];
-  const hoverRow = hoverDate ? byDate.get(hoverDate) : null;
+  const selectedTrades = selectedDate
+    ? (tradesByDate.get(selectedDate) ?? [])
+    : [];
+  const selectedRow = selectedDate ? byDate.get(selectedDate) : null;
 
   if (!month) return null;
 
@@ -345,8 +351,9 @@ function DailyPnlCalendar({
         />
       </div>
       <p className="mb-3 text-[11px] text-zinc-600">
-        선택 월 거래 {monthSummary.tradeCount}회 · 날짜에 마우스를 올리면 매매
-        기록이 표시됩니다
+        선택 월 거래 {monthSummary.tradeCount}회 · 날짜를{" "}
+        <span className="text-zinc-400">클릭</span>하면 그날 매매 기록이
+        아래에 고정됩니다
       </p>
 
       <div className="overflow-x-auto">
@@ -384,20 +391,23 @@ function DailyPnlCalendar({
                 );
               }
               const win = row.pnl >= 0;
-              const isHover = hoverDate === cell;
+              const isSelected = selectedDate === cell;
               return (
-                <div
+                <button
                   key={cell}
-                  onMouseEnter={() => setHoverDate(cell)}
-                  onMouseLeave={() => setHoverDate(null)}
-                  onFocus={() => setHoverDate(cell)}
-                  onBlur={() => setHoverDate(null)}
-                  tabIndex={0}
-                  className={`relative flex min-h-[64px] cursor-default flex-col rounded-md border p-1.5 outline-none transition ${
+                  type="button"
+                  onClick={() =>
+                    setSelectedDate((prev) => (prev === cell ? null : cell))
+                  }
+                  className={`flex min-h-[64px] flex-col rounded-md border p-1.5 text-left outline-none transition ${
                     win
                       ? "border-emerald-500/20 bg-emerald-950/50"
                       : "border-rose-500/20 bg-rose-950/50"
-                  } ${isHover ? "ring-1 ring-zinc-400/40" : ""}`}
+                  } ${
+                    isSelected
+                      ? "ring-2 ring-sky-400/70"
+                      : "hover:ring-1 hover:ring-zinc-500/50"
+                  }`}
                 >
                   <span
                     className={`text-[11px] ${
@@ -416,35 +426,36 @@ function DailyPnlCalendar({
                   >
                     {formatDayPnl(row.pnl)}
                   </span>
-
-                  {isHover && (
-                    <DayTradePopover
-                      date={cell}
-                      dayPnl={row.pnl}
-                      trades={hoverTrades}
-                    />
-                  )}
-                </div>
+                </button>
               );
             })}
           </div>
         </div>
       </div>
 
-      {hoverDate && hoverRow && (
+      {selectedDate && selectedRow && (
         <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
-          <p className="mb-2 text-xs text-zinc-400">
-            {hoverDate} ·{" "}
-            <span
-              className={
-                hoverRow.pnl >= 0 ? "text-emerald-400" : "text-rose-400"
-              }
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-xs text-zinc-400">
+              {selectedDate} ·{" "}
+              <span
+                className={
+                  selectedRow.pnl >= 0 ? "text-emerald-400" : "text-rose-400"
+                }
+              >
+                {formatDayPnl(selectedRow.pnl)}
+              </span>{" "}
+              · {selectedRow.trades}회
+            </p>
+            <button
+              type="button"
+              onClick={() => setSelectedDate(null)}
+              className="text-[11px] text-zinc-500 hover:text-zinc-300"
             >
-              {formatDayPnl(hoverRow.pnl)}
-            </span>{" "}
-            · {hoverRow.trades}회
-          </p>
-          <DayTradeList trades={hoverTrades} />
+              닫기
+            </button>
+          </div>
+          <DayTradeList trades={selectedTrades} />
         </div>
       )}
 
@@ -478,28 +489,6 @@ function SummaryChip({
       >
         {value}
       </p>
-    </div>
-  );
-}
-
-function DayTradePopover({
-  date,
-  dayPnl,
-  trades,
-}: {
-  date: string;
-  dayPnl: number;
-  trades: Trade[];
-}) {
-  return (
-    <div className="pointer-events-none absolute left-1/2 top-full z-30 mt-1 w-64 -translate-x-1/2 rounded-lg border border-zinc-700 bg-zinc-950 p-2.5 shadow-xl md:hidden">
-      <p className="mb-1.5 text-[11px] text-zinc-400">
-        {date} ·{" "}
-        <span className={dayPnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
-          {formatDayPnl(dayPnl)}
-        </span>
-      </p>
-      <DayTradeList trades={trades} compact />
     </div>
   );
 }

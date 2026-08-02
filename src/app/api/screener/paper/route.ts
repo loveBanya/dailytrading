@@ -35,9 +35,9 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST
- * - action: "start" ? candidates[] ? ???? ??
- * - action: "refresh" ? open ??? ??? ?? + ???
- * - action: "close" ? id ??
+ * - action: "start" ? start paper tracks from candidates[]
+ * - action: "refresh" ? update open positions mark-to-market
+ * - action: "close" ? close by id
  */
 export async function POST(req: NextRequest) {
   try {

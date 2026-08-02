@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Trade } from "@/lib/exchanges/types";
 import type { Candle } from "@/lib/exchanges/klines";
 import {
@@ -44,6 +44,7 @@ export function TradeChartCard({
   const [candles, setCandles] = useState<Candle[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fromCache, setFromCache] = useState(false);
   const [saving, setSaving] = useState(false);
   const [isReview, setIsReview] = useState(Boolean(trade.is_review));
   const [tradeStyle, setTradeStyle] = useState<TradeStyle>(resolveStyle(trade));
@@ -61,36 +62,35 @@ export function TradeChartCard({
     if (trade.comment_count != null) setCommentCount(trade.comment_count);
   }, [trade.id, trade.is_review, trade.tags, trade.trade_style, trade.comment_count]);
 
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    async function load() {
+  const loadChart = useCallback(
+    async (force = false) => {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(
-          `/api/trades/chart?tradeId=${encodeURIComponent(trade.id)}`
-        );
+        const qs = new URLSearchParams({ tradeId: trade.id });
+        if (force) qs.set("refresh", "1");
+        const res = await fetch(`/api/trades/chart?${qs}`);
         const data = (await res.json()) as {
           candles?: Candle[];
           cached?: boolean;
           error?: string;
         };
         if (data.error) throw new Error(data.error);
-        if (!cancelled) setCandles(data.candles ?? []);
+        setCandles(data.candles ?? []);
+        setFromCache(Boolean(data.cached));
       } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "차트 로드 실패");
-        }
+        setError(err instanceof Error ? err.message : "차트 로드 실패");
       } finally {
-        if (!cancelled) setLoading(false);
+        setLoading(false);
       }
-    }
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, trade.id]);
+    },
+    [trade.id]
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    void loadChart(false);
+  }, [open, loadChart]);
 
   const exit = Number(trade.exit_price);
   const entry = Number(trade.entry_price);
@@ -306,18 +306,29 @@ export function TradeChartCard({
                 }
               />
             </div>
-            <button
-              type="button"
-              onClick={() => void toggleReview()}
-              disabled={saving}
-              className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
-                isReview
-                  ? "border-amber-500/50 bg-amber-500/15 text-amber-300"
-                  : "border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
-              }`}
-            >
-              {isReview ? "★ 오답노트" : "☆ 오답노트 지정"}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => void loadChart(true)}
+                className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:border-zinc-500 hover:text-zinc-200 disabled:opacity-50"
+                title="거래소에서 캔들을 다시 받아 DB에 저장"
+              >
+                {loading ? "불러오는 중…" : "차트 새로고침"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void toggleReview()}
+                disabled={saving}
+                className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                  isReview
+                    ? "border-amber-500/50 bg-amber-500/15 text-amber-300"
+                    : "border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+                }`}
+              >
+                {isReview ? "★ 오답노트" : "☆ 오답노트 지정"}
+              </button>
+            </div>
           </div>
 
           <div className="border-t border-zinc-800 bg-zinc-950/40 px-4 py-2 text-xs text-zinc-500">
@@ -339,6 +350,9 @@ export function TradeChartCard({
               <span className="ml-2 text-amber-500/80">
                 (진입시각 차트 추정)
               </span>
+            )}
+            {fromCache && !loading && (
+              <span className="ml-2 text-zinc-600">(DB 캐시)</span>
             )}
           </div>
 

@@ -11,10 +11,11 @@ export const preferredRegion = [...EXCHANGE_API_REGIONS];
 export async function GET(req: NextRequest) {
   try {
     const tradeId = req.nextUrl.searchParams.get("tradeId");
+    const force = req.nextUrl.searchParams.get("refresh") === "1";
     if (!tradeId) {
       return NextResponse.json({ error: "tradeId 필요" }, { status: 400 });
     }
-    const data = await getOrFetchTradeChart(tradeId);
+    const data = await getOrFetchTradeChart(tradeId, { force });
     return NextResponse.json(data);
   } catch (err) {
     return NextResponse.json({ error: errorMessage(err) }, { status: 500 });

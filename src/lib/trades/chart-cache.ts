@@ -20,26 +20,37 @@ function pickInterval(durationMinutes: number | null | undefined): string {
   return "60";
 }
 
-/** 매매 차트: DB 캐시 우선, 없으면 거래소 조회 후 저장 */
-export async function getOrFetchTradeChart(tradeId: string): Promise<TradeChartPayload> {
+/** 매매 차트: DB 캐시 우선, 없으면(또는 force) 거래소 조회 후 저장 */
+export async function getOrFetchTradeChart(
+  tradeId: string,
+  options?: { force?: boolean }
+): Promise<TradeChartPayload> {
   const supabase = createSupabaseAdmin();
+  const force = options?.force === true;
 
-  const { data: cached, error: cacheErr } = await supabase
-    .from("trade_chart_candles")
-    .select("*")
-    .eq("trade_id", tradeId)
-    .maybeSingle();
+  if (!force) {
+    const { data: cached, error: cacheErr } = await supabase
+      .from("trade_chart_candles")
+      .select("*")
+      .eq("trade_id", tradeId)
+      .maybeSingle();
 
-  if (!cacheErr && cached?.candles && Array.isArray(cached.candles) && cached.candles.length > 0) {
-    return {
-      tradeId,
-      symbol: String(cached.symbol),
-      interval: String(cached.interval),
-      candles: cached.candles as Candle[],
-      cached: true,
-      source: cached.source as string | null,
-      fetchedAt: cached.fetched_at as string,
-    };
+    if (
+      !cacheErr &&
+      cached?.candles &&
+      Array.isArray(cached.candles) &&
+      cached.candles.length > 0
+    ) {
+      return {
+        tradeId,
+        symbol: String(cached.symbol),
+        interval: String(cached.interval),
+        candles: cached.candles as Candle[],
+        cached: true,
+        source: cached.source as string | null,
+        fetchedAt: cached.fetched_at as string,
+      };
+    }
   }
 
   const { data: trade, error: tradeErr } = await supabase
@@ -88,7 +99,6 @@ export async function getOrFetchTradeChart(tradeId: string): Promise<TradeChartP
     .upsert(row, { onConflict: "trade_id" });
 
   if (upErr) {
-    // 테이블 미생성 등이면 그래도 차트는 반환
     console.warn("trade_chart_candles upsert:", upErr.message);
   }
 

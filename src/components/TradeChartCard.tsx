@@ -68,36 +68,15 @@ export function TradeChartCard({
       setLoading(true);
       setError(null);
       try {
-        const exitMs = new Date(trade.exit_time).getTime();
-        // Bybit이 진입=청산 시각을 같게 주므로, 일단 넓은 창으로 캔들을 가져온 뒤 진입시각 추정
-        const lookbackMs = 48 * 60 * 60 * 1000;
-        const qs = new URLSearchParams({
-          symbol: trade.symbol,
-          start: String(exitMs - lookbackMs),
-          end: String(Math.min(Date.now(), exitMs + 3 * 60 * 60 * 1000)),
-          interval: pickFetchInterval(trade.duration_minutes),
-          limit: "300",
-          exchange: trade.exchange === "binance" ? "binance" : "auto",
-        });
-        const res = await fetch(`/api/klines?${qs}`);
+        const res = await fetch(
+          `/api/trades/chart?tradeId=${encodeURIComponent(trade.id)}`
+        );
         const data = (await res.json()) as {
           candles?: Candle[];
+          cached?: boolean;
           error?: string;
         };
-        if (data.error || !res.ok) {
-          const { fetchKlinesBrowser } = await import(
-            "@/lib/exchanges/klines-browser"
-          );
-          const candles = await fetchKlinesBrowser({
-            symbol: trade.symbol,
-            start: exitMs - lookbackMs,
-            end: Math.min(Date.now(), exitMs + 3 * 60 * 60 * 1000),
-            interval: pickFetchInterval(trade.duration_minutes),
-            limit: 300,
-          });
-          if (!cancelled) setCandles(candles);
-          return;
-        }
+        if (data.error) throw new Error(data.error);
         if (!cancelled) setCandles(data.candles ?? []);
       } catch (err) {
         if (!cancelled) {
@@ -111,7 +90,7 @@ export function TradeChartCard({
     return () => {
       cancelled = true;
     };
-  }, [open, trade.symbol, trade.exit_time, trade.duration_minutes]);
+  }, [open, trade.id]);
 
   const exit = Number(trade.exit_price);
   const entry = Number(trade.entry_price);
@@ -405,14 +384,6 @@ export function TradeChartCard({
       )}
     </article>
   );
-}
-
-function pickFetchInterval(durationMinutes: number | null): string {
-  const d = durationMinutes && durationMinutes > 0 ? durationMinutes : 180;
-  if (d <= 90) return "1";
-  if (d <= 360) return "5";
-  if (d <= 720) return "15";
-  return "30";
 }
 
 function StyleChip({

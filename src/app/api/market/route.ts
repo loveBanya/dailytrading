@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import { fetchMarketOverview } from "@/lib/exchanges/market";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const preferredRegion = ["sin1", "hnd1", "icn1"];
 
-/** GET /api/market ??주요 ?�볼 ?�세 + Fear & Greed */
+/** GET /api/market — 주요 심볼 시세 + Fear & Greed */
 export async function GET() {
   try {
     const market = await fetchMarketOverview();

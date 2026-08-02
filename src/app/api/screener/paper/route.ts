@@ -35,8 +35,9 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST
- * - action: "start" ??candidates[] Î°?Í∞Ä?ÅÌà¨???úÏûë
- * - action: "refresh" ??open ?¨Ï????ÑÏû¨Í∞Ä Í∞±Ïã† + ?òÏùµÎ•? * - action: "close" ??id Ï≤?Ç∞
+ * - action: "start" ? candidates[] ? ???? ??
+ * - action: "refresh" ? open ??? ??? ?? + ???
+ * - action: "close" ? id ??
  */
 export async function POST(req: NextRequest) {
   try {
@@ -144,7 +145,7 @@ export async function POST(req: NextRequest) {
         );
         return (
           macdHit ||
-          c.macdState.includes("?¨Î°ú??) ||
+          c.macdState.includes("???") ||
           c.strongestStrategy === "golden_cross" ||
           c.strongestStrategy === "dead_cross" ||
           c.strongestStrategy === "macd_momentum"
@@ -154,7 +155,7 @@ export async function POST(req: NextRequest) {
 
     if (candidates.length === 0) {
       return NextResponse.json(
-        { error: "Ï∂îÏ†Å???ÑÎ≥¥Í∞Ä ?ÜÏäµ?àÎã§", started: 0 },
+        { error: "??? ??? ????", started: 0 },
         { status: 400 }
       );
     }

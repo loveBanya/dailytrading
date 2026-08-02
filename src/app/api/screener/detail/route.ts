@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
     const symbol = sp.get("symbol");
     const timeframe = (sp.get("timeframe") ?? "15m") as Timeframe;
     if (!symbol) {
-      return NextResponse.json({ error: "symbol ?�요" }, { status: 400 });
+      return NextResponse.json({ error: "symbol 필요" }, { status: 400 });
     }
     const detail = await fetchSymbolDetail(exchange, symbol, timeframe);
     return NextResponse.json(detail);

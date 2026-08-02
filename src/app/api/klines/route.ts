@@ -1,17 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { chartWindow, fetchKlines } from "@/lib/exchanges/klines";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const preferredRegion = ["sin1", "hnd1", "icn1"];
 
-/** GET /api/klines?symbol=ORDIUSDT&entry=&exit= ?�는 start=&end=&interval= */
+/** GET /api/klines?symbol=ORDIUSDT&entry=&exit= 또는 start=&end=&interval= */
 export async function GET(req: NextRequest) {
   try {
     const sp = req.nextUrl.searchParams;
     const symbol = sp.get("symbol");
     if (!symbol) {
-      return NextResponse.json({ error: "symbol ?�요" }, { status: 400 });
+      return NextResponse.json({ error: "symbol 필요" }, { status: 400 });
     }
 
     const entry = sp.get("entry") ? Number(sp.get("entry")) : undefined;

@@ -6,13 +6,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const preferredRegion = ["sin1", "hnd1", "icn1"];
 
-/** GET /api/trades/chart?tradeId= ??DB 캐시 ?�선, ?�으�?조회 ???�??*/
+/** GET /api/trades/chart?tradeId= — DB 캐시 우선, 없으면 조회 후 저장 */
 export async function GET(req: NextRequest) {
   try {
     const tradeId = req.nextUrl.searchParams.get("tradeId");
     const force = req.nextUrl.searchParams.get("refresh") === "1";
     if (!tradeId) {
-      return NextResponse.json({ error: "tradeId ?�요" }, { status: 400 });
+      return NextResponse.json({ error: "tradeId 필요" }, { status: 400 });
     }
     const data = await getOrFetchTradeChart(tradeId, { force });
     return NextResponse.json(data);

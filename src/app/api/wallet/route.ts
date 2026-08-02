@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const preferredRegion = ["sin1", "hnd1", "icn1"];
 
-/** GET /api/wallet ??거래?�별 ?�고 + ?�픈 ?��???*/
+/** GET /api/wallet — 거래소별 잔고 + 오픈 포지션 */
 export async function GET() {
   try {
     const overview = await fetchWalletOverview();

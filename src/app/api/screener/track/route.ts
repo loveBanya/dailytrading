@@ -28,7 +28,7 @@ function retFor(
   return direction.startsWith("SHORT") ? -raw : raw;
 }
 
-/** POST /api/screener/track ??미완??outcome 갱신 */
+/** POST /api/screener/track — 미완성 outcome 갱신 */
 export async function POST() {
   try {
     const supabase = createSupabaseAdmin();

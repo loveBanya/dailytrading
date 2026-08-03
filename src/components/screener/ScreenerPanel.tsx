@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ScanFilters,
   ScanResult,
@@ -11,6 +11,8 @@ import { DEFAULT_FILTERS, STRATEGY_LABELS } from "@/lib/screener/types";
 import { exchangeLabel } from "@/lib/screener/filters";
 import { formatKst } from "@/lib/utils/format";
 import { ScreenerDetail } from "./ScreenerDetail";
+import { fireAlarm } from "@/lib/alarms/notify";
+import { loadAlarmSettings } from "@/lib/alarms/settings";
 
 type SortKey = keyof ScreenerCandidate | "rank";
 
@@ -62,6 +64,7 @@ export function ScreenerPanel() {
   const [showLists, setShowLists] = useState(false);
   const [paperMsg, setPaperMsg] = useState<string | null>(null);
   const [excludeInput, setExcludeInput] = useState("");
+  const seenSignalKeys = useRef<Set<string> | null>(null);
 
   const loadMeta = useCallback(async () => {
     try {
@@ -104,12 +107,51 @@ export function ScreenerPanel() {
       const data = (await res.json()) as ScanResult & { error?: string };
       if (data.error) throw new Error(data.error);
       setResult(data);
+
+      const alarm = loadAlarmSettings();
+      if (alarm.enabled && alarm.screenerEnabled && data.candidates?.length) {
+        const favSet = new Set(
+          favorites.map((f) => `${f.exchange}:${f.symbol}`)
+        );
+        const nextKeys = new Set<string>();
+        const fresh: ScreenerCandidate[] = [];
+        for (const c of data.candidates) {
+          const key = `${c.exchange}:${c.symbol}:${c.direction}`;
+          nextKeys.add(key);
+          if (c.stars < alarm.screenerMinStars) continue;
+          if (
+            alarm.screenerFavoritesOnly &&
+            !favSet.has(`${c.exchange}:${c.symbol}`)
+          ) {
+            continue;
+          }
+          if (seenSignalKeys.current && !seenSignalKeys.current.has(key)) {
+            fresh.push(c);
+          }
+        }
+        // 첫 스캔은 기준만 잡고 울리지 않음
+        if (seenSignalKeys.current == null) {
+          seenSignalKeys.current = nextKeys;
+        } else {
+          seenSignalKeys.current = nextKeys;
+          if (fresh.length > 0) {
+            const top = [...fresh].sort((a, b) => b.stars - a.stars)[0];
+            void fireAlarm(
+              "screener",
+              `${top.exchange}:${top.symbol}`,
+              `스크리너 ${fresh.length}건`,
+              `${top.symbol} ${top.direction} ★${top.stars}`,
+              alarm
+            );
+          }
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "스캔 실패");
     } finally {
       setLoading(false);
     }
-  }, [filters]);
+  }, [filters, favorites]);
 
   useEffect(() => {
     void load();

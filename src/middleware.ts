@@ -1,4 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  COOKIE_NAME,
+  getAuthConfig,
+  verifySessionToken,
+} from "@/lib/auth/session";
 
 /** 검색엔진·스크래퍼·AI 봇 UA */
 const BOT_UA =
@@ -29,20 +34,37 @@ function limited(key: string, max: number): boolean {
   return cur.n > max;
 }
 
-export function middleware(req: NextRequest) {
+function isPublicPath(pathname: string): boolean {
+  return (
+    pathname === "/login" ||
+    pathname === "/robots.txt" ||
+    pathname === "/manifest.webmanifest" ||
+    pathname === "/sw.js" ||
+    pathname.startsWith("/_next/") ||
+    pathname.startsWith("/favicon") ||
+    pathname.startsWith("/icon-") ||
+    pathname === "/api/auth/login"
+  );
+}
+
+export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const ua = req.headers.get("user-agent") ?? "";
 
-  // 정적/robots 는 통과 (robots.txt 자체는 봇이 읽어야 Disallow 적용)
   if (
     pathname === "/robots.txt" ||
     pathname.startsWith("/_next/") ||
-    pathname.startsWith("/favicon")
+    pathname.startsWith("/favicon") ||
+    pathname.startsWith("/icon-") ||
+    pathname === "/manifest.webmanifest" ||
+    pathname === "/sw.js" ||
+    pathname.startsWith("/_next/") ||
+    pathname.startsWith("/favicon") ||
+    pathname.startsWith("/icon-")
   ) {
     return NextResponse.next();
   }
 
-  // 봇 차단 (robots.txt 제외). 빈 UA는 API만 차단 (일부 브라우저는 UA 숨김)
   if (BOT_UA.test(ua) || (ua.trim() === "" && pathname.startsWith("/api/"))) {
     return new NextResponse("Forbidden", {
       status: 403,
@@ -54,11 +76,44 @@ export function middleware(req: NextRequest) {
 
   const ip = clientKey(req);
   const isApi = pathname.startsWith("/api/");
-  if (limited(`${isApi ? "api" : "page"}:${ip}`, isApi ? MAX_API_PER_MIN : MAX_PAGE_PER_MIN)) {
+  if (
+    limited(
+      `${isApi ? "api" : "page"}:${ip}`,
+      isApi ? MAX_API_PER_MIN : MAX_PAGE_PER_MIN
+    )
+  ) {
     return NextResponse.json(
       { error: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." },
       { status: 429 }
     );
+  }
+
+  const cfg = getAuthConfig();
+  if (cfg && !isPublicPath(pathname)) {
+    const token = req.cookies.get(COOKIE_NAME)?.value;
+    const ok =
+      token != null &&
+      (await verifySessionToken(token, cfg.secret, cfg.user));
+
+    if (!ok) {
+      if (pathname.startsWith("/api/")) {
+        return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
+      }
+      const url = req.nextUrl.clone();
+      url.pathname = "/login";
+      url.search = "";
+      return NextResponse.redirect(url);
+    }
+  }
+
+  // 이미 로그인된 채 /login 이면 홈으로
+  if (cfg && pathname === "/login") {
+    const token = req.cookies.get(COOKIE_NAME)?.value;
+    if (token && (await verifySessionToken(token, cfg.secret, cfg.user))) {
+      const url = req.nextUrl.clone();
+      url.pathname = "/";
+      return NextResponse.redirect(url);
+    }
   }
 
   const res = NextResponse.next();
@@ -70,9 +125,6 @@ export function middleware(req: NextRequest) {
 
 export const config = {
   matcher: [
-    /*
-     * 정적 파일 일부 제외하고 전부
-     */
     "/((?!_next/static|_next/image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Trade } from "@/lib/exchanges/types";
 import type {
   DailyPnl,
@@ -22,7 +22,19 @@ import { MindsetPanel } from "./MindsetPanel";
 import { JournalPostsPanel } from "./JournalPostsPanel";
 import { ScreenerPanel } from "./screener/ScreenerPanel";
 import { ScreenerPerfPanel } from "./screener/ScreenerPerfPanel";
+import { AlarmSettingsButton } from "./AlarmSettingsButton";
+import { AlertsPanel } from "./AlertsPanel";
+import {
+  checkNewTradeFills,
+  checkPositionAlarms,
+  checkPositionChanges,
+} from "@/lib/alarms/notify";
+import {
+  ALARM_HISTORY_EVENT,
+  unreadAlarmCount,
+} from "@/lib/alarms/history";
 import { exchangeLabel, statusLabel } from "@/lib/utils/labels";
+import { useRouter } from "next/navigation";
 
 type Tab =
   | "trades"
@@ -34,6 +46,7 @@ type Tab =
   | "posts"
   | "screener"
   | "screener-perf"
+  | "alerts"
   | "bookmarks";
 type SortKey = "newest" | "oldest" | "pnl_desc" | "pnl_asc";
 type PeriodMode = "all" | "year" | "month" | "range";
@@ -173,6 +186,7 @@ function tradeMatchesSearch(
 }
 
 export function TradeJournal() {
+  const router = useRouter();
   const [tab, setTab] = useState<Tab>("trades");
   const [sort, setSort] = useState<SortKey>("newest");
   const [periodMode, setPeriodMode] = useState<PeriodMode>("all");
@@ -192,6 +206,16 @@ export function TradeJournal() {
   const [commentTextByTrade, setCommentTextByTrade] = useState<
     Record<string, string>
   >({});
+  const seenTradeIds = useRef<Set<string> | null>(null);
+  const seenPositionKeys = useRef<Set<string> | null>(null);
+  const [alertUnread, setAlertUnread] = useState(0);
+
+  useEffect(() => {
+    const sync = () => setAlertUnread(unreadAlarmCount());
+    sync();
+    window.addEventListener(ALARM_HISTORY_EVENT, sync);
+    return () => window.removeEventListener(ALARM_HISTORY_EVENT, sync);
+  }, []);
 
   const [overall, setOverall] = useState<OverallStats | null>(null);
   const [monthly, setMonthly] = useState<MonthlyStat[]>([]);
@@ -216,6 +240,7 @@ export function TradeJournal() {
     try {
       const res = await fetch(`/api/trades?limit=200&sort=${sort}`);
       const data = (await res.json()) as { trades?: Trade[]; error?: string };
+      let list: Trade[] = [];
       if (data.error) {
         // is_review 컬럼 없을 때 폴백
         if (data.error.includes("is_review")) {
@@ -225,12 +250,22 @@ export function TradeJournal() {
             error?: string;
           };
           if (data2.error) throw new Error(data2.error);
-          setTrades(sortTrades(data2.trades ?? [], sort));
-          return;
+          list = sortTrades(data2.trades ?? [], sort);
+        } else {
+          throw new Error(data.error);
         }
-        throw new Error(data.error);
+      } else {
+        list = data.trades ?? [];
       }
-      setTrades(data.trades ?? []);
+      setTrades(list);
+      seenTradeIds.current = checkNewTradeFills(
+        list.map((t) => t.id),
+        list.map((t) => ({
+          id: t.id,
+          label: `${t.base_asset ?? t.symbol} ${t.side === "LONG" ? "롱" : "숏"} ${Number(t.pnl) >= 0 ? "+" : ""}${Number(t.pnl).toFixed(2)}`,
+        })),
+        seenTradeIds.current
+      );
     } catch (err) {
       setTradesError(err instanceof Error ? err.message : "불러오기 실패");
     } finally {
@@ -276,6 +311,11 @@ export function TradeJournal() {
         totalAvailableBalance: data.totalAvailableBalance ?? 0,
         totalPerpUPL: data.totalPerpUPL ?? 0,
       });
+      checkPositionAlarms(data.positions ?? []);
+      seenPositionKeys.current = checkPositionChanges(
+        data.positions ?? [],
+        seenPositionKeys.current
+      );
     } catch (err) {
       setWalletError(err instanceof Error ? err.message : "지갑 불러오기 실패");
     } finally {
@@ -340,11 +380,10 @@ export function TradeJournal() {
   }, [refreshAll]);
 
   useEffect(() => {
-    if (tab !== "live" && tab !== "overview") return;
-    // 거래소 레이트리밋·비용 고려: 5초 → 60초
+    // 포지션 알람용 — 탭과 무관하게 60초마다 갱신
     const id = setInterval(() => void loadWallet(), 60_000);
     return () => clearInterval(id);
-  }, [tab, loadWallet]);
+  }, [loadWallet]);
 
   const positions = walletOverview?.positions ?? [];
   const positionCount = positions.length;
@@ -465,6 +504,7 @@ export function TradeJournal() {
           </h1>
         </div>
         <div className="flex items-center gap-2">
+          <AlarmSettingsButton />
           <button
             type="button"
             onClick={() => void refreshAll()}
@@ -479,6 +519,19 @@ export function TradeJournal() {
               void loadCommentIndex();
             }}
           />
+          <button
+            type="button"
+            onClick={() => {
+              void (async () => {
+                await fetch("/api/auth/logout", { method: "POST" });
+                router.replace("/login");
+                router.refresh();
+              })();
+            }}
+            className="rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-500 transition hover:border-zinc-500 hover:text-zinc-300"
+          >
+            로그아웃
+          </button>
         </div>
       </header>
 
@@ -510,6 +563,7 @@ export function TradeJournal() {
             ["overview", "한눈에"],
             ["screener", "코인 스크리너"],
             ["screener-perf", "스크리너 성과"],
+            ["alerts", "알림"],
             ["cash", "입출금"],
             ["mindset", "매매 마인드"],
             ["posts", "글"],
@@ -534,6 +588,7 @@ export function TradeJournal() {
             {id === "live" && positionCount > 0
               ? ` (${positionCount})`
               : ""}
+            {id === "alerts" && alertUnread > 0 ? ` (${alertUnread})` : ""}
           </button>
         ))}
       </nav>
@@ -797,6 +852,12 @@ export function TradeJournal() {
       {tab === "screener-perf" && (
         <Section title="스크리너 성과">
           <ScreenerPerfPanel />
+        </Section>
+      )}
+
+      {tab === "alerts" && (
+        <Section title="알림 모아보기">
+          <AlertsPanel />
         </Section>
       )}
 

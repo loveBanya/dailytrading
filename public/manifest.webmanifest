@@ -1,0 +1,24 @@
+{
+  "name": "데일리 트레이딩",
+  "short_name": "매매일지",
+  "description": "바이비트 / 바이낸스 포지션 자동 매매일지",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "lang": "ko",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

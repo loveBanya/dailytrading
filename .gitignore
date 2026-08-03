@@ -39,6 +39,9 @@ yarn-error.log*
 .credentials/
 NOTES.local.md
 
+# local Android package output (PWABuilder)
+android-release/
+
 # vercel
 .vercel
 

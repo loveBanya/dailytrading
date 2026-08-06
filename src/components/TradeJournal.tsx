@@ -22,6 +22,7 @@ import { MindsetPanel } from "./MindsetPanel";
 import { JournalPostsPanel } from "./JournalPostsPanel";
 import { ScreenerPanel } from "./screener/ScreenerPanel";
 import { ScreenerPerfPanel } from "./screener/ScreenerPerfPanel";
+import { EquityCurvePanel } from "./EquityCurvePanel";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
 import { AlertsPanel } from "./AlertsPanel";
 import {
@@ -819,6 +820,14 @@ export function TradeJournal() {
 
       {tab === "overview" && (
         <div className="space-y-6">
+          <Section title="자산 그래프">
+            <EquityCurvePanel
+              daily={daily}
+              totalPnl={overall?.totalPnl ?? 0}
+              wallet={walletOverview}
+              walletLoading={walletLoading}
+            />
+          </Section>
           <Section title="All-time PNL">
             <StatsPanels
               overall={overall}
@@ -838,7 +847,11 @@ export function TradeJournal() {
             />
           </Section>
           <Section title="켈리 베팅">
-            <KellyPanel overall={overall} loading={statsLoading} />
+            <KellyPanel
+              overall={overall}
+              loading={statsLoading}
+              defaultBankroll={walletOverview?.totalEquity ?? null}
+            />
           </Section>
         </div>
       )}

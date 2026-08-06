@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { STRATEGY_LABELS, type StrategyId } from "@/lib/screener/types";
+import { candidateFromParts } from "@/lib/screener/snapshot";
 import { formatKst } from "@/lib/utils/format";
-import { PaperTrackChart } from "./PaperTrackChart";
+import { ScreenerDetail } from "./ScreenerDetail";
+import type { ScreenerCandidate } from "@/lib/screener/types";
 
 interface StatsPayload {
   total: number;
@@ -78,7 +80,8 @@ export function ScreenerPerfPanel() {
   const [direction, setDirection] = useState("ALL");
   const [paperFilter, setPaperFilter] = useState("all");
   const [paperMsg, setPaperMsg] = useState<string | null>(null);
-  const [chartPaper, setChartPaper] = useState<PaperRow | null>(null);
+  const [detailCandidate, setDetailCandidate] =
+    useState<ScreenerCandidate | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -161,9 +164,33 @@ export function ScreenerPerfPanel() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "close", id }),
     });
-    if (chartPaper?.id === id) setChartPaper(null);
     setPaperMsg("가상투자를 종료하고 하단 기록에 남겼습니다");
     await load();
+  }
+
+  function openPaperDetail(p: PaperRow) {
+    setDetailCandidate(
+      candidateFromParts({
+        exchange: p.exchange,
+        symbol: p.symbol,
+        direction: p.direction,
+        price: p.last_price ?? p.entry_price,
+        entryPrice: Number(p.entry_price),
+        snapshot: p.entry_snapshot,
+      })
+    );
+  }
+
+  function openNoteDetail(n: NoteRow) {
+    setDetailCandidate(
+      candidateFromParts({
+        exchange: n.exchange,
+        symbol: n.symbol,
+        snapshot: n.snapshot,
+        price:
+          typeof n.snapshot?.price === "number" ? n.snapshot.price : null,
+      })
+    );
   }
 
   const macdPapers = papers.filter((p) => p.track_type === "macd");
@@ -174,26 +201,19 @@ export function ScreenerPerfPanel() {
       : null;
 
   const noteQ = noteSearch.trim().toLowerCase();
-  const filteredNotes = !noteQ
-    ? notes
-    : notes.filter((n) => {
-        const sym = n.symbol.toLowerCase();
-        const base = sym.replace(/usdt$/, "");
-        return (
-          sym.includes(noteQ) ||
-          base.includes(noteQ) ||
-          n.body.toLowerCase().includes(noteQ) ||
-          n.exchange.toLowerCase().includes(noteQ)
-        );
-      });
-
-  const chartCoinNotes = chartPaper
-    ? notes.filter(
-        (n) =>
-          n.exchange === chartPaper.exchange &&
-          n.symbol.toUpperCase() === chartPaper.symbol.toUpperCase()
-      )
-    : [];
+  const filteredNotes = useMemo(() => {
+    if (!noteQ) return notes;
+    return notes.filter((n) => {
+      const sym = n.symbol.toLowerCase();
+      const base = sym.replace(/usdt$/, "");
+      return (
+        sym.includes(noteQ) ||
+        base.includes(noteQ) ||
+        n.body.toLowerCase().includes(noteQ) ||
+        n.exchange.toLowerCase().includes(noteQ)
+      );
+    });
+  }, [notes, noteQ]);
 
   return (
     <div className="space-y-5">
@@ -298,30 +318,21 @@ export function ScreenerPerfPanel() {
               </tr>
             </thead>
             <tbody>
-              {papers.map((p) => {
-                const selected = chartPaper?.id === p.id;
-                return (
+              {papers.map((p) => (
                   <tr
                     key={p.id}
-                    className={`border-t border-zinc-800/80 transition ${
-                      selected ? "bg-sky-500/10" : "hover:bg-zinc-900/60"
-                    }`}
+                    className="border-t border-zinc-800/80 transition hover:bg-zinc-900/60"
                   >
                     <td className="px-2 py-1.5">
                       <button
                         type="button"
-                        onClick={() =>
-                          setChartPaper((cur) => (cur?.id === p.id ? null : p))
-                        }
+                        onClick={() => openPaperDetail(p)}
                         className="text-left font-medium text-sky-300 underline-offset-2 hover:text-sky-200 hover:underline"
-                        title="차트 보기"
+                        title="차트·분석·메모 보기"
                       >
                         {p.symbol.replace(/USDT$/i, "")}
                         <span className="ml-1 font-normal text-zinc-600">
                           {p.exchange}
-                        </span>
-                        <span className="ml-1 text-[10px] text-zinc-500">
-                          {selected ? "▲" : "차트"}
                         </span>
                       </button>
                     </td>
@@ -373,8 +384,7 @@ export function ScreenerPerfPanel() {
                       </button>
                     </td>
                   </tr>
-                );
-              })}
+              ))}
             </tbody>
           </table>
           {papers.length === 0 && (
@@ -384,42 +394,6 @@ export function ScreenerPerfPanel() {
             </p>
           )}
         </div>
-
-        {chartPaper && (
-          <div className="mt-3 space-y-3">
-            <PaperTrackChart
-              paper={chartPaper}
-              onClose={() => setChartPaper(null)}
-            />
-            <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
-              <h4 className="mb-2 text-xs font-medium text-zinc-400">
-                {chartPaper.symbol.replace(/USDT$/i, "")} 메모
-              </h4>
-              {chartCoinNotes.length === 0 ? (
-                <p className="text-xs text-zinc-600">
-                  이 코인에 남긴 메모가 없습니다. 스크리너 상세에서 메모를
-                  추가하세요.
-                </p>
-              ) : (
-                <ul className="space-y-2">
-                  {chartCoinNotes.map((n) => (
-                    <li
-                      key={n.id}
-                      className="rounded-md border border-zinc-800/80 px-3 py-2 text-xs"
-                    >
-                      <p className="whitespace-pre-wrap text-zinc-200">
-                        {n.body}
-                      </p>
-                      <p className="mt-1 text-[10px] text-zinc-600">
-                        {formatKst(n.noted_at)} KST
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="rounded-lg border border-zinc-800 p-3">
@@ -454,7 +428,7 @@ export function ScreenerPerfPanel() {
                   <button
                     type="button"
                     className="font-medium text-sky-300 hover:underline"
-                    onClick={() => setNoteSearch(n.symbol.replace(/USDT$/i, ""))}
+                    onClick={() => openNoteDetail(n)}
                   >
                     {n.symbol.replace(/USDT$/i, "")}
                   </button>
@@ -465,6 +439,17 @@ export function ScreenerPerfPanel() {
                 </div>
                 <p className="whitespace-pre-wrap text-xs text-zinc-300">
                   {n.body}
+                </p>
+                <p className="mt-1 text-[10px] text-zinc-600">
+                  {n.snapshot?.direction != null &&
+                    `${String(n.snapshot.direction)}`}
+                  {n.snapshot?.price != null &&
+                    ` · $${String(n.snapshot.price)}`}
+                  {n.snapshot?.macdState != null &&
+                    ` · MACD ${String(n.snapshot.macdState)}`}
+                  {n.snapshot?.scoreTotal != null &&
+                    ` · 점수 ${String(n.snapshot.scoreTotal)}`}
+                  {n.snapshot?.rsi != null && ` · RSI ${String(n.snapshot.rsi)}`}
                 </p>
               </li>
             ))}
@@ -499,7 +484,7 @@ export function ScreenerPerfPanel() {
                   <td className="px-2 py-1.5">
                     <button
                       type="button"
-                      onClick={() => setChartPaper(p)}
+                      onClick={() => openPaperDetail(p)}
                       className="font-medium text-sky-300 hover:underline"
                     >
                       {p.symbol.replace(/USDT$/i, "")}
@@ -548,6 +533,16 @@ export function ScreenerPerfPanel() {
           )}
         </div>
       </div>
+
+      {detailCandidate && (
+        <ScreenerDetail
+          candidate={detailCandidate}
+          onClose={() => {
+            setDetailCandidate(null);
+            void load();
+          }}
+        />
+      )}
 
       {stats && !error && (
         <>

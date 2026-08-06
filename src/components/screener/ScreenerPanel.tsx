@@ -63,6 +63,7 @@ export function ScreenerPanel() {
   >([]);
   const [showLists, setShowLists] = useState(false);
   const [paperMsg, setPaperMsg] = useState<string | null>(null);
+  const [paperBusy, setPaperBusy] = useState<string | null>(null);
   const [excludeInput, setExcludeInput] = useState("");
   const seenSignalKeys = useRef<Set<string> | null>(null);
 
@@ -247,22 +248,27 @@ export function ScreenerPanel() {
   ) {
     const candidates = result?.candidates ?? [];
     setPaperMsg(null);
-    const res = await fetch("/api/screener/paper", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "start",
-        trackType,
-        macdOnly,
-        candidates,
-      }),
-    });
-    const data = (await res.json()) as { started?: number; error?: string };
-    if (data.error) setPaperMsg(data.error);
-    else
-      setPaperMsg(
-        `${trackType === "macd" ? "MACD" : "스캔"} 가상투자 ${data.started ?? 0}건 시작 · 스크리너 성과에서 다음 추적 시 수익률 확인`
-      );
+    setPaperBusy(trackType);
+    try {
+      const res = await fetch("/api/screener/paper", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "start",
+          trackType,
+          macdOnly,
+          candidates,
+        }),
+      });
+      const data = (await res.json()) as { started?: number; error?: string };
+      if (data.error) setPaperMsg(data.error);
+      else
+        setPaperMsg(
+          `✓ ${trackType === "macd" ? "MACD" : "스캔"} 가상투자 ${data.started ?? 0}건 시작 — 스크리너 성과에서 수익률 확인`
+        );
+    } finally {
+      setPaperBusy(null);
+    }
   }
 
   const inputCls =
@@ -309,19 +315,19 @@ export function ScreenerPanel() {
           </button>
           <button
             type="button"
-            disabled={!result?.candidates.length}
+            disabled={!result?.candidates.length || !!paperBusy}
             onClick={() => void startPaper("scan")}
-            className="rounded border border-sky-500/40 px-2 py-1 text-xs text-sky-300 disabled:opacity-40"
+            className="rounded-lg border border-sky-400/50 bg-gradient-to-r from-sky-500/20 to-cyan-500/10 px-3 py-1.5 text-xs font-medium text-sky-200 shadow-[0_0_20px_-8px_rgba(56,189,248,0.8)] transition hover:from-sky-500/30 disabled:opacity-40"
           >
-            후보 가상투자
+            {paperBusy === "scan" ? "기록 중…" : "⚡ 후보 가상투자"}
           </button>
           <button
             type="button"
-            disabled={!result?.candidates.length}
+            disabled={!result?.candidates.length || !!paperBusy}
             onClick={() => void startPaper("macd", true)}
-            className="rounded border border-violet-500/40 px-2 py-1 text-xs text-violet-300 disabled:opacity-40"
+            className="rounded-lg border border-violet-400/50 bg-gradient-to-r from-violet-500/20 to-fuchsia-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 shadow-[0_0_20px_-8px_rgba(167,139,250,0.8)] transition hover:from-violet-500/30 disabled:opacity-40"
           >
-            MACD 가상투자
+            {paperBusy === "macd" ? "기록 중…" : "📡 MACD 가상투자"}
           </button>
           <button
             type="button"

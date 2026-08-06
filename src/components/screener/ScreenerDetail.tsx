@@ -63,6 +63,10 @@ export function ScreenerDetail({
   const [memo, setMemo] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [isFav, setIsFav] = useState(!!favorited);
+  const [trackFlash, setTrackFlash] = useState<{
+    ok: boolean;
+    text: string;
+  } | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
 
@@ -237,8 +241,9 @@ export function ScreenerDetail({
 
   async function startPaper(trackType: "manual" | "macd") {
     setBusy(trackType);
+    setTrackFlash(null);
     try {
-      await fetch("/api/screener/paper", {
+      const res = await fetch("/api/screener/paper", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -246,6 +251,23 @@ export function ScreenerDetail({
           trackType,
           candidates: [candidate],
         }),
+      });
+      const data = (await res.json()) as { started?: number; error?: string };
+      if (data.error) {
+        setTrackFlash({ ok: false, text: data.error });
+      } else {
+        setTrackFlash({
+          ok: true,
+          text:
+            trackType === "macd"
+              ? "MACD 가상투자 시작! 성과 탭에서 수익률을 보세요"
+              : "지금 가격에 들어갔다고 기록했어요 · 성과 탭에서 추적",
+        });
+      }
+    } catch (err) {
+      setTrackFlash({
+        ok: false,
+        text: err instanceof Error ? err.message : "실패",
       });
     } finally {
       setBusy(null);
@@ -290,43 +312,73 @@ export function ScreenerDetail({
           </button>
         </div>
 
-        <div className="mb-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            disabled={!!busy}
-            onClick={() => void toggleFav()}
-            className={`rounded border px-2.5 py-1 text-xs ${
-              isFav
-                ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
-                : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
-            }`}
-          >
-            {isFav ? "★ 즐겨찾기됨" : "☆ 즐겨찾기"}
-          </button>
-          <button
-            type="button"
-            disabled={!!busy}
-            onClick={() => void excludeCoin()}
-            className="rounded border border-zinc-700 px-2.5 py-1 text-xs text-zinc-400 hover:border-rose-500/40 hover:text-rose-300"
-          >
-            제외 목록에 추가
-          </button>
-          <button
-            type="button"
-            disabled={!!busy || candidate.direction === "WAIT"}
-            onClick={() => void startPaper("manual")}
-            className="rounded border border-sky-500/40 px-2.5 py-1 text-xs text-sky-300"
-          >
-            지금 투자했다고 추적
-          </button>
-          <button
-            type="button"
-            disabled={!!busy || candidate.direction === "WAIT"}
-            onClick={() => void startPaper("macd")}
-            className="rounded border border-violet-500/40 px-2.5 py-1 text-xs text-violet-300"
-          >
-            MACD 추적
-          </button>
+        <div className="mb-4 space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={!!busy}
+              onClick={() => void toggleFav()}
+              className={`rounded-lg border px-2.5 py-1.5 text-xs transition ${
+                isFav
+                  ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
+                  : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {isFav ? "★ 즐겨찾기됨" : "☆ 즐겨찾기"}
+            </button>
+            <button
+              type="button"
+              disabled={!!busy}
+              onClick={() => void excludeCoin()}
+              className="rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:border-rose-500/40 hover:text-rose-300"
+            >
+              제외 목록에 추가
+            </button>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              disabled={!!busy || candidate.direction === "WAIT"}
+              onClick={() => void startPaper("manual")}
+              className="group relative overflow-hidden rounded-xl border border-sky-400/40 bg-gradient-to-br from-sky-500/25 via-sky-600/10 to-transparent px-4 py-3 text-left transition hover:border-sky-300/70 hover:from-sky-500/35 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <span className="pointer-events-none absolute -right-4 -top-4 size-20 rounded-full bg-sky-400/20 blur-2xl transition group-hover:bg-sky-300/30" />
+              <span className="relative block text-sm font-semibold text-sky-100">
+                {busy === "manual" ? "기록 중…" : "⚡ 지금 들어갔다고 가정"}
+              </span>
+              <span className="relative mt-0.5 block text-[11px] text-sky-200/70">
+                현재가 진입으로 가상투자 시작 · 성과 탭에서 수익 추적
+              </span>
+            </button>
+            <button
+              type="button"
+              disabled={!!busy || candidate.direction === "WAIT"}
+              onClick={() => void startPaper("macd")}
+              className="group relative overflow-hidden rounded-xl border border-violet-400/40 bg-gradient-to-br from-violet-500/25 via-fuchsia-600/10 to-transparent px-4 py-3 text-left transition hover:border-violet-300/70 hover:from-violet-500/35 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <span className="pointer-events-none absolute -right-4 -top-4 size-20 rounded-full bg-violet-400/20 blur-2xl transition group-hover:bg-violet-300/30" />
+              <span className="relative block text-sm font-semibold text-violet-100">
+                {busy === "macd" ? "기록 중…" : "📡 MACD 신호로 추적"}
+              </span>
+              <span className="relative mt-0.5 block text-[11px] text-violet-200/70">
+                MACD 기준으로 따로 모아 성과를 봅니다
+              </span>
+            </button>
+          </div>
+
+          {trackFlash && (
+            <p
+              className={`rounded-lg px-3 py-2 text-xs ${
+                trackFlash.ok
+                  ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                  : "border border-amber-500/30 bg-amber-500/10 text-amber-200"
+              }`}
+            >
+              {trackFlash.ok ? "✓ " : ""}
+              {trackFlash.text}
+            </p>
+          )}
         </div>
 
         <div className="mb-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { STRATEGY_LABELS, type StrategyId } from "@/lib/screener/types";
 import { formatKst } from "@/lib/utils/format";
+import { PaperTrackChart } from "./PaperTrackChart";
 
 interface StatsPayload {
   total: number;
@@ -64,6 +65,7 @@ export function ScreenerPerfPanel() {
   const [direction, setDirection] = useState("ALL");
   const [paperFilter, setPaperFilter] = useState("all");
   const [paperMsg, setPaperMsg] = useState<string | null>(null);
+  const [chartPaper, setChartPaper] = useState<PaperRow | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -243,61 +245,83 @@ export function ScreenerPerfPanel() {
               </tr>
             </thead>
             <tbody>
-              {papers.map((p) => (
-                <tr key={p.id} className="border-t border-zinc-800/80">
-                  <td className="px-2 py-1.5 text-zinc-100">
-                    {p.symbol.replace(/USDT$/i, "")}
-                    <span className="ml-1 text-zinc-600">{p.exchange}</span>
-                  </td>
-                  <td className="px-2 py-1.5 text-zinc-400">{p.track_type}</td>
-                  <td
-                    className={`px-2 py-1.5 ${
-                      p.direction.startsWith("LONG")
-                        ? "text-emerald-400"
-                        : "text-rose-400"
+              {papers.map((p) => {
+                const selected = chartPaper?.id === p.id;
+                return (
+                  <tr
+                    key={p.id}
+                    className={`border-t border-zinc-800/80 transition ${
+                      selected ? "bg-sky-500/10" : "hover:bg-zinc-900/60"
                     }`}
                   >
-                    {p.direction}
-                  </td>
-                  <td className="px-2 py-1.5 tabular-nums text-zinc-300">
-                    {Number(p.entry_price)}
-                  </td>
-                  <td className="px-2 py-1.5 text-zinc-500">
-                    {formatKst(p.entry_at)}
-                  </td>
-                  <td className="px-2 py-1.5 text-[10px] text-zinc-500">
-                    {p.entry_snapshot?.macdState != null &&
-                      `MACD ${String(p.entry_snapshot.macdState)} · `}
-                    {p.entry_snapshot?.rsi != null &&
-                      `RSI ${String(p.entry_snapshot.rsi)} · `}
-                    {p.entry_snapshot?.scoreTotal != null &&
-                      `${String(p.entry_snapshot.scoreTotal)}점`}
-                  </td>
-                  <td className="px-2 py-1.5 tabular-nums text-zinc-300">
-                    {p.last_price ?? "—"}
-                  </td>
-                  <td
-                    className={`px-2 py-1.5 tabular-nums font-medium ${retCls(
-                      p.ret_pct != null ? Number(p.ret_pct) : null
-                    )}`}
-                  >
-                    {pct(p.ret_pct != null ? Number(p.ret_pct) : null)}
-                  </td>
-                  <td className="px-2 py-1.5 tabular-nums text-zinc-500">
-                    {pct(p.mfe_pct != null ? Number(p.mfe_pct) : null)} /{" "}
-                    {pct(p.mae_pct != null ? Number(p.mae_pct) : null)}
-                  </td>
-                  <td className="px-2 py-1.5">
-                    <button
-                      type="button"
-                      onClick={() => void closePaper(p.id)}
-                      className="text-zinc-500 hover:text-zinc-300"
+                    <td className="px-2 py-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setChartPaper((cur) => (cur?.id === p.id ? null : p))
+                        }
+                        className="text-left font-medium text-sky-300 underline-offset-2 hover:text-sky-200 hover:underline"
+                        title="차트 보기"
+                      >
+                        {p.symbol.replace(/USDT$/i, "")}
+                        <span className="ml-1 font-normal text-zinc-600">
+                          {p.exchange}
+                        </span>
+                        <span className="ml-1 text-[10px] text-zinc-500">
+                          {selected ? "▲" : "차트"}
+                        </span>
+                      </button>
+                    </td>
+                    <td className="px-2 py-1.5 text-zinc-400">{p.track_type}</td>
+                    <td
+                      className={`px-2 py-1.5 ${
+                        p.direction.startsWith("LONG")
+                          ? "text-emerald-400"
+                          : "text-rose-400"
+                      }`}
                     >
-                      종료
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                      {p.direction}
+                    </td>
+                    <td className="px-2 py-1.5 tabular-nums text-zinc-300">
+                      {Number(p.entry_price)}
+                    </td>
+                    <td className="px-2 py-1.5 text-zinc-500">
+                      {formatKst(p.entry_at)}
+                    </td>
+                    <td className="px-2 py-1.5 text-[10px] text-zinc-500">
+                      {p.entry_snapshot?.macdState != null &&
+                        `MACD ${String(p.entry_snapshot.macdState)} · `}
+                      {p.entry_snapshot?.rsi != null &&
+                        `RSI ${String(p.entry_snapshot.rsi)} · `}
+                      {p.entry_snapshot?.scoreTotal != null &&
+                        `${String(p.entry_snapshot.scoreTotal)}점`}
+                    </td>
+                    <td className="px-2 py-1.5 tabular-nums text-zinc-300">
+                      {p.last_price ?? "—"}
+                    </td>
+                    <td
+                      className={`px-2 py-1.5 tabular-nums font-medium ${retCls(
+                        p.ret_pct != null ? Number(p.ret_pct) : null
+                      )}`}
+                    >
+                      {pct(p.ret_pct != null ? Number(p.ret_pct) : null)}
+                    </td>
+                    <td className="px-2 py-1.5 tabular-nums text-zinc-500">
+                      {pct(p.mfe_pct != null ? Number(p.mfe_pct) : null)} /{" "}
+                      {pct(p.mae_pct != null ? Number(p.mae_pct) : null)}
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <button
+                        type="button"
+                        onClick={() => void closePaper(p.id)}
+                        className="text-zinc-500 hover:text-zinc-300"
+                      >
+                        종료
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {papers.length === 0 && (
@@ -307,6 +331,15 @@ export function ScreenerPerfPanel() {
             </p>
           )}
         </div>
+
+        {chartPaper && (
+          <div className="mt-3">
+            <PaperTrackChart
+              paper={chartPaper}
+              onClose={() => setChartPaper(null)}
+            />
+          </div>
+        )}
       </div>
 
       {stats && !error && (

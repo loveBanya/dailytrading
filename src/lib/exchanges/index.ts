@@ -127,11 +127,29 @@ export async function syncAllExchanges(options?: {
   if (process.env.BINANCE_API_KEY && process.env.BINANCE_API_SECRET) {
     exchanges.push("binance");
   }
-  if (process.env.OKX_API_KEY && process.env.OKX_API_SECRET) {
+  const okxPass = (
+    process.env.OKX_PASSPHRASE ??
+    process.env.OKX_API_PASSPHRASE ??
+    ""
+  ).trim();
+  if (
+    process.env.OKX_API_KEY &&
+    process.env.OKX_API_SECRET &&
+    okxPass
+  ) {
     exchanges.push("okx");
+  } else if (process.env.OKX_API_KEY && process.env.OKX_API_SECRET && !okxPass) {
+    results.push({
+      exchange: "okx",
+      fetched: 0,
+      inserted: 0,
+      skipped: 0,
+      error:
+        "OKX_PASSPHRASE 가 비어 있습니다. Vercel에 OKX_PASSPHRASE를 넣고 Redeploy 하세요.",
+    });
   }
 
-  if (exchanges.length === 0) {
+  if (exchanges.length === 0 && results.length === 0) {
     return [
       {
         exchange: "bybit",

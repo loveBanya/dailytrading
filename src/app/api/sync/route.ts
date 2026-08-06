@@ -24,7 +24,8 @@ export async function POST(req: NextRequest) {
     const options = {
       symbol: body.symbol,
       startTime,
-      limit: body.limit ?? 50,
+      endTime: Date.now(),
+      limit: body.limit ?? 100,
     };
 
     const results = body.exchange

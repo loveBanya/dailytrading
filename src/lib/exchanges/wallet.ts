@@ -373,9 +373,13 @@ export async function fetchWalletOverview(): Promise<WalletOverview> {
     exchanges.push("binance");
   }
   if (
-    process.env.OKX_API_KEY &&
-    process.env.OKX_API_SECRET &&
-    process.env.OKX_PASSPHRASE
+    process.env.OKX_API_KEY?.trim() &&
+    process.env.OKX_API_SECRET?.trim() &&
+    (
+      process.env.OKX_PASSPHRASE ??
+      process.env.OKX_API_PASSPHRASE ??
+      ""
+    ).trim()
   ) {
     exchanges.push("okx");
   }

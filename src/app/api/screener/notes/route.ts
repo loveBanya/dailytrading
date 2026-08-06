@@ -5,23 +5,42 @@ import { errorMessage } from "@/lib/utils/labels";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** GET ?exchange=&symbol= */
+/** GET ?exchange=&symbol=&q=&limit= */
 export async function GET(req: NextRequest) {
   try {
     const sp = req.nextUrl.searchParams;
     const exchange = sp.get("exchange");
     const symbol = sp.get("symbol");
+    const q = sp.get("q")?.trim().toLowerCase() ?? "";
+    const limit = Math.min(Number(sp.get("limit") ?? 200) || 200, 500);
     const supabase = createSupabaseAdmin();
-    let q = supabase
+    let query = supabase
       .from("screener_coin_notes")
       .select("*")
       .order("noted_at", { ascending: false })
-      .limit(100);
-    if (exchange) q = q.eq("exchange", exchange);
-    if (symbol) q = q.eq("symbol", symbol.toUpperCase());
-    const { data, error } = await q;
+      .limit(limit);
+    if (exchange) query = query.eq("exchange", exchange);
+    if (symbol) query = query.eq("symbol", symbol.toUpperCase());
+    const { data, error } = await query;
     if (error) throw error;
-    return NextResponse.json({ items: data ?? [] });
+
+    let items = data ?? [];
+    if (q) {
+      items = items.filter((n) => {
+        const sym = String(n.symbol ?? "").toLowerCase();
+        const base = sym.replace(/usdt$/i, "");
+        const body = String(n.body ?? "").toLowerCase();
+        const ex = String(n.exchange ?? "").toLowerCase();
+        return (
+          sym.includes(q) ||
+          base.includes(q) ||
+          body.includes(q) ||
+          ex.includes(q)
+        );
+      });
+    }
+
+    return NextResponse.json({ items });
   } catch (err) {
     return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
   }

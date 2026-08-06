@@ -43,6 +43,16 @@ interface PaperRow {
   mfe_pct: number | null;
   mae_pct: number | null;
   status: string;
+  closed_at?: string | null;
+}
+
+interface NoteRow {
+  id: string;
+  exchange: string;
+  symbol: string;
+  body: string;
+  noted_at: string;
+  snapshot: Record<string, unknown>;
 }
 
 function pct(n: number | null | undefined): string {
@@ -58,6 +68,9 @@ function retCls(n: number | null | undefined): string {
 export function ScreenerPerfPanel() {
   const [stats, setStats] = useState<StatsPayload | null>(null);
   const [papers, setPapers] = useState<PaperRow[]>([]);
+  const [closedPapers, setClosedPapers] = useState<PaperRow[]>([]);
+  const [notes, setNotes] = useState<NoteRow[]>([]);
+  const [noteSearch, setNoteSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [tracking, setTracking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,21 +85,37 @@ export function ScreenerPerfPanel() {
     setError(null);
     try {
       const qs = new URLSearchParams({ exchange, direction });
-      const paperQs = new URLSearchParams({ status: "open" });
-      if (paperFilter !== "all") paperQs.set("track_type", paperFilter);
+      const openQs = new URLSearchParams({ status: "open" });
+      const closedQs = new URLSearchParams({ status: "closed" });
+      if (paperFilter !== "all") {
+        openQs.set("track_type", paperFilter);
+        closedQs.set("track_type", paperFilter);
+      }
 
-      const [statsRes, paperRes] = await Promise.all([
+      const [statsRes, openRes, closedRes, notesRes] = await Promise.all([
         fetch(`/api/screener/stats?${qs}`),
-        fetch(`/api/screener/paper?${paperQs}`),
+        fetch(`/api/screener/paper?${openQs}`),
+        fetch(`/api/screener/paper?${closedQs}`),
+        fetch("/api/screener/notes?limit=300"),
       ]);
       const data = (await statsRes.json()) as StatsPayload;
-      const paperData = (await paperRes.json()) as {
+      const openData = (await openRes.json()) as {
         items?: PaperRow[];
+        error?: string;
+      };
+      const closedData = (await closedRes.json()) as {
+        items?: PaperRow[];
+        error?: string;
+      };
+      const notesData = (await notesRes.json()) as {
+        items?: NoteRow[];
         error?: string;
       };
       if (data.error) throw new Error(data.error);
       setStats(data);
-      if (!paperData.error) setPapers(paperData.items ?? []);
+      if (!openData.error) setPapers(openData.items ?? []);
+      if (!closedData.error) setClosedPapers(closedData.items ?? []);
+      if (!notesData.error) setNotes(notesData.items ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "통계 로드 실패");
     } finally {
@@ -132,6 +161,8 @@ export function ScreenerPerfPanel() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "close", id }),
     });
+    if (chartPaper?.id === id) setChartPaper(null);
+    setPaperMsg("가상투자를 종료하고 하단 기록에 남겼습니다");
     await load();
   }
 
@@ -141,6 +172,28 @@ export function ScreenerPerfPanel() {
       ? macdPapers.reduce((a, p) => a + (Number(p.ret_pct) || 0), 0) /
         macdPapers.length
       : null;
+
+  const noteQ = noteSearch.trim().toLowerCase();
+  const filteredNotes = !noteQ
+    ? notes
+    : notes.filter((n) => {
+        const sym = n.symbol.toLowerCase();
+        const base = sym.replace(/usdt$/, "");
+        return (
+          sym.includes(noteQ) ||
+          base.includes(noteQ) ||
+          n.body.toLowerCase().includes(noteQ) ||
+          n.exchange.toLowerCase().includes(noteQ)
+        );
+      });
+
+  const chartCoinNotes = chartPaper
+    ? notes.filter(
+        (n) =>
+          n.exchange === chartPaper.exchange &&
+          n.symbol.toUpperCase() === chartPaper.symbol.toUpperCase()
+      )
+    : [];
 
   return (
     <div className="space-y-5">
@@ -333,13 +386,167 @@ export function ScreenerPerfPanel() {
         </div>
 
         {chartPaper && (
-          <div className="mt-3">
+          <div className="mt-3 space-y-3">
             <PaperTrackChart
               paper={chartPaper}
               onClose={() => setChartPaper(null)}
             />
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+              <h4 className="mb-2 text-xs font-medium text-zinc-400">
+                {chartPaper.symbol.replace(/USDT$/i, "")} 메모
+              </h4>
+              {chartCoinNotes.length === 0 ? (
+                <p className="text-xs text-zinc-600">
+                  이 코인에 남긴 메모가 없습니다. 스크리너 상세에서 메모를
+                  추가하세요.
+                </p>
+              ) : (
+                <ul className="space-y-2">
+                  {chartCoinNotes.map((n) => (
+                    <li
+                      key={n.id}
+                      className="rounded-md border border-zinc-800/80 px-3 py-2 text-xs"
+                    >
+                      <p className="whitespace-pre-wrap text-zinc-200">
+                        {n.body}
+                      </p>
+                      <p className="mt-1 text-[10px] text-zinc-600">
+                        {formatKst(n.noted_at)} KST
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
+      </div>
+
+      <div className="rounded-lg border border-zinc-800 p-3">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-medium text-zinc-300">
+            스크리너 메모 모아보기
+          </h3>
+          <input
+            type="search"
+            value={noteSearch}
+            onChange={(e) => setNoteSearch(e.target.value)}
+            placeholder="코인·내용 검색"
+            className="w-44 rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-emerald-500/40"
+          />
+        </div>
+        <p className="mb-2 text-[11px] text-zinc-600">
+          최신순 · {filteredNotes.length}건
+          {noteSearch.trim() ? ` (검색: ${noteSearch.trim()})` : ""}
+        </p>
+        {filteredNotes.length === 0 ? (
+          <p className="py-6 text-center text-xs text-zinc-600">
+            메모가 없습니다. 스크리너에서 코인을 열어 메모를 남기세요.
+          </p>
+        ) : (
+          <ul className="pretty-scroll max-h-72 space-y-2 overflow-y-auto">
+            {filteredNotes.map((n) => (
+              <li
+                key={n.id}
+                className="rounded-md border border-zinc-800/80 bg-zinc-950/30 px-3 py-2"
+              >
+                <div className="mb-1 flex flex-wrap items-center gap-2 text-xs">
+                  <button
+                    type="button"
+                    className="font-medium text-sky-300 hover:underline"
+                    onClick={() => setNoteSearch(n.symbol.replace(/USDT$/i, ""))}
+                  >
+                    {n.symbol.replace(/USDT$/i, "")}
+                  </button>
+                  <span className="text-zinc-600">{n.exchange}</span>
+                  <span className="ml-auto text-[10px] text-zinc-600">
+                    {formatKst(n.noted_at)} KST
+                  </span>
+                </div>
+                <p className="whitespace-pre-wrap text-xs text-zinc-300">
+                  {n.body}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="rounded-lg border border-zinc-800 p-3">
+        <h3 className="mb-3 text-sm font-medium text-zinc-300">
+          종료된 가상투자 기록
+        </h3>
+        <div className="pretty-scroll overflow-x-auto">
+          <table className="w-full min-w-[820px] text-left text-xs">
+            <thead className="text-zinc-500">
+              <tr>
+                <th className="px-2 py-1.5">심볼</th>
+                <th className="px-2 py-1.5">유형</th>
+                <th className="px-2 py-1.5">방향</th>
+                <th className="px-2 py-1.5">진입</th>
+                <th className="px-2 py-1.5">종료가</th>
+                <th className="px-2 py-1.5">수익률</th>
+                <th className="px-2 py-1.5">MFE/MAE</th>
+                <th className="px-2 py-1.5">종료시각</th>
+              </tr>
+            </thead>
+            <tbody>
+              {closedPapers.map((p) => (
+                <tr
+                  key={p.id}
+                  className="border-t border-zinc-800/80 hover:bg-zinc-900/50"
+                >
+                  <td className="px-2 py-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setChartPaper(p)}
+                      className="font-medium text-sky-300 hover:underline"
+                    >
+                      {p.symbol.replace(/USDT$/i, "")}
+                    </button>
+                    <span className="ml-1 text-zinc-600">{p.exchange}</span>
+                  </td>
+                  <td className="px-2 py-1.5 text-zinc-400">{p.track_type}</td>
+                  <td
+                    className={`px-2 py-1.5 ${
+                      p.direction.startsWith("LONG")
+                        ? "text-emerald-400"
+                        : "text-rose-400"
+                    }`}
+                  >
+                    {p.direction}
+                  </td>
+                  <td className="px-2 py-1.5 tabular-nums text-zinc-300">
+                    {Number(p.entry_price)}
+                  </td>
+                  <td className="px-2 py-1.5 tabular-nums text-zinc-300">
+                    {p.last_price ?? "—"}
+                  </td>
+                  <td
+                    className={`px-2 py-1.5 tabular-nums font-medium ${retCls(
+                      p.ret_pct != null ? Number(p.ret_pct) : null
+                    )}`}
+                  >
+                    {pct(p.ret_pct != null ? Number(p.ret_pct) : null)}
+                  </td>
+                  <td className="px-2 py-1.5 tabular-nums text-zinc-500">
+                    {pct(p.mfe_pct != null ? Number(p.mfe_pct) : null)} /{" "}
+                    {pct(p.mae_pct != null ? Number(p.mae_pct) : null)}
+                  </td>
+                  <td className="px-2 py-1.5 text-zinc-500">
+                    {p.closed_at ? formatKst(p.closed_at) : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {closedPapers.length === 0 && (
+            <p className="p-4 text-center text-xs text-zinc-600">
+              아직 종료한 가상투자가 없습니다. 오픈 포지션에서 「종료」를 누르면
+              여기에 남습니다.
+            </p>
+          )}
+        </div>
       </div>
 
       {stats && !error && (

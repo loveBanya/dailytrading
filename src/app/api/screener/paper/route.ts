@@ -52,16 +52,54 @@ export async function POST(req: NextRequest) {
     const supabase = createSupabaseAdmin();
 
     if (action === "close" && body.id) {
-      const { error } = await supabase
+      // 종료 직전 한 번 시세 반영해 최종 수익률 남김
+      const { data: row, error: getErr } = await supabase
         .from("screener_paper_tracks")
-        .update({
-          status: "closed",
-          closed_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", body.id);
+        .select("*")
+        .eq("id", body.id)
+        .maybeSingle();
+      if (getErr) throw getErr;
+
+      const patch: Record<string, unknown> = {
+        status: "closed",
+        closed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      if (row) {
+        try {
+          const adapter = getAdapter(row.exchange as ScreenerExchange);
+          const kl = await adapter.fetchKlines(row.symbol as string, "5m", 5);
+          const priceNow = kl[kl.length - 1]?.close;
+          if (priceNow) {
+            const ret = Number(
+              retPct(
+                String(row.direction),
+                Number(row.entry_price),
+                priceNow
+              ).toFixed(3)
+            );
+            const prevMfe = row.mfe_pct != null ? Number(row.mfe_pct) : ret;
+            const prevMae = row.mae_pct != null ? Number(row.mae_pct) : ret;
+            patch.last_price = priceNow;
+            patch.last_at = new Date().toISOString();
+            patch.ret_pct = ret;
+            patch.mfe_pct = Number(Math.max(prevMfe, ret).toFixed(3));
+            patch.mae_pct = Number(Math.min(prevMae, ret).toFixed(3));
+          }
+        } catch {
+          /* 시세 실패해도 종료는 진행 */
+        }
+      }
+
+      const { data: closed, error } = await supabase
+        .from("screener_paper_tracks")
+        .update(patch)
+        .eq("id", body.id)
+        .select()
+        .single();
       if (error) throw error;
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({ ok: true, item: closed });
     }
 
     if (action === "refresh") {

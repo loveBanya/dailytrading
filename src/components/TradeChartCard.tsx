@@ -27,6 +27,8 @@ interface TradeChartCardProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   onCommentsMutated?: () => void;
+  /** 댓글 등에서 점프했을 때 강조 */
+  highlighted?: boolean;
 }
 
 function resolveStyle(trade: Trade): TradeStyle {
@@ -46,6 +48,7 @@ export function TradeChartCard({
   open: openProp,
   onOpenChange,
   onCommentsMutated,
+  highlighted = false,
 }: TradeChartCardProps) {
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
   const controlled = openProp !== undefined;
@@ -284,7 +287,14 @@ export function TradeChartCard({
   );
 
   return (
-    <article className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/40">
+    <article
+      id={`trade-${trade.id}`}
+      className={`overflow-hidden rounded-xl border bg-zinc-900/40 transition ${
+        highlighted
+          ? "border-amber-400/70 ring-2 ring-amber-400/30"
+          : "border-zinc-800"
+      }`}
+    >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

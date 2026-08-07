@@ -24,6 +24,7 @@ import { ScreenerPanel } from "./screener/ScreenerPanel";
 import { ScreenerPerfPanel } from "./screener/ScreenerPerfPanel";
 import { WatchEvaluatePanel } from "./screener/WatchEvaluatePanel";
 import { EquityCurvePanel } from "./EquityCurvePanel";
+import { ReviewCommentsFeed } from "./ReviewCommentsFeed";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
 import { AlarmToastHost } from "./AlarmToastHost";
 import { AlertsPanel } from "./AlertsPanel";
@@ -231,6 +232,9 @@ export function TradeJournal() {
   const seenTradeIds = useRef<Set<string> | null>(null);
   const seenPositionKeys = useRef<Set<string> | null>(null);
   const [alertUnread, setAlertUnread] = useState(0);
+  const [highlightTradeId, setHighlightTradeId] = useState<string | null>(
+    null
+  );
 
   useEffect(() => {
     setTab(loadSavedTab<Tab>("trades", TAB_IDS));
@@ -246,6 +250,23 @@ export function TradeJournal() {
     if ((TAB_IDS as string[]).includes(target)) {
       setTab(target as Tab);
     }
+  }, []);
+
+  const focusTrade = useCallback((tradeId: string) => {
+    setPeriodMode("all");
+    setTradeSearch("");
+    setTab("trades");
+    setCardsExpandedDefault(false);
+    setCardOpenOverrides({ [tradeId]: true });
+    setHighlightTradeId(tradeId);
+    window.setTimeout(() => {
+      document
+        .getElementById(`trade-${tradeId}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 280);
+    window.setTimeout(() => {
+      setHighlightTradeId((cur) => (cur === tradeId ? null : cur));
+    }, 4000);
   }, []);
 
   useEffect(() => {
@@ -632,6 +653,10 @@ export function TradeJournal() {
         ))}
       </nav>
 
+      {tab === "review" && (
+        <ReviewCommentsFeed trades={trades} onOpenTrade={focusTrade} />
+      )}
+
       {(tab === "trades" || tab === "review") && (
         <div className="mb-4 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -782,7 +807,8 @@ export function TradeJournal() {
                 : ""}
             {" · "}
             정렬 <span className="text-zinc-300">{sortLabel}</span>
-            {tab === "review" && " · 오답노트로 지정한 매매만 표시"}
+            {tab === "review" &&
+              " · 위 댓글 모아보기 + 오답노트 지정 매매"}
             {" · "}
             <span className="text-zinc-600">청산일 KST 기준</span>
           </p>
@@ -834,6 +860,7 @@ export function TradeJournal() {
               key={trade.id}
               trade={trade}
               open={isCardOpen(trade.id)}
+              highlighted={highlightTradeId === trade.id}
               onOpenChange={(next) =>
                 setCardOpenOverrides((prev) => ({ ...prev, [trade.id]: next }))
               }

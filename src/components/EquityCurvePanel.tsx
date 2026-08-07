@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   AreaSeries,
   ColorType,
@@ -11,12 +11,6 @@ import type { DailyPnl } from "@/lib/stats/compute";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
 import { formatPnl } from "@/lib/utils/format";
 
-interface CashRow {
-  entry_date: string;
-  deposit: number;
-  withdrawal: number;
-}
-
 interface EquityCurvePanelProps {
   daily: DailyPnl[];
   totalPnl: number;
@@ -24,8 +18,19 @@ interface EquityCurvePanelProps {
   walletLoading?: boolean;
 }
 
+const STABLES = new Set([
+  "USDT",
+  "USDC",
+  "USD",
+  "FDUSD",
+  "BUSD",
+  "DAI",
+  "TUSD",
+  "USDE",
+  "USDP",
+]);
+
 function dayToUtcSec(day: string): number {
-  // KST 날짜 → 그날 00:00 KST = 전날 15:00 UTC
   return Math.floor(new Date(`${day}T00:00:00+09:00`).getTime() / 1000);
 }
 
@@ -36,65 +41,79 @@ export function EquityCurvePanel({
   walletLoading,
 }: EquityCurvePanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [cash, setCash] = useState<CashRow[]>([]);
-  const [cashError, setCashError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch("/api/cash");
-        const data = (await res.json()) as {
-          entries?: CashRow[];
-          error?: string;
-        };
-        if (cancelled) return;
-        if (data.error) {
-          setCashError(data.error);
-          setCash([]);
-          return;
-        }
-        setCash(data.entries ?? []);
-        setCashError(null);
-      } catch {
-        if (!cancelled) setCashError("입출금 기록을 불러오지 못했습니다");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const series = useMemo(() => {
-    const cashByDay = new Map<string, number>();
-    for (const e of cash) {
-      const d = e.entry_date.slice(0, 10);
-      const net = Number(e.deposit || 0) - Number(e.withdrawal || 0);
-      cashByDay.set(d, (cashByDay.get(d) ?? 0) + net);
-    }
-
-    const pnlByDay = new Map(daily.map((d) => [d.date, d.pnl]));
-    const days = Array.from(
-      new Set([...cashByDay.keys(), ...pnlByDay.keys()])
-    ).sort();
-
-    if (days.length === 0) return [] as { time: number; value: number }[];
-
-    let equity = 0;
-    const points: { time: number; value: number }[] = [];
-    for (const day of days) {
-      equity += cashByDay.get(day) ?? 0;
-      equity += pnlByDay.get(day) ?? 0;
-      points.push({ time: dayToUtcSec(day), value: Number(equity.toFixed(2)) });
-    }
-    return points;
-  }, [cash, daily]);
 
   const liveEquity = wallet?.totalEquity ?? null;
-  const cashNet = cash.reduce(
-    (s, e) => s + Number(e.deposit || 0) - Number(e.withdrawal || 0),
-    0
+  const liveUpl = wallet?.totalPerpUPL ?? 0;
+
+  const coinHoldings = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const acc of wallet?.accounts ?? []) {
+      for (const c of acc.wallet?.coins ?? []) {
+        const usd = Number(c.usdValue) || 0;
+        if (usd <= 0.5) continue;
+        map.set(c.coin, (map.get(c.coin) ?? 0) + usd);
+      }
+    }
+    return [...map.entries()]
+      .map(([coin, usdValue]) => ({ coin, usdValue }))
+      .sort((a, b) => b.usdValue - a.usdValue);
+  }, [wallet]);
+
+  const nonStableCoins = useMemo(
+    () => coinHoldings.filter((c) => !STABLES.has(c.coin.toUpperCase())),
+    [coinHoldings]
   );
+
+  const coinAssetUsd = useMemo(
+    () => nonStableCoins.reduce((s, c) => s + c.usdValue, 0),
+    [nonStableCoins]
+  );
+
+  const series = useMemo(() => {
+    const days = [...daily].sort((a, b) => a.date.localeCompare(b.date));
+    if (days.length === 0 && liveEquity == null) {
+      return [] as { time: number; value: number }[];
+    }
+
+    // 거래소 실시간 자산에서 누적 실현손익·미실현을 빼 시작 자산 추정
+    // (입출금 장부와 섞지 않고 코인 계좌 기준으로 맞춤)
+    const start =
+      liveEquity != null && Number.isFinite(liveEquity)
+        ? liveEquity - totalPnl - liveUpl
+        : 0;
+
+    let equity = start;
+    const points: { time: number; value: number }[] = [];
+
+    if (days.length === 0 && liveEquity != null) {
+      const today = new Date().toLocaleDateString("en-CA", {
+        timeZone: "Asia/Seoul",
+      });
+      points.push({
+        time: dayToUtcSec(today),
+        value: Number(liveEquity.toFixed(2)),
+      });
+      return points;
+    }
+
+    for (const d of days) {
+      equity += d.pnl;
+      points.push({
+        time: dayToUtcSec(d.date),
+        value: Number(equity.toFixed(2)),
+      });
+    }
+
+    // 마지막 점을 실시간 자산(미실현 포함)에 맞춰 표시
+    if (liveEquity != null && points.length > 0) {
+      points[points.length - 1] = {
+        ...points[points.length - 1]!,
+        value: Number(liveEquity.toFixed(2)),
+      };
+    }
+
+    return points;
+  }, [daily, liveEquity, liveUpl, totalPnl]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -164,12 +183,13 @@ export function EquityCurvePanel({
   }, [series, liveEquity]);
 
   const last = series[series.length - 1]?.value;
+  const maxCoin = nonStableCoins[0]?.usdValue ?? 0;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <p className="text-sm text-zinc-500">
-        입출금(현금 장부) + 일별 실현손익을 누적한 자산 곡선입니다. 파란 점선은
-        거래소 실시간 자산입니다.
+        코인 계좌 자산 곡선입니다. 거래소 실시간 자산에서 누적 실현손익을 역산해
+        시작점을 맞추고, 일별 매매 손익을 누적합니다. 파란 점선은 현재 자산입니다.
       </p>
 
       <div className="flex flex-wrap gap-4 text-sm">
@@ -177,12 +197,6 @@ export function EquityCurvePanel({
           <p className="text-[11px] text-zinc-500">곡선 최신</p>
           <p className="font-semibold tabular-nums text-zinc-100">
             {last != null ? `$${last.toFixed(2)}` : "—"}
-          </p>
-        </div>
-        <div>
-          <p className="text-[11px] text-zinc-500">입출금 순액</p>
-          <p className="font-semibold tabular-nums text-zinc-100">
-            ${cashNet.toFixed(2)}
           </p>
         </div>
         <div>
@@ -205,22 +219,76 @@ export function EquityCurvePanel({
                 : "—"}
           </p>
         </div>
+        <div>
+          <p className="text-[11px] text-zinc-500">비안정 코인</p>
+          <p className="font-semibold tabular-nums text-zinc-100">
+            {walletLoading
+              ? "…"
+              : coinAssetUsd > 0
+                ? `$${coinAssetUsd.toFixed(2)}`
+                : "—"}
+          </p>
+        </div>
+        <div>
+          <p className="text-[11px] text-zinc-500">미실현</p>
+          <p
+            className={`font-semibold tabular-nums ${
+              liveUpl >= 0 ? "text-emerald-400" : "text-rose-400"
+            }`}
+          >
+            {walletLoading ? "…" : formatPnl(liveUpl)}
+          </p>
+        </div>
       </div>
 
       {series.length === 0 ? (
         <div className="rounded-lg border border-dashed border-zinc-700 p-8 text-center text-sm text-zinc-500">
-          매매 동기화 또는 「입출금」 기록이 있으면 자산 그래프가 그려집니다.
-          {cashError ? (
-            <span className="mt-1 block text-xs text-amber-300/80">
-              {cashError}
-            </span>
-          ) : null}
+          매매를 동기화하거나 거래소 자산을 불러오면 코인 자산 그래프가
+          그려집니다.
         </div>
       ) : (
         <div
           ref={containerRef}
           className="w-full overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/40"
         />
+      )}
+
+      {nonStableCoins.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-zinc-400">보유 코인 (USD)</p>
+          <ul className="space-y-1.5">
+            {nonStableCoins.slice(0, 12).map((c) => {
+              const pct =
+                coinAssetUsd > 0 ? (c.usdValue / coinAssetUsd) * 100 : 0;
+              const bar =
+                maxCoin > 0 ? Math.max(4, (c.usdValue / maxCoin) * 100) : 0;
+              return (
+                <li key={c.coin} className="flex items-center gap-3 text-xs">
+                  <span className="w-14 shrink-0 font-medium text-zinc-200">
+                    {c.coin}
+                  </span>
+                  <div className="h-1.5 min-w-0 flex-1 rounded-full bg-zinc-800">
+                    <div
+                      className="h-1.5 rounded-full bg-emerald-500/70"
+                      style={{ width: `${bar}%` }}
+                    />
+                  </div>
+                  <span className="w-24 shrink-0 text-right tabular-nums text-zinc-300">
+                    ${c.usdValue.toFixed(2)}
+                  </span>
+                  <span className="w-12 shrink-0 text-right tabular-nums text-zinc-600">
+                    {pct.toFixed(0)}%
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+          {coinHoldings.some((c) => STABLES.has(c.coin.toUpperCase())) && (
+            <p className="text-[11px] text-zinc-600">
+              USDT 등 스테이블은 위 목록에서 제외했습니다. 총자산에는 포함됩니다.
+            </p>
+          )}
+        </div>
       )}
     </div>
   );

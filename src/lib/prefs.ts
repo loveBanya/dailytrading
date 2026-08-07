@@ -1,10 +1,12 @@
-import type { StrategyId, ScanFilters } from "@/lib/screener/types";
+import type { StrategyId, ScanFilters, WatchAsset } from "@/lib/screener/types";
 import { STRATEGY_LABELS, DEFAULT_FILTERS } from "@/lib/screener/types";
+import { DEFAULT_WATCH_ASSETS } from "@/lib/screener/watchlist";
 
 export const ALL_STRATEGY_IDS = Object.keys(STRATEGY_LABELS) as StrategyId[];
 
 const TAB_KEY = "dailytrading.ui.tab.v1";
 const SCREENER_FILTERS_KEY = "dailytrading.screener.filters.v1";
+const WATCH_ASSETS_KEY = "dailytrading.screener.watch.v1";
 
 export function loadSavedTab<T extends string>(fallback: T, allowed: T[]): T {
   if (typeof window === "undefined") return fallback;
@@ -58,6 +60,36 @@ export function loadScreenerFilters(): ScanFilters {
 export function saveScreenerFilters(filters: ScanFilters): void {
   try {
     localStorage.setItem(SCREENER_FILTERS_KEY, JSON.stringify(filters));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function loadWatchAssets(): WatchAsset[] {
+  if (typeof window === "undefined") return [...DEFAULT_WATCH_ASSETS];
+  try {
+    const raw = localStorage.getItem(WATCH_ASSETS_KEY);
+    if (!raw) return [...DEFAULT_WATCH_ASSETS];
+    const saved = JSON.parse(raw) as WatchAsset[];
+    if (!Array.isArray(saved) || saved.length === 0) {
+      return [...DEFAULT_WATCH_ASSETS];
+    }
+    return saved.filter(
+      (a) =>
+        a &&
+        typeof a.symbol === "string" &&
+        (a.exchange === "binance" ||
+          a.exchange === "bybit" ||
+          a.exchange === "yahoo")
+    );
+  } catch {
+    return [...DEFAULT_WATCH_ASSETS];
+  }
+}
+
+export function saveWatchAssets(assets: WatchAsset[]): void {
+  try {
+    localStorage.setItem(WATCH_ASSETS_KEY, JSON.stringify(assets));
   } catch {
     /* ignore */
   }

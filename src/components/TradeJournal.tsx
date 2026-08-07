@@ -22,6 +22,7 @@ import { MindsetPanel } from "./MindsetPanel";
 import { JournalPostsPanel } from "./JournalPostsPanel";
 import { ScreenerPanel } from "./screener/ScreenerPanel";
 import { ScreenerPerfPanel } from "./screener/ScreenerPerfPanel";
+import { WatchEvaluatePanel } from "./screener/WatchEvaluatePanel";
 import { EquityCurvePanel } from "./EquityCurvePanel";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
 import { AlarmToastHost } from "./AlarmToastHost";
@@ -49,6 +50,7 @@ type Tab =
   | "mindset"
   | "posts"
   | "screener"
+  | "screener-watch"
   | "screener-perf"
   | "alerts"
   | "bookmarks";
@@ -65,6 +67,7 @@ const TAB_IDS: Tab[] = [
   "mindset",
   "posts",
   "screener",
+  "screener-watch",
   "screener-perf",
   "alerts",
   "bookmarks",
@@ -597,6 +600,7 @@ export function TradeJournal() {
             ["live", "실시간"],
             ["overview", "한눈에"],
             ["screener", "코인 스크리너"],
+            ["screener-watch", "지정 평가"],
             ["screener-perf", "스크리너 성과"],
             ["alerts", "알림"],
             ["cash", "입출금"],
@@ -893,6 +897,12 @@ export function TradeJournal() {
       {tab === "screener" && (
         <Section title="코인 스크리너">
           <ScreenerPanel />
+        </Section>
+      )}
+
+      {tab === "screener-watch" && (
+        <Section title="지정 종목 평가">
+          <WatchEvaluatePanel />
         </Section>
       )}
 

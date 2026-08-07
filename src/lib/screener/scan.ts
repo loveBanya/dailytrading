@@ -7,6 +7,10 @@ import {
   bybitCacheAges,
   bybitPublicAdapter,
 } from "./adapters/bybit-public";
+import {
+  resolveYahooTicker,
+  yahooPublicAdapter,
+} from "./adapters/yahoo-public";
 import { withConcurrency } from "./cache";
 import { filterUniverse, takeTop } from "./filters";
 import {
@@ -27,8 +31,10 @@ import type {
   ScreenerExchange,
   Timeframe,
   UniverseTicker,
+  WatchAsset,
 } from "./types";
 import { DEFAULT_FILTERS } from "./types";
+import { normalizeWatchSymbol } from "./watchlist";
 
 function adaptersFor(
   exchange: ScanFilters["exchange"]
@@ -61,12 +67,16 @@ function bbState(m: {
   return m.bbWidthExpanding ? "밴드확대" : "밴드보통";
 }
 
+export type AnalyzeMode = "scan" | "evaluate";
+
 async function analyzeSymbol(
   adapter: ExchangePublicAdapter,
   ticker: UniverseTicker,
-  filters: ScanFilters
+  filters: ScanFilters,
+  mode: AnalyzeMode = "scan"
 ): Promise<ScreenerCandidate | null> {
   const tf = filters.timeframe;
+  const evaluate = mode === "evaluate";
   const [c5, c15, c1h, c4h] = await Promise.all([
     adapter.fetchKlines(ticker.symbol, "5m", 100),
     adapter.fetchKlines(ticker.symbol, "15m", 120),
@@ -85,15 +95,16 @@ async function analyzeSymbol(
   const m4h = buildTfMetrics(m4hc);
   if (!m15 || !m1h) return null;
 
-  // volume gate A/B
-  const condA = m1h.volMult >= filters.minVolMult;
-  const prev15Vol =
-    m15c.length >= 2 ? m15c[m15c.length - 2].volume : m15.last.volume;
-  const condB =
-    prev15Vol > 0 && m15.last.volume >= prev15Vol * 1.5;
-  if (!condA && !condB && m15.volMult < filters.minVolMult) {
-    // still allow strong trend/breakout later — soft gate: require some vol interest
-    if (m15.volMult < 1.2) return null;
+  // volume gate A/B — 지정 평가 모드는 스킵
+  if (!evaluate) {
+    const condA = m1h.volMult >= filters.minVolMult;
+    const prev15Vol =
+      m15c.length >= 2 ? m15c[m15c.length - 2].volume : m15.last.volume;
+    const condB =
+      prev15Vol > 0 && m15.last.volume >= prev15Vol * 1.5;
+    if (!condA && !condB && m15.volMult < filters.minVolMult) {
+      if (m15.volMult < 1.2) return null;
+    }
   }
 
   const [fundingRate, oiChangePct] = await Promise.all([
@@ -152,35 +163,25 @@ async function analyzeSymbol(
       ? levels
       : computeLevels(finalSide, m15, m15.atr);
 
-  if (filters.strategies.length > 0) {
-    const hit = strategies.some(
-      (s) =>
-        filters.strategies.includes(s.id) &&
-        s.score >= 55 &&
-        s.side !== "NEUTRAL"
-    );
-    if (!hit) return null;
-  }
+  if (!evaluate) {
+    if (filters.strategies.length > 0) {
+      const hit = strategies.some(
+        (s) =>
+          filters.strategies.includes(s.id) &&
+          s.score >= 55 &&
+          s.side !== "NEUTRAL"
+      );
+      if (!hit) return null;
+    }
 
-  if (filters.direction === "LONG" && !agg.direction.startsWith("LONG"))
-    return null;
-  if (filters.direction === "SHORT" && !agg.direction.startsWith("SHORT"))
-    return null;
+    if (filters.direction === "LONG" && !agg.direction.startsWith("LONG"))
+      return null;
+    if (filters.direction === "SHORT" && !agg.direction.startsWith("SHORT"))
+      return null;
 
-  if (agg.scoreTotal < filters.minScore) return null;
-  if (agg.stars < filters.minStars) return null;
-  if (m15.rsi < filters.rsiMin || m15.rsi > filters.rsiMax) return null;
-  if (
-    fundingRate != null &&
-    (fundingRate < filters.fundingMin || fundingRate > filters.fundingMax)
-  ) {
-    // soft: don't exclude if WAIT
-  }
-  if (oiChangePct != null && oiChangePct < filters.minOiChange) {
-    // soft filter already in score
-  }
-  if (finalLevels.rr1 != null && finalLevels.rr1 < filters.minRr) {
-    // already risked in score; keep if still above minScore
+    if (agg.scoreTotal < filters.minScore) return null;
+    if (agg.stars < filters.minStars) return null;
+    if (m15.rsi < filters.rsiMin || m15.rsi > filters.rsiMax) return null;
   }
 
   const breakoutState =
@@ -319,7 +320,90 @@ export async function runScreenerScan(
 }
 
 export function getAdapter(exchange: ScreenerExchange): ExchangePublicAdapter {
-  return exchange === "bybit" ? bybitPublicAdapter : binancePublicAdapter;
+  if (exchange === "bybit") return bybitPublicAdapter;
+  if (exchange === "yahoo") return yahooPublicAdapter;
+  return binancePublicAdapter;
+}
+
+export async function evaluateWatchAssets(
+  assets: WatchAsset[],
+  timeframe: ScanFilters["timeframe"] = "15m"
+): Promise<{
+  candidates: ScreenerCandidate[];
+  errors: string[];
+  scannedAt: string;
+}> {
+  const filters: ScanFilters = {
+    ...DEFAULT_FILTERS,
+    timeframe,
+    strategies: [],
+    minScore: 0,
+    minStars: 0,
+    minVolMult: 0,
+    direction: "ALL",
+  };
+  const errors: string[] = [];
+
+  const tasks = assets.map((asset) => {
+    return async (): Promise<ScreenerCandidate | null> => {
+      try {
+        const adapter = getAdapter(asset.exchange);
+        let ticker: UniverseTicker | null = null;
+
+        if (asset.exchange === "yahoo") {
+          ticker = await resolveYahooTicker(asset.symbol);
+        } else {
+          const universe = await adapter.listUniverse();
+          const sym = normalizeWatchSymbol(asset.exchange, asset.symbol);
+          ticker =
+            universe.find((t) => t.symbol.toUpperCase() === sym) ?? null;
+          if (!ticker) {
+            ticker = {
+              exchange: asset.exchange,
+              symbol: sym,
+              baseAsset: asset.label || sym.replace(/USDT$/i, ""),
+              lastPrice: 0,
+              change24hPct: 0,
+              turnover24h: 0,
+              high24h: 0,
+              low24h: 0,
+            };
+          }
+        }
+
+        if (!ticker) {
+          errors.push(`${asset.label}: 시세를 찾지 못했습니다`);
+          return null;
+        }
+
+        // 표시용 라벨을 baseAsset에 반영
+        ticker = { ...ticker, baseAsset: asset.label || ticker.baseAsset };
+
+        const cand = await analyzeSymbol(adapter, ticker, filters, "evaluate");
+        if (!cand) {
+          errors.push(`${asset.label}: 캔들/지표 부족`);
+          return null;
+        }
+        return { ...cand, baseAsset: asset.label || cand.baseAsset };
+      } catch (err) {
+        errors.push(
+          `${asset.label}: ${err instanceof Error ? err.message : String(err)}`
+        );
+        return null;
+      }
+    };
+  });
+
+  const results = await withConcurrency(3, tasks);
+  const candidates = results
+    .filter((r): r is ScreenerCandidate => !!r && !(r instanceof Error))
+    .sort((a, b) => b.scoreTotal - a.scoreTotal);
+
+  return {
+    candidates,
+    errors: errors.slice(0, 30),
+    scannedAt: new Date().toISOString(),
+  };
 }
 
 export async function fetchSymbolDetail(

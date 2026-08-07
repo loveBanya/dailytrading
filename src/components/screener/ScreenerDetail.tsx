@@ -49,12 +49,15 @@ export function ScreenerDetail({
   onExcluded,
   favorited,
   onFavoriteChange,
+  persistActions = true,
 }: {
   candidate: ScreenerCandidate;
   onClose: () => void;
   onExcluded?: () => void;
   favorited?: boolean;
   onFavoriteChange?: (v: boolean) => void;
+  /** DB 즐겨찾기/제외/가상투자 (바이낸스·바이비트만) */
+  persistActions?: boolean;
 }) {
   const [detail, setDetail] = useState<DetailPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -313,6 +316,8 @@ export function ScreenerDetail({
         </div>
 
         <div className="mb-4 space-y-3">
+          {persistActions ? (
+            <>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -377,6 +382,13 @@ export function ScreenerDetail({
             >
               {trackFlash.ok ? "✓ " : ""}
               {trackFlash.text}
+            </p>
+          )}
+            </>
+          ) : (
+            <p className="rounded-lg border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-[11px] text-zinc-500">
+              주식·ETF·지수는 스크리너와 같은 기술 점수만 제공합니다. (펀딩/OI
+              전략은 해당 없음 · 즐겨찾기·가상투자는 선물 코인만)
             </p>
           )}
         </div>

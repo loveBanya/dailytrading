@@ -45,5 +45,8 @@ export function takeTop(
 }
 
 export function exchangeLabel(ex: ScreenerExchange): string {
-  return ex === "binance" ? "바이낸스" : "바이비트";
+  if (ex === "binance") return "바이낸스";
+  if (ex === "bybit") return "바이비트";
+  if (ex === "yahoo") return "주식/ETF";
+  return ex;
 }

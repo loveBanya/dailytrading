@@ -1,4 +1,13 @@
-export type ScreenerExchange = "binance" | "bybit";
+export type ScreenerExchange = "binance" | "bybit" | "yahoo";
+
+/** 지정 종목 평가용 관심 목록 항목 */
+export interface WatchAsset {
+  /** exchange:symbol */
+  id: string;
+  exchange: ScreenerExchange;
+  symbol: string;
+  label: string;
+}
 export type Timeframe = "5m" | "15m" | "1h" | "4h";
 export type Direction =
   | "LONG"

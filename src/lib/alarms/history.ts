@@ -9,6 +9,7 @@ export interface AlarmEvent {
   body: string;
   createdAt: number;
   read: boolean;
+  targetTab?: string;
 }
 
 const KEY = "dailytrading.alarm.history.v1";
@@ -43,7 +44,8 @@ export function unreadAlarmCount(): number {
 export function pushAlarmHistory(
   kind: AlarmKind,
   title: string,
-  body: string
+  body: string,
+  targetTab?: string
 ): AlarmEvent {
   const event: AlarmEvent = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -52,6 +54,7 @@ export function pushAlarmHistory(
     body,
     createdAt: Date.now(),
     read: false,
+    targetTab,
   };
   const list = [event, ...readAll()].slice(0, MAX);
   writeAll(list);

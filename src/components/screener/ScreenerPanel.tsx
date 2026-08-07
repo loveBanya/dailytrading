@@ -7,12 +7,17 @@ import type {
   ScreenerCandidate,
   StrategyId,
 } from "@/lib/screener/types";
-import { DEFAULT_FILTERS, STRATEGY_LABELS } from "@/lib/screener/types";
+import { STRATEGY_LABELS } from "@/lib/screener/types";
 import { exchangeLabel } from "@/lib/screener/filters";
 import { formatKst } from "@/lib/utils/format";
 import { ScreenerDetail } from "./ScreenerDetail";
 import { fireAlarm } from "@/lib/alarms/notify";
 import { loadAlarmSettings } from "@/lib/alarms/settings";
+import {
+  defaultScreenerFilters,
+  loadScreenerFilters,
+  saveScreenerFilters,
+} from "@/lib/prefs";
 
 type SortKey = keyof ScreenerCandidate | "rank";
 
@@ -37,10 +42,8 @@ function dirCls(d: string): string {
 }
 
 export function ScreenerPanel() {
-  const [filters, setFilters] = useState<ScanFilters>({
-    ...DEFAULT_FILTERS,
-    topN: 40,
-  });
+  const [filters, setFilters] = useState<ScanFilters>(defaultScreenerFilters);
+  const [filtersReady, setFiltersReady] = useState(false);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +69,16 @@ export function ScreenerPanel() {
   const [paperBusy, setPaperBusy] = useState<string | null>(null);
   const [excludeInput, setExcludeInput] = useState("");
   const seenSignalKeys = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    setFilters(loadScreenerFilters());
+    setFiltersReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!filtersReady) return;
+    saveScreenerFilters(filters);
+  }, [filters, filtersReady]);
 
   const loadMeta = useCallback(async () => {
     try {
@@ -588,11 +601,13 @@ export function ScreenerPanel() {
             >
               선택 해제
             </button>
-            <span className="mx-1 text-[10px] text-zinc-600">
-              {filters.strategies.length === 0
-                ? "미선택 = 전략 필터 없음"
-                : `${filters.strategies.length}개 선택`}
-            </span>
+              <span className="mx-1 text-[10px] text-zinc-600">
+                {filters.strategies.length === STRATEGY_OPTS.length
+                  ? "전체 선택"
+                  : filters.strategies.length === 0
+                    ? "미선택 = 전략 필터 없음"
+                    : `${filters.strategies.length}개 선택`}
+              </span>
             {STRATEGY_OPTS.map(([id, label]) => {
               const on = filters.strategies.includes(id);
               return (

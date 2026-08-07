@@ -24,6 +24,7 @@ import { ScreenerPanel } from "./screener/ScreenerPanel";
 import { ScreenerPerfPanel } from "./screener/ScreenerPerfPanel";
 import { EquityCurvePanel } from "./EquityCurvePanel";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
+import { AlarmToastHost } from "./AlarmToastHost";
 import { AlertsPanel } from "./AlertsPanel";
 import {
   checkNewTradeFills,
@@ -34,6 +35,8 @@ import {
   ALARM_HISTORY_EVENT,
   unreadAlarmCount,
 } from "@/lib/alarms/history";
+import type { AlarmTargetTab } from "@/lib/alarms/toast";
+import { loadSavedTab, saveTab } from "@/lib/prefs";
 import { exchangeLabel, statusLabel } from "@/lib/utils/labels";
 import { useRouter } from "next/navigation";
 
@@ -52,6 +55,20 @@ type Tab =
 type SortKey = "newest" | "oldest" | "pnl_desc" | "pnl_asc";
 type PeriodMode = "all" | "year" | "month" | "range";
 type RangePreset = "today" | "7d" | "30d" | "custom";
+
+const TAB_IDS: Tab[] = [
+  "trades",
+  "review",
+  "live",
+  "overview",
+  "cash",
+  "mindset",
+  "posts",
+  "screener",
+  "screener-perf",
+  "alerts",
+  "bookmarks",
+];
 
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "newest", label: "최신순" },
@@ -189,6 +206,7 @@ function tradeMatchesSearch(
 export function TradeJournal() {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("trades");
+  const [tabReady, setTabReady] = useState(false);
   const [sort, setSort] = useState<SortKey>("newest");
   const [periodMode, setPeriodMode] = useState<PeriodMode>("all");
   const [filterYear, setFilterYear] = useState("");
@@ -210,6 +228,22 @@ export function TradeJournal() {
   const seenTradeIds = useRef<Set<string> | null>(null);
   const seenPositionKeys = useRef<Set<string> | null>(null);
   const [alertUnread, setAlertUnread] = useState(0);
+
+  useEffect(() => {
+    setTab(loadSavedTab<Tab>("trades", TAB_IDS));
+    setTabReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!tabReady) return;
+    saveTab(tab);
+  }, [tab, tabReady]);
+
+  const goToAlarmTab = useCallback((target: AlarmTargetTab | Tab) => {
+    if ((TAB_IDS as string[]).includes(target)) {
+      setTab(target as Tab);
+    }
+  }, []);
 
   useEffect(() => {
     const sync = () => setAlertUnread(unreadAlarmCount());
@@ -574,7 +608,7 @@ export function TradeJournal() {
           <button
             key={id}
             type="button"
-            onClick={() => setTab(id)}
+            onClick={() => setTab(id as Tab)}
             className={`-mb-px shrink-0 border-b-2 px-4 py-2.5 text-sm transition ${
               tab === id
                 ? "border-emerald-500 text-emerald-400"
@@ -870,7 +904,7 @@ export function TradeJournal() {
 
       {tab === "alerts" && (
         <Section title="알림 모아보기">
-          <AlertsPanel />
+          <AlertsPanel onNavigate={goToAlarmTab} />
         </Section>
       )}
 
@@ -897,6 +931,8 @@ export function TradeJournal() {
           <BookmarkPanel />
         </Section>
       )}
+
+      <AlarmToastHost onNavigate={goToAlarmTab} />
     </div>
   );
 }

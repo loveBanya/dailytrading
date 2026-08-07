@@ -16,6 +16,10 @@ export interface AlarmSettings {
   cooldownSec: number;
   /** 브라우저 알림(탭 백그라운드 시) */
   browserNotify: boolean;
+  /** 딩 볼륨 0~100 */
+  volume: number;
+  /** 화면 토스트 */
+  toastEnabled: boolean;
 }
 
 export const DEFAULT_ALARM_SETTINGS: AlarmSettings = {
@@ -29,6 +33,8 @@ export const DEFAULT_ALARM_SETTINGS: AlarmSettings = {
   tradeFillEnabled: true,
   cooldownSec: 120,
   browserNotify: true,
+  volume: 70,
+  toastEnabled: true,
 };
 
 const KEY = "dailytrading.alarm.settings.v1";

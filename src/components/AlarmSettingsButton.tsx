@@ -59,7 +59,9 @@ export function AlarmSettingsButton() {
               <p className="text-sm font-medium text-zinc-100">알람</p>
               <button
                 type="button"
-                onClick={() => void playDoorbell()}
+                onClick={() =>
+                  void playDoorbell(Math.max(0, Math.min(100, s.volume)) / 100)
+                }
                 className="text-xs text-amber-300/90 hover:text-amber-200"
               >
                 딩 테스트
@@ -72,6 +74,34 @@ export function AlarmSettingsButton() {
                 type="checkbox"
                 checked={s.enabled}
                 onChange={(e) => update({ enabled: e.target.checked })}
+                className="size-4 accent-amber-500"
+              />
+            </label>
+
+            <label className="mb-3 block text-sm text-zinc-300">
+              <span className="mb-1 flex justify-between text-xs text-zinc-500">
+                <span>소리 크기</span>
+                <span>{s.volume}%</span>
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={s.volume}
+                disabled={!s.enabled}
+                onChange={(e) => update({ volume: Number(e.target.value) })}
+                className="w-full accent-amber-500"
+              />
+            </label>
+
+            <label className="mb-3 flex items-center justify-between gap-3 text-sm text-zinc-300">
+              <span>토스트 알림</span>
+              <input
+                type="checkbox"
+                checked={s.toastEnabled !== false}
+                disabled={!s.enabled}
+                onChange={(e) => update({ toastEnabled: e.target.checked })}
                 className="size-4 accent-amber-500"
               />
             </label>

@@ -11,8 +11,16 @@ import {
   markAllAlarmsRead,
   type AlarmEvent,
 } from "@/lib/alarms/history";
+import {
+  targetTabForKind,
+  type AlarmTargetTab,
+} from "@/lib/alarms/toast";
 
-export function AlertsPanel() {
+interface AlertsPanelProps {
+  onNavigate?: (tab: AlarmTargetTab) => void;
+}
+
+export function AlertsPanel({ onNavigate }: AlertsPanelProps) {
   const [items, setItems] = useState<AlarmEvent[]>([]);
 
   const refresh = useCallback(() => {
@@ -85,6 +93,10 @@ export function AlertsPanel() {
               onClick={() => {
                 markAlarmRead(item.id);
                 refresh();
+                const target =
+                  (item.targetTab as AlarmTargetTab | undefined) ??
+                  targetTabForKind(item.kind);
+                onNavigate?.(target);
               }}
               className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition hover:bg-zinc-900/60 ${
                 item.read ? "bg-transparent" : "bg-amber-500/5"
@@ -111,6 +123,9 @@ export function AlertsPanel() {
               {item.body && (
                 <p className="pl-3.5 text-xs text-zinc-500">{item.body}</p>
               )}
+              <p className="pl-3.5 text-[10px] text-zinc-600">
+                클릭하면 관련 탭으로 이동
+              </p>
             </button>
           </li>
         ))}

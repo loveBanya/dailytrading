@@ -28,22 +28,29 @@ function tone(
   osc.stop(start + dur + 0.02);
 }
 
-/** 딩~딩 (초인종 느낌) */
-export async function playDing(times = 2): Promise<void> {
+/** volume: 0~1 */
+export async function playDing(
+  times = 2,
+  volume = 0.7
+): Promise<void> {
   try {
+    const vol = Math.max(0, Math.min(1, volume));
+    if (vol <= 0.001) return;
     const ctx = getCtx();
     if (ctx.state === "suspended") await ctx.resume();
     const t0 = ctx.currentTime + 0.02;
+    const g1 = 0.2 * vol;
+    const g2 = 0.12 * vol;
     for (let i = 0; i < times; i++) {
       const at = t0 + i * 0.38;
-      tone(ctx, 880, at, 0.18, 0.2);
-      tone(ctx, 1320, at + 0.04, 0.22, 0.12);
+      tone(ctx, 880, at, 0.18, g1);
+      tone(ctx, 1320, at + 0.04, 0.22, g2);
     }
   } catch {
     /* autoplay 차단 등 — 무시 */
   }
 }
 
-export async function playDoorbell(): Promise<void> {
-  return playDing(2);
+export async function playDoorbell(volume = 0.7): Promise<void> {
+  return playDing(2, volume);
 }

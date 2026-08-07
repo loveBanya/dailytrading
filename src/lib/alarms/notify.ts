@@ -6,6 +6,7 @@ import {
   tryAlarmCooldown,
   type AlarmSettings,
 } from "./settings";
+import { emitAlarmToast, targetTabForKind } from "./toast";
 import type { AlarmKind } from "./types";
 
 export type { AlarmKind } from "./types";
@@ -41,11 +42,21 @@ export async function fireAlarm(
   if (!s.enabled) return false;
   if (!tryAlarmCooldown(`${kind}:${id}`, s.cooldownSec)) return false;
 
-  void playDoorbell();
+  const targetTab = targetTabForKind(kind);
+  const vol = Math.max(0, Math.min(100, s.volume ?? 70)) / 100;
+  void playDoorbell(vol);
   if (s.browserNotify) void notifyBrowser(title, body);
-  pushAlarmHistory(kind, title, body);
+  const event = pushAlarmHistory(kind, title, body, targetTab);
+  if (s.toastEnabled !== false) {
+    emitAlarmToast({
+      id: event.id,
+      kind,
+      title,
+      body,
+      targetTab,
+    });
+  }
 
-  // 탭 포커스 힌트
   try {
     const prev = document.title;
     document.title = `🔔 ${title}`;

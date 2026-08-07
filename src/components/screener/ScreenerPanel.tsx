@@ -210,6 +210,17 @@ export function ScreenerPanel() {
     });
   }
 
+  function selectAllStrategies() {
+    setFilters((f) => ({
+      ...f,
+      strategies: STRATEGY_OPTS.map(([id]) => id),
+    }));
+  }
+
+  function clearStrategies() {
+    setFilters((f) => ({ ...f, strategies: [] }));
+  }
+
   function setMacdStrategies() {
     setFilters((f) => ({
       ...f,
@@ -562,7 +573,26 @@ export function ScreenerPanel() {
               />
             </label>
           </div>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={selectAllStrategies}
+              className="rounded border border-zinc-600 px-2 py-0.5 text-[11px] text-zinc-300 hover:border-sky-500/40 hover:text-sky-300"
+            >
+              모두 선택
+            </button>
+            <button
+              type="button"
+              onClick={clearStrategies}
+              className="rounded border border-zinc-800 px-2 py-0.5 text-[11px] text-zinc-500 hover:text-zinc-300"
+            >
+              선택 해제
+            </button>
+            <span className="mx-1 text-[10px] text-zinc-600">
+              {filters.strategies.length === 0
+                ? "미선택 = 전략 필터 없음"
+                : `${filters.strategies.length}개 선택`}
+            </span>
             {STRATEGY_OPTS.map(([id, label]) => {
               const on = filters.strategies.includes(id);
               return (

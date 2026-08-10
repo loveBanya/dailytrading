@@ -176,6 +176,25 @@ export function recentCross(
   return null;
 }
 
+/** MACD(또는 임의의 라인)가 0선을 최근 상향/하향 돌파했는지 */
+export function recentZeroCross(
+  line: number[],
+  within = 5
+): "up" | "down" | null {
+  const n = line.length;
+  if (n < 2) return null;
+  for (let i = 0; i < within; i++) {
+    const idx = n - 1 - i;
+    if (idx < 1) break;
+    const prev = line[idx - 1];
+    const now = line[idx];
+    if (!Number.isFinite(prev) || !Number.isFinite(now)) continue;
+    if (prev <= 0 && now > 0) return "up";
+    if (prev >= 0 && now < 0) return "down";
+  }
+  return null;
+}
+
 export function swingLow(candles: OhlcvCandle[], lookback = 20): number {
   const slice = candles.slice(-lookback);
   return Math.min(...slice.map((c) => c.low));

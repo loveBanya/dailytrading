@@ -79,9 +79,9 @@ async function analyzeSymbol(
   const evaluate = mode === "evaluate";
   const [c5, c15, c1h, c4h] = await Promise.all([
     adapter.fetchKlines(ticker.symbol, "5m", 100),
-    adapter.fetchKlines(ticker.symbol, "15m", 120),
-    adapter.fetchKlines(ticker.symbol, "1h", 120),
-    adapter.fetchKlines(ticker.symbol, "4h", 100),
+    adapter.fetchKlines(ticker.symbol, "15m", 250),
+    adapter.fetchKlines(ticker.symbol, "1h", 250),
+    adapter.fetchKlines(ticker.symbol, "4h", 120),
   ]);
 
   const m5c = completedCandles(c5, INTERVAL_MS["5m"]);
@@ -414,9 +414,9 @@ export async function fetchSymbolDetail(
   const adapter = getAdapter(exchange);
   const [c5, c15, c1h, c4h, funding, oi] = await Promise.all([
     adapter.fetchKlines(symbol, "5m", 100),
-    adapter.fetchKlines(symbol, "15m", 120),
-    adapter.fetchKlines(symbol, "1h", 120),
-    adapter.fetchKlines(symbol, "4h", 100),
+    adapter.fetchKlines(symbol, "15m", 250),
+    adapter.fetchKlines(symbol, "1h", 250),
+    adapter.fetchKlines(symbol, "4h", 120),
     adapter.fetchFundingRate(symbol),
     adapter.fetchOpenInterestChangePct(symbol),
   ]);

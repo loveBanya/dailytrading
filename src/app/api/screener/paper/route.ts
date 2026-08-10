@@ -177,7 +177,8 @@ export async function POST(req: NextRequest) {
           (s) =>
             (s.id === "golden_cross" ||
               s.id === "dead_cross" ||
-              s.id === "macd_momentum") &&
+              s.id === "macd_momentum" ||
+              s.id === "ema200_macd_zero") &&
             s.score >= 55 &&
             s.side !== "NEUTRAL"
         );
@@ -186,7 +187,8 @@ export async function POST(req: NextRequest) {
           c.macdState.includes("???") ||
           c.strongestStrategy === "golden_cross" ||
           c.strongestStrategy === "dead_cross" ||
-          c.strongestStrategy === "macd_momentum"
+          c.strongestStrategy === "macd_momentum" ||
+          c.strongestStrategy === "ema200_macd_zero"
         );
       });
     }

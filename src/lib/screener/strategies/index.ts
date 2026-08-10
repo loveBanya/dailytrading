@@ -9,6 +9,7 @@ import {
   median,
   pctChange,
   recentCross,
+  recentZeroCross,
   rsi,
   slope,
   swingHigh,
@@ -35,6 +36,10 @@ export interface TfMetrics {
   macdCross: "golden" | "dead" | null;
   macdHistRising: boolean;
   macdAboveZero: boolean;
+  /** MACD > Signal (골든크로스 상태 유지) */
+  macdBullish: boolean;
+  /** MACD 선이 최근 0선 상향/하향 돌파 */
+  macdZeroCross: "up" | "down" | null;
   bbUpper: number;
   bbLower: number;
   bbMid: number;
@@ -87,6 +92,9 @@ export function buildTfMetrics(candles: OhlcvCandle[]): TfMetrics | null {
   const widthPrev =
     bb.width.length >= 4 ? bb.width[bb.width.length - 4] : widthNow;
 
+  const macdLine = lastFinite(m.macd);
+  const macdSig = lastFinite(m.signal);
+
   return {
     candles,
     closes,
@@ -106,7 +114,9 @@ export function buildTfMetrics(candles: OhlcvCandle[]): TfMetrics | null {
     emaSlope50: slope(e50, 5),
     macdCross: recentCross(m.macd, m.signal, 5),
     macdHistRising: histRising,
-    macdAboveZero: lastFinite(m.macd) > 0,
+    macdAboveZero: macdLine > 0,
+    macdBullish: macdLine > macdSig,
+    macdZeroCross: recentZeroCross(m.macd, 5),
     bbUpper: lastFinite(bb.upper),
     bbLower: lastFinite(bb.lower),
     bbMid: lastFinite(bb.mid),
@@ -274,6 +284,92 @@ export function scoreStrategies(input: {
       side,
       notes,
     });
+  }
+
+  // EMA200 위 + (0선 위 골든크로스 | 골든 상태에서 0선 상향 돌파)
+  // 숏은 반대: EMA200 아래 + (0선 아래 데드크로스 | 데드 상태에서 0선 하향 돌파)
+  {
+    const notes: string[] = [];
+    const ema200Ok = Number.isFinite(m15.ema200) && m15.ema200 > 0;
+    const above200 = ema200Ok && m15.last.close > m15.ema200;
+    const below200 = ema200Ok && m15.last.close < m15.ema200;
+    const above200_1h =
+      Number.isFinite(m1h.ema200) && m1h.last.close > m1h.ema200;
+    const below200_1h =
+      Number.isFinite(m1h.ema200) && m1h.last.close < m1h.ema200;
+
+    // 롱 A: 0선 위에서 MACD 골든크로스
+    const longA =
+      above200 && m15.macdCross === "golden" && m15.macdAboveZero;
+    // 롱 B: 이미 골든(MACD>Signal) 상태에서 MACD선이 0선 상향 돌파
+    const longB =
+      above200 && m15.macdBullish && m15.macdZeroCross === "up";
+
+    // 숏 A: 0선 아래에서 MACD 데드크로스
+    const shortA =
+      below200 && m15.macdCross === "dead" && !m15.macdAboveZero;
+    // 숏 B: 이미 데드(MACD<Signal) 상태에서 MACD선이 0선 하향 돌파
+    const shortB =
+      below200 && !m15.macdBullish && m15.macdZeroCross === "down";
+
+    if (longA || longB) {
+      let score = 80;
+      if (longA) notes.push("EMA200↑ + 0선 위 MACD 골든크로스");
+      if (longB) notes.push("EMA200↑ + 골든 상태에서 0선 상향 돌파");
+      if (above200_1h) {
+        score += 8;
+        notes.push("1h도 EMA200 위");
+      }
+      if (longA && longB) score += 5;
+      if (m15.macdHistRising) score += 5;
+      if (m15.volMult >= 1.3) score += 4;
+      out.push({
+        id: "ema200_macd_zero",
+        score: clamp(score),
+        side: "LONG",
+        notes,
+      });
+    } else if (shortA || shortB) {
+      let score = 80;
+      if (shortA) notes.push("EMA200↓ + 0선 아래 MACD 데드크로스");
+      if (shortB) notes.push("EMA200↓ + 데드 상태에서 0선 하향 돌파");
+      if (below200_1h) {
+        score += 8;
+        notes.push("1h도 EMA200 아래");
+      }
+      if (shortA && shortB) score += 5;
+      if (!m15.macdHistRising) score += 5;
+      if (m15.volMult >= 1.3) score += 4;
+      out.push({
+        id: "ema200_macd_zero",
+        score: clamp(score),
+        side: "SHORT",
+        notes,
+      });
+    } else {
+      // 세팅 근접(아직 트리거 전)
+      let score = 22;
+      let side: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+      if (above200 && m15.macdBullish) {
+        score = 40;
+        side = "LONG";
+        notes.push("EMA200 위·골든 유지 — 0선 돌파 대기");
+      } else if (below200 && !m15.macdBullish) {
+        score = 40;
+        side = "SHORT";
+        notes.push("EMA200 아래·데드 유지 — 0선 이탈 대기");
+      } else if (above200) {
+        notes.push("EMA200 위 — MACD 신호 대기");
+      } else if (below200) {
+        notes.push("EMA200 아래 — MACD 신호 대기");
+      }
+      out.push({
+        id: "ema200_macd_zero",
+        score: clamp(score),
+        side,
+        notes,
+      });
+    }
   }
 
   // breakout high / breakdown low

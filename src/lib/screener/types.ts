@@ -22,6 +22,7 @@ export type StrategyId =
   | "golden_cross"
   | "dead_cross"
   | "macd_momentum"
+  | "ema200_macd_zero"
   | "breakout_high"
   | "breakdown_low"
   | "retest"
@@ -40,6 +41,7 @@ export const STRATEGY_LABELS: Record<StrategyId, string> = {
   golden_cross: "골든크로스",
   dead_cross: "데드크로스",
   macd_momentum: "MACD 모멘텀",
+  ema200_macd_zero: "EMA200·MACD0선",
   breakout_high: "고점 돌파",
   breakdown_low: "저점 이탈",
   retest: "돌파 후 재테스트",

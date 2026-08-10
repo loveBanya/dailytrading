@@ -237,8 +237,22 @@ export function ScreenerPanel() {
   function setMacdStrategies() {
     setFilters((f) => ({
       ...f,
-      strategies: ["golden_cross", "dead_cross", "macd_momentum"],
+      strategies: [
+        "golden_cross",
+        "dead_cross",
+        "macd_momentum",
+        "ema200_macd_zero",
+      ],
       minScore: 50,
+    }));
+  }
+
+  function setEma200MacdStrategies() {
+    setFilters((f) => ({
+      ...f,
+      strategies: ["ema200_macd_zero"],
+      minScore: 55,
+      direction: "ALL",
     }));
   }
 
@@ -336,6 +350,14 @@ export function ScreenerPanel() {
             className="rounded border border-violet-500/40 px-2 py-1 text-xs text-violet-300"
           >
             MACD 필터
+          </button>
+          <button
+            type="button"
+            onClick={() => setEma200MacdStrategies()}
+            className="rounded border border-emerald-500/40 px-2 py-1 text-xs text-emerald-300"
+            title="EMA200 위 + 0선 위 골든 / 골든 상태에서 0선 돌파 (숏은 반대)"
+          >
+            EMA200·0선
           </button>
           <button
             type="button"

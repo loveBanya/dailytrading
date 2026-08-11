@@ -43,7 +43,19 @@ import {
   unreadAlarmCount,
 } from "@/lib/alarms/history";
 import type { AlarmTargetTab } from "@/lib/alarms/toast";
-import { loadSavedTab, saveTab } from "@/lib/prefs";
+import {
+  DEFAULT_GOAL_CHALLENGE,
+  DEFAULT_OVERVIEW_ORDER,
+  loadGoalChallenge,
+  loadOverviewOrder,
+  loadSavedTab,
+  OVERVIEW_SECTION_LABELS,
+  saveGoalChallenge,
+  saveOverviewOrder,
+  saveTab,
+  type GoalChallengePrefs,
+  type OverviewSectionId,
+} from "@/lib/prefs";
 import { exchangeLabel, statusLabel } from "@/lib/utils/labels";
 import { useRouter } from "next/navigation";
 
@@ -241,10 +253,20 @@ export function TradeJournal() {
     null
   );
   const [goalUsdt, setGoalUsdt] = useState<number | null>(null);
+  const [goalPrefs, setGoalPrefs] = useState<GoalChallengePrefs>(() => ({
+    ...DEFAULT_GOAL_CHALLENGE,
+    dailyHits: {},
+  }));
   const [flowsRefreshKey, setFlowsRefreshKey] = useState(0);
+  const [overviewOrder, setOverviewOrder] = useState<OverviewSectionId[]>(
+    () => [...DEFAULT_OVERVIEW_ORDER]
+  );
+  const [overviewOrderOpen, setOverviewOrderOpen] = useState(false);
 
   useEffect(() => {
     setTab(loadSavedTab<Tab>("trades", TAB_IDS));
+    setOverviewOrder(loadOverviewOrder());
+    setGoalPrefs(loadGoalChallenge());
     setTabReady(true);
   }, []);
 
@@ -252,6 +274,39 @@ export function TradeJournal() {
     if (!tabReady) return;
     saveTab(tab);
   }, [tab, tabReady]);
+
+  useEffect(() => {
+    if (!tabReady) return;
+    saveOverviewOrder(overviewOrder);
+  }, [overviewOrder, tabReady]);
+
+  useEffect(() => {
+    if (!tabReady) return;
+    saveGoalChallenge(goalPrefs);
+  }, [goalPrefs, tabReady]);
+
+  const patchGoalPrefs = useCallback(
+    (
+      next:
+        | GoalChallengePrefs
+        | ((p: GoalChallengePrefs) => GoalChallengePrefs)
+    ) => {
+      setGoalPrefs((p) => (typeof next === "function" ? next(p) : next));
+    },
+    []
+  );
+
+  function moveOverviewSection(id: OverviewSectionId, dir: -1 | 1) {
+    setOverviewOrder((order) => {
+      const i = order.indexOf(id);
+      if (i < 0) return order;
+      const j = i + dir;
+      if (j < 0 || j >= order.length) return order;
+      const next = [...order];
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+  }
 
   const goToAlarmTab = useCallback((target: AlarmTargetTab | Tab) => {
     if ((TAB_IDS as string[]).includes(target)) {
@@ -896,64 +951,173 @@ export function TradeJournal() {
 
       {tab === "overview" && (
         <div className="space-y-6">
-          <Section title="1억 만들기 챌린지">
-            <GoalChallengePanel
-              wallet={walletOverview}
-              walletLoading={walletLoading}
-              daily={daily}
-              onGoalUsdtChange={setGoalUsdt}
-            />
-          </Section>
-          <Section title="자산 그래프">
-            <EquityCurvePanel
-              daily={daily}
-              totalPnl={overall?.totalPnl ?? 0}
-              wallet={walletOverview}
-              walletLoading={walletLoading}
-              goalUsdt={goalUsdt}
-              flowsRefreshKey={flowsRefreshKey}
-            />
-          </Section>
-          <Section title="USDT 자본 흐름 (업비트 등)">
-            <AssetFlowsPanel
-              compact
-              onChanged={() => setFlowsRefreshKey((k) => k + 1)}
-            />
-          </Section>
-          <Section title="학습 로드맵">
-            <StudyRoadmapPanel
-              onNavigate={(id) => {
-                if ((TAB_IDS as string[]).includes(id)) {
-                  setTab(id as Tab);
-                }
-              }}
-            />
-          </Section>
-          <Section title="All-time PNL">
-            <StatsPanels
-              overall={overall}
-              monthly={monthly}
-              daily={daily}
-              trades={trades}
-              loading={statsLoading}
-              error={statsError}
-            />
-          </Section>
-          <Section title="현재 시장">
-            <MarketPanel
-              tickers={tickers}
-              fearGreed={fearGreed}
-              loading={marketLoading}
-              error={marketError}
-            />
-          </Section>
-          <Section title="켈리 베팅">
-            <KellyPanel
-              overall={overall}
-              loading={statsLoading}
-              defaultBankroll={walletOverview?.totalEquity ?? null}
-            />
-          </Section>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-zinc-600">
+              월간 목표를 우선하고, 섹션 순서는 아래에서 바꿀 수 있습니다.
+            </p>
+            <button
+              type="button"
+              onClick={() => setOverviewOrderOpen((v) => !v)}
+              className="rounded border border-zinc-700 px-2.5 py-1.5 text-[11px] text-zinc-400 hover:text-zinc-200"
+            >
+              {overviewOrderOpen ? "순서 닫기" : "한눈에 순서"}
+            </button>
+          </div>
+
+          {overviewOrderOpen && (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-3">
+              <p className="mb-2 text-[11px] text-zinc-500">
+                ▲▼로 순서를 바꿉니다. 브라우저에 저장됩니다.
+              </p>
+              <ul className="space-y-1">
+                {overviewOrder.map((id, idx) => (
+                  <li
+                    key={id}
+                    className="flex items-center justify-between gap-2 rounded border border-zinc-800 px-2.5 py-1.5"
+                  >
+                    <span className="text-sm text-zinc-300">
+                      <span className="mr-2 tabular-nums text-zinc-600">
+                        {idx + 1}.
+                      </span>
+                      {OVERVIEW_SECTION_LABELS[id]}
+                    </span>
+                    <span className="flex gap-1">
+                      <button
+                        type="button"
+                        disabled={idx === 0}
+                        onClick={() => moveOverviewSection(id, -1)}
+                        className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 disabled:opacity-30"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx === overviewOrder.length - 1}
+                        onClick={() => moveOverviewSection(id, 1)}
+                        className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 disabled:opacity-30"
+                      >
+                        ▼
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                onClick={() => setOverviewOrder([...DEFAULT_OVERVIEW_ORDER])}
+                className="mt-2 text-[11px] text-zinc-500 underline hover:text-zinc-300"
+              >
+                기본 순서로
+              </button>
+            </div>
+          )}
+
+          {overviewOrder.map((id) => {
+            if (id === "monthly_goal") {
+              return (
+                <Section key={id} title="월간 목표">
+                  <GoalChallengePanel
+                    variant="monthly"
+                    prefs={goalPrefs}
+                    onPrefsChange={patchGoalPrefs}
+                    wallet={walletOverview}
+                    walletLoading={walletLoading}
+                    daily={daily}
+                    onGoalUsdtChange={setGoalUsdt}
+                  />
+                </Section>
+              );
+            }
+            if (id === "ultimate_goal") {
+              return (
+                <Section key={id} title="최종 목표 (1억)">
+                  <GoalChallengePanel
+                    variant="ultimate"
+                    prefs={goalPrefs}
+                    onPrefsChange={patchGoalPrefs}
+                    wallet={walletOverview}
+                    walletLoading={walletLoading}
+                    daily={daily}
+                  />
+                </Section>
+              );
+            }
+            if (id === "equity") {
+              return (
+                <Section key={id} title="자산 그래프">
+                  <EquityCurvePanel
+                    daily={daily}
+                    totalPnl={overall?.totalPnl ?? 0}
+                    wallet={walletOverview}
+                    walletLoading={walletLoading}
+                    goalUsdt={goalUsdt}
+                    flowsRefreshKey={flowsRefreshKey}
+                  />
+                </Section>
+              );
+            }
+            if (id === "flows") {
+              return (
+                <Section key={id} title="USDT 자본 흐름 (업비트 등)">
+                  <AssetFlowsPanel
+                    compact
+                    onChanged={() => setFlowsRefreshKey((k) => k + 1)}
+                  />
+                </Section>
+              );
+            }
+            if (id === "roadmap") {
+              return (
+                <Section key={id} title="학습 로드맵">
+                  <StudyRoadmapPanel
+                    onNavigate={(navId) => {
+                      if ((TAB_IDS as string[]).includes(navId)) {
+                        setTab(navId as Tab);
+                      }
+                    }}
+                  />
+                </Section>
+              );
+            }
+            if (id === "pnl") {
+              return (
+                <Section key={id} title="All-time PNL">
+                  <StatsPanels
+                    overall={overall}
+                    monthly={monthly}
+                    daily={daily}
+                    trades={trades}
+                    loading={statsLoading}
+                    error={statsError}
+                  />
+                </Section>
+              );
+            }
+            if (id === "market") {
+              return (
+                <Section key={id} title="현재 시장">
+                  <MarketPanel
+                    tickers={tickers}
+                    fearGreed={fearGreed}
+                    loading={marketLoading}
+                    error={marketError}
+                  />
+                </Section>
+              );
+            }
+            if (id === "kelly") {
+              return (
+                <Section key={id} title="켈리 베팅">
+                  <KellyPanel
+                    overall={overall}
+                    loading={statsLoading}
+                    defaultBankroll={walletOverview?.totalEquity ?? null}
+                  />
+                </Section>
+              );
+            }
+            return null;
+          })}
         </div>
       )}
 

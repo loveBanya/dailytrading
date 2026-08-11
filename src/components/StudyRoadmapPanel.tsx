@@ -49,9 +49,9 @@ const STEPS: Array<{
   {
     step: 5,
     title: "세금 · 기록 (2027 대비)",
-    body: "2027-01-01부터 가상자산 양도차익 과세가 예정되어 있습니다. 취득가·이체·실현손익을 저널과 자본 흐름에 남겨 두면 신고가 수월합니다. 1억 챌린지는 과세 직전 목표일 뿐입니다.",
+    body: "2027-01-01부터 가상자산 양도차익 과세가 예정되어 있습니다. 취득가·이체·실현손익을 저널과 자본 흐름에 남겨 두면 신고가 수월합니다. 월간 목표를 먼저 지키고, 1억은 장기 참고로만 두세요.",
     tabs: [
-      { id: "overview", label: "1억 챌린지" },
+      { id: "overview", label: "월간 목표" },
       { id: "cash", label: "자본 흐름" },
     ],
   },
@@ -61,8 +61,8 @@ export function StudyRoadmapPanel({ onNavigate }: StudyRoadmapPanelProps) {
   return (
     <div className="space-y-4">
       <p className="text-sm text-zinc-500">
-        1억 챌린지를 버티려면 수익률보다 프로세스입니다. 아래 순서로 앱 기능을
-        쓰며 공부하세요.
+        월간 목표와 프로세스가 우선입니다. 아래 순서로 앱 기능을 쓰며
+        공부하세요.
       </p>
       <ol className="space-y-3">
         {STEPS.map((s) => (

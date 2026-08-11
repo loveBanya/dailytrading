@@ -96,43 +96,128 @@ export function saveWatchAssets(assets: WatchAsset[]): void {
 }
 
 export interface GoalChallengePrefs {
+  /** 이번 달 수익 목표 (USDT) — 실전 목표 */
+  monthlyTargetUsdt: number;
+  /** 최종 목표 (원) — 1억 등, 하단 참고용 */
   targetKrw: number;
   deadline: string; // YYYY-MM-DD
   fxRate: number; // KRW per 1 USDT
   startDate: string;
+  /** 이번 달 키 YYYY-MM — 월초 자산 스냅샷용 */
+  monthKey: string;
+  /** 해당 월 시작 시점 자산(USDT) */
+  monthStartEquity: number | null;
+  /** 날짜(YYYY-MM-DD) → 일일 목표 달성 여부 (자동) */
+  dailyHits: Record<string, boolean>;
 }
 
 const GOAL_KEY = "dailytrading.goal.challenge.v1";
 
 export const DEFAULT_GOAL_CHALLENGE: GoalChallengePrefs = {
+  monthlyTargetUsdt: 500,
   targetKrw: 100_000_000,
   deadline: "2026-12-31",
   fxRate: 1350,
   startDate: "2026-08-11",
+  monthKey: "",
+  monthStartEquity: null,
+  dailyHits: {},
 };
 
 export function loadGoalChallenge(): GoalChallengePrefs {
-  if (typeof window === "undefined") return { ...DEFAULT_GOAL_CHALLENGE };
+  if (typeof window === "undefined") return { ...DEFAULT_GOAL_CHALLENGE, dailyHits: {} };
   try {
     const raw = localStorage.getItem(GOAL_KEY);
-    if (!raw) return { ...DEFAULT_GOAL_CHALLENGE };
+    if (!raw) return { ...DEFAULT_GOAL_CHALLENGE, dailyHits: {} };
     const saved = JSON.parse(raw) as Partial<GoalChallengePrefs>;
     return {
       ...DEFAULT_GOAL_CHALLENGE,
       ...saved,
+      monthlyTargetUsdt:
+        Number(saved.monthlyTargetUsdt) ||
+        DEFAULT_GOAL_CHALLENGE.monthlyTargetUsdt,
       targetKrw: Number(saved.targetKrw) || DEFAULT_GOAL_CHALLENGE.targetKrw,
       fxRate: Number(saved.fxRate) || DEFAULT_GOAL_CHALLENGE.fxRate,
       deadline: saved.deadline || DEFAULT_GOAL_CHALLENGE.deadline,
       startDate: saved.startDate || DEFAULT_GOAL_CHALLENGE.startDate,
+      monthKey: saved.monthKey || "",
+      monthStartEquity:
+        saved.monthStartEquity == null || saved.monthStartEquity === undefined
+          ? null
+          : Number(saved.monthStartEquity),
+      dailyHits:
+        saved.dailyHits && typeof saved.dailyHits === "object"
+          ? saved.dailyHits
+          : {},
     };
   } catch {
-    return { ...DEFAULT_GOAL_CHALLENGE };
+    return { ...DEFAULT_GOAL_CHALLENGE, dailyHits: {} };
   }
 }
 
 export function saveGoalChallenge(prefs: GoalChallengePrefs): void {
   try {
     localStorage.setItem(GOAL_KEY, JSON.stringify(prefs));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 한눈에 탭 섹션 순서 */
+export type OverviewSectionId =
+  | "monthly_goal"
+  | "equity"
+  | "flows"
+  | "roadmap"
+  | "pnl"
+  | "market"
+  | "kelly"
+  | "ultimate_goal";
+
+export const OVERVIEW_SECTION_LABELS: Record<OverviewSectionId, string> = {
+  monthly_goal: "월간 목표",
+  equity: "자산 그래프",
+  flows: "USDT 자본 흐름",
+  roadmap: "학습 로드맵",
+  pnl: "All-time PNL",
+  market: "현재 시장",
+  kelly: "켈리 베팅",
+  ultimate_goal: "최종 목표 (1억)",
+};
+
+export const DEFAULT_OVERVIEW_ORDER: OverviewSectionId[] = [
+  "monthly_goal",
+  "equity",
+  "flows",
+  "roadmap",
+  "pnl",
+  "market",
+  "kelly",
+  "ultimate_goal",
+];
+
+const OVERVIEW_ORDER_KEY = "dailytrading.overview.order.v1";
+
+export function loadOverviewOrder(): OverviewSectionId[] {
+  if (typeof window === "undefined") return [...DEFAULT_OVERVIEW_ORDER];
+  try {
+    const raw = localStorage.getItem(OVERVIEW_ORDER_KEY);
+    if (!raw) return [...DEFAULT_OVERVIEW_ORDER];
+    const saved = JSON.parse(raw) as string[];
+    if (!Array.isArray(saved)) return [...DEFAULT_OVERVIEW_ORDER];
+    const valid = saved.filter((id): id is OverviewSectionId =>
+      (DEFAULT_OVERVIEW_ORDER as string[]).includes(id)
+    );
+    const missing = DEFAULT_OVERVIEW_ORDER.filter((id) => !valid.includes(id));
+    return [...valid, ...missing];
+  } catch {
+    return [...DEFAULT_OVERVIEW_ORDER];
+  }
+}
+
+export function saveOverviewOrder(order: OverviewSectionId[]): void {
+  try {
+    localStorage.setItem(OVERVIEW_ORDER_KEY, JSON.stringify(order));
   } catch {
     /* ignore */
   }

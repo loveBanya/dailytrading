@@ -273,7 +273,7 @@ export function EquityCurvePanel({
       <p className="text-sm text-zinc-500">
         단위는 USDT($)입니다. 한화는 챌린지 환율로 환산한 참고값입니다. 파란
         점선=현재
-        {goalUsdt != null ? " · 노란 점선=목표" : ""}.
+        {goalUsdt != null ? " · 노란 점선=이번 달 월말 목표 자산" : ""}.
       </p>
 
       <div className="flex flex-wrap gap-4 text-sm">

@@ -602,7 +602,7 @@ export function TradeJournal() {
       </header>
 
       <div className="sticky top-0 z-30 mb-4 -mx-1 px-1 py-1 sm:static sm:mx-0 sm:px-0 sm:py-0">
-        <TradeChecklist mode="compact" defaultOpen />
+        <TradeChecklist mode="compact" defaultOpen={false} />
       </div>
 
       {/* 실시간 포지션 — 기본 접힘 */}

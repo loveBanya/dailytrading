@@ -5,9 +5,11 @@ import {
   allTemplates,
   checklistProgress,
   cloneTemplate,
+  loadChecklistOpen,
   loadChecklistState,
   newItem,
   resolveTemplate,
+  saveChecklistOpen,
   saveChecklistState,
   type CheckAnswer,
   type ChecklistState,
@@ -17,6 +19,7 @@ import {
 interface TradeChecklistProps {
   /** compact: 메인 상단 체크용 / edit: 마인드 탭에서 규칙·템플릿 편집 */
   mode?: "compact" | "edit";
+  /** localStorage에 값이 없을 때만 사용 (기본 접힘) */
   defaultOpen?: boolean;
 }
 
@@ -26,7 +29,7 @@ interface TradeChecklistProps {
  */
 export function TradeChecklist({
   mode = "compact",
-  defaultOpen = true,
+  defaultOpen = false,
 }: TradeChecklistProps) {
   const [state, setState] = useState<ChecklistState>(() =>
     loadChecklistState()
@@ -40,13 +43,23 @@ export function TradeChecklist({
 
   useEffect(() => {
     setState(loadChecklistState());
+    setOpen(loadChecklistOpen(defaultOpen));
     setReady(true);
-  }, []);
+  }, [defaultOpen]);
 
   useEffect(() => {
     if (!ready) return;
     saveChecklistState(state);
   }, [state, ready]);
+
+  useEffect(() => {
+    if (!ready || mode !== "compact") return;
+    saveChecklistOpen(open);
+  }, [open, ready, mode]);
+
+  function toggleOpen() {
+    setOpen((v) => !v);
+  }
 
   const templates = useMemo(() => allTemplates(state), [state]);
   const tpl = useMemo(() => resolveTemplate(state), [state]);
@@ -165,22 +178,51 @@ export function TradeChecklist({
     { id: "short", label: "숏", cls: "border-rose-500/50 bg-rose-500/15 text-rose-300" },
   ];
 
+  const biasLabel =
+    state.bias === "long"
+      ? "롱"
+      : state.bias === "short"
+        ? "숏"
+        : state.bias === "watch"
+          ? "관망"
+          : "방향—";
+
+  const titleBlock = (
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <p className="text-sm font-semibold text-zinc-100">매매 체크리스트</p>
+      <span className="text-[11px] tabular-nums text-zinc-500">
+        OK {prog.ok} · NG {prog.ng} · 남음 {prog.unset}
+      </span>
+      {mode === "compact" && !open && (
+        <span className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400">
+          {tpl.name} · {biasLabel}
+        </span>
+      )}
+    </div>
+  );
+
   const header = (
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <p className="text-sm font-semibold text-zinc-100">매매 체크리스트</p>
-        <span className="text-[11px] tabular-nums text-zinc-500">
-          OK {prog.ok} · NG {prog.ng} · 남음 {prog.unset}
-        </span>
-      </div>
+      {mode === "compact" ? (
+        <button
+          type="button"
+          onClick={toggleOpen}
+          className="min-w-0 text-left"
+          aria-expanded={open}
+        >
+          {titleBlock}
+        </button>
+      ) : (
+        titleBlock
+      )}
       <div className="flex flex-wrap gap-1.5">
         {mode === "compact" && (
           <button
             type="button"
-            onClick={() => setOpen((v) => !v)}
-            className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400"
+            onClick={toggleOpen}
+            className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:text-zinc-200"
           >
-            {open ? "접기" : "펼치기"}
+            {open ? "접기 ▲" : "펼치기 ▼"}
           </button>
         )}
         <button

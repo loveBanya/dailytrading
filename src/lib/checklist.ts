@@ -85,6 +85,7 @@ export const BUILTIN_CHECKLIST_TEMPLATES: ChecklistTemplate[] = [
 ];
 
 const KEY = "dailytrading.checklist.v1";
+const OPEN_KEY = "dailytrading.checklist.open.v1";
 
 export function defaultChecklistState(): ChecklistState {
   return {
@@ -93,6 +94,26 @@ export function defaultChecklistState(): ChecklistState {
     answers: {},
     bias: "unset",
   };
+}
+
+export function loadChecklistOpen(fallback = false): boolean {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = localStorage.getItem(OPEN_KEY);
+    if (raw === null) return fallback;
+    return raw === "1";
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveChecklistOpen(open: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(OPEN_KEY, open ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
 }
 
 export function allTemplates(state: ChecklistState): ChecklistTemplate[] {

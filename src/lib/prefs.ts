@@ -94,3 +94,46 @@ export function saveWatchAssets(assets: WatchAsset[]): void {
     /* ignore */
   }
 }
+
+export interface GoalChallengePrefs {
+  targetKrw: number;
+  deadline: string; // YYYY-MM-DD
+  fxRate: number; // KRW per 1 USDT
+  startDate: string;
+}
+
+const GOAL_KEY = "dailytrading.goal.challenge.v1";
+
+export const DEFAULT_GOAL_CHALLENGE: GoalChallengePrefs = {
+  targetKrw: 100_000_000,
+  deadline: "2026-12-31",
+  fxRate: 1350,
+  startDate: "2026-08-11",
+};
+
+export function loadGoalChallenge(): GoalChallengePrefs {
+  if (typeof window === "undefined") return { ...DEFAULT_GOAL_CHALLENGE };
+  try {
+    const raw = localStorage.getItem(GOAL_KEY);
+    if (!raw) return { ...DEFAULT_GOAL_CHALLENGE };
+    const saved = JSON.parse(raw) as Partial<GoalChallengePrefs>;
+    return {
+      ...DEFAULT_GOAL_CHALLENGE,
+      ...saved,
+      targetKrw: Number(saved.targetKrw) || DEFAULT_GOAL_CHALLENGE.targetKrw,
+      fxRate: Number(saved.fxRate) || DEFAULT_GOAL_CHALLENGE.fxRate,
+      deadline: saved.deadline || DEFAULT_GOAL_CHALLENGE.deadline,
+      startDate: saved.startDate || DEFAULT_GOAL_CHALLENGE.startDate,
+    };
+  } catch {
+    return { ...DEFAULT_GOAL_CHALLENGE };
+  }
+}
+
+export function saveGoalChallenge(prefs: GoalChallengePrefs): void {
+  try {
+    localStorage.setItem(GOAL_KEY, JSON.stringify(prefs));
+  } catch {
+    /* ignore */
+  }
+}

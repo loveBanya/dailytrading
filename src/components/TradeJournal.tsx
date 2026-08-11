@@ -25,6 +25,10 @@ import { ScreenerPerfPanel } from "./screener/ScreenerPerfPanel";
 import { WatchEvaluatePanel } from "./screener/WatchEvaluatePanel";
 import { EquityCurvePanel } from "./EquityCurvePanel";
 import { ReviewCommentsFeed } from "./ReviewCommentsFeed";
+import { GoalChallengePanel } from "./GoalChallengePanel";
+import { StudyRoadmapPanel } from "./StudyRoadmapPanel";
+import { AssetFlowsPanel } from "./AssetFlowsPanel";
+import { UpbitPanel } from "./UpbitPanel";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
 import { AlarmToastHost } from "./AlarmToastHost";
 import { AlertsPanel } from "./AlertsPanel";
@@ -235,6 +239,8 @@ export function TradeJournal() {
   const [highlightTradeId, setHighlightTradeId] = useState<string | null>(
     null
   );
+  const [goalUsdt, setGoalUsdt] = useState<number | null>(null);
+  const [flowsRefreshKey, setFlowsRefreshKey] = useState(0);
 
   useEffect(() => {
     setTab(loadSavedTab<Tab>("trades", TAB_IDS));
@@ -885,12 +891,37 @@ export function TradeJournal() {
 
       {tab === "overview" && (
         <div className="space-y-6">
+          <Section title="1억 만들기 챌린지">
+            <GoalChallengePanel
+              wallet={walletOverview}
+              walletLoading={walletLoading}
+              daily={daily}
+              onGoalUsdtChange={setGoalUsdt}
+            />
+          </Section>
           <Section title="자산 그래프">
             <EquityCurvePanel
               daily={daily}
               totalPnl={overall?.totalPnl ?? 0}
               wallet={walletOverview}
               walletLoading={walletLoading}
+              goalUsdt={goalUsdt}
+              flowsRefreshKey={flowsRefreshKey}
+            />
+          </Section>
+          <Section title="USDT 자본 흐름 (업비트 등)">
+            <AssetFlowsPanel
+              compact
+              onChanged={() => setFlowsRefreshKey((k) => k + 1)}
+            />
+          </Section>
+          <Section title="학습 로드맵">
+            <StudyRoadmapPanel
+              onNavigate={(id) => {
+                if ((TAB_IDS as string[]).includes(id)) {
+                  setTab(id as Tab);
+                }
+              }}
             />
           </Section>
           <Section title="All-time PNL">
@@ -946,9 +977,19 @@ export function TradeJournal() {
       )}
 
       {tab === "cash" && (
-        <Section title="현금 입출금">
-          <CashLedgerPanel />
-        </Section>
+        <div className="space-y-6">
+          <Section title="업비트 (1회 동기화 → DB)">
+            <UpbitPanel />
+          </Section>
+          <Section title="현금 입출금 (KRW)">
+            <CashLedgerPanel />
+          </Section>
+          <Section title="USDT 자본 흐름 (업비트→테더 등)">
+            <AssetFlowsPanel
+              onChanged={() => setFlowsRefreshKey((k) => k + 1)}
+            />
+          </Section>
+        </div>
       )}
 
       {tab === "mindset" && (

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AreaSeries,
   ColorType,
@@ -10,12 +10,17 @@ import {
 import type { DailyPnl } from "@/lib/stats/compute";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
 import { formatPnl } from "@/lib/utils/format";
+import type { AssetFlow } from "@/app/api/asset-flows/route";
 
 interface EquityCurvePanelProps {
   daily: DailyPnl[];
   totalPnl: number;
   wallet: WalletOverview | null;
   walletLoading?: boolean;
+  /** 목표 자산 (USDT). 설정되면 곡선에 목표선 표시 */
+  goalUsdt?: number | null;
+  /** 외부에서 flows 갱신 트리거 */
+  flowsRefreshKey?: number;
 }
 
 const STABLES = new Set([
@@ -34,16 +39,62 @@ function dayToUtcSec(day: string): number {
   return Math.floor(new Date(`${day}T00:00:00+09:00`).getTime() / 1000);
 }
 
+function flowNet(f: AssetFlow): number {
+  const amt = Number(f.amount_usdt) || 0;
+  return f.direction === "out" ? -amt : amt;
+}
+
 export function EquityCurvePanel({
   daily,
   totalPnl,
   wallet,
   walletLoading,
+  goalUsdt,
+  flowsRefreshKey = 0,
 }: EquityCurvePanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [flows, setFlows] = useState<AssetFlow[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/asset-flows");
+        const data = (await res.json()) as {
+          flows?: AssetFlow[];
+          error?: string;
+        };
+        if (cancelled) return;
+        if (data.error) {
+          setFlows([]);
+          return;
+        }
+        setFlows(data.flows ?? []);
+      } catch {
+        if (!cancelled) setFlows([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [flowsRefreshKey]);
 
   const liveEquity = wallet?.totalEquity ?? null;
   const liveUpl = wallet?.totalPerpUPL ?? 0;
+
+  const netExternalAll = useMemo(
+    () => flows.reduce((s, f) => s + flowNet(f), 0),
+    [flows]
+  );
+
+  const flowByDay = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const f of flows) {
+      const d = f.entry_date.slice(0, 10);
+      map.set(d, (map.get(d) ?? 0) + flowNet(f));
+    }
+    return map;
+  }, [flows]);
 
   const coinHoldings = useMemo(() => {
     const map = new Map<string, number>();
@@ -70,16 +121,20 @@ export function EquityCurvePanel({
   );
 
   const series = useMemo(() => {
-    const days = [...daily].sort((a, b) => a.date.localeCompare(b.date));
+    const pnlByDay = new Map(daily.map((d) => [d.date, d.pnl]));
+    const days = Array.from(
+      new Set([...pnlByDay.keys(), ...flowByDay.keys()])
+    ).sort();
+
     if (days.length === 0 && liveEquity == null) {
       return [] as { time: number; value: number }[];
     }
 
-    // 거래소 실시간 자산에서 누적 실현손익·미실현을 빼 시작 자산 추정
-    // (입출금 장부와 섞지 않고 코인 계좌 기준으로 맞춤)
+    // live = start + netExternal + totalPnl + upl
+    // start = live − totalPnl − upl − netExternal
     const start =
       liveEquity != null && Number.isFinite(liveEquity)
-        ? liveEquity - totalPnl - liveUpl
+        ? liveEquity - totalPnl - liveUpl - netExternalAll
         : 0;
 
     let equity = start;
@@ -96,15 +151,15 @@ export function EquityCurvePanel({
       return points;
     }
 
-    for (const d of days) {
-      equity += d.pnl;
+    for (const day of days) {
+      equity += pnlByDay.get(day) ?? 0;
+      equity += flowByDay.get(day) ?? 0;
       points.push({
-        time: dayToUtcSec(d.date),
+        time: dayToUtcSec(day),
         value: Number(equity.toFixed(2)),
       });
     }
 
-    // 마지막 점을 실시간 자산(미실현 포함)에 맞춰 표시
     if (liveEquity != null && points.length > 0) {
       points[points.length - 1] = {
         ...points[points.length - 1]!,
@@ -113,7 +168,14 @@ export function EquityCurvePanel({
     }
 
     return points;
-  }, [daily, liveEquity, liveUpl, totalPnl]);
+  }, [
+    daily,
+    flowByDay,
+    liveEquity,
+    liveUpl,
+    netExternalAll,
+    totalPnl,
+  ]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -167,6 +229,17 @@ export function EquityCurvePanel({
       });
     }
 
+    if (goalUsdt != null && Number.isFinite(goalUsdt) && goalUsdt > 0) {
+      area.createPriceLine({
+        price: goalUsdt,
+        color: "#fbbf24",
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: "목표",
+      });
+    }
+
     chart.timeScale().fitContent();
     const ro = new ResizeObserver(() => {
       if (containerRef.current) {
@@ -180,7 +253,7 @@ export function EquityCurvePanel({
       ro.disconnect();
       chart.remove();
     };
-  }, [series, liveEquity]);
+  }, [series, liveEquity, goalUsdt]);
 
   const last = series[series.length - 1]?.value;
   const maxCoin = nonStableCoins[0]?.usdValue ?? 0;
@@ -188,8 +261,9 @@ export function EquityCurvePanel({
   return (
     <div className="space-y-4">
       <p className="text-sm text-zinc-500">
-        코인 계좌 자산 곡선입니다. 거래소 실시간 자산에서 누적 실현손익을 역산해
-        시작점을 맞추고, 일별 매매 손익을 누적합니다. 파란 점선은 현재 자산입니다.
+        코인 계좌 자산 곡선입니다. 선물 실현손익 + USDT 외부 입출금(업비트 등)을
+        누적하고, 거래소 실시간 자산으로 맞춥니다. 파란 점선=현재
+        {goalUsdt != null ? " · 노란 점선=1억 목표" : ""}.
       </p>
 
       <div className="flex flex-wrap gap-4 text-sm">
@@ -207,6 +281,16 @@ export function EquityCurvePanel({
             }`}
           >
             {formatPnl(totalPnl)}
+          </p>
+        </div>
+        <div>
+          <p className="text-[11px] text-zinc-500">USDT 순유입</p>
+          <p
+            className={`font-semibold tabular-nums ${
+              netExternalAll >= 0 ? "text-emerald-400" : "text-rose-400"
+            }`}
+          >
+            ${netExternalAll.toFixed(2)}
           </p>
         </div>
         <div>
@@ -243,8 +327,7 @@ export function EquityCurvePanel({
 
       {series.length === 0 ? (
         <div className="rounded-lg border border-dashed border-zinc-700 p-8 text-center text-sm text-zinc-500">
-          매매를 동기화하거나 거래소 자산을 불러오면 코인 자산 그래프가
-          그려집니다.
+          매매 동기화·USDT 유입 기록·거래소 자산이 있으면 그래프가 그려집니다.
         </div>
       ) : (
         <div

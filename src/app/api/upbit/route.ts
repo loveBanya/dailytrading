@@ -95,6 +95,7 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => ({}))) as {
       orderPages?: number;
       transferPages?: number;
+      mode?: "recent" | "older";
     };
     if (!hasUpbitCredentials()) {
       return NextResponse.json(
@@ -109,6 +110,7 @@ export async function POST(req: NextRequest) {
     const result = await syncUpbitOnce({
       orderPages: body.orderPages,
       transferPages: body.transferPages,
+      mode: body.mode,
     });
 
     // 캐시 무효화 — 빈 값으로 덮어 TTL 만료 유도

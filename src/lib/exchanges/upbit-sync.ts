@@ -17,6 +17,9 @@ export interface UpbitSyncResult {
   transfersFetched: number;
   transfersInserted: number;
   transfersSkipped: number;
+  orderStartPage: number;
+  transferStartPage: number;
+  mode: "recent" | "older";
   syncedAt: string;
   error?: string;
 }
@@ -69,20 +72,71 @@ function transferRow(kind: "deposit" | "withdraw", t: UpbitTransfer) {
 export async function syncUpbitOnce(options?: {
   orderPages?: number;
   transferPages?: number;
+  /** recent: 최신부터. older: DB에 쌓인 만큼 건너뛰고 더 옛 페이지 */
+  mode?: "recent" | "older";
 }): Promise<UpbitSyncResult> {
-  const orderPages = Math.min(20, Math.max(1, options?.orderPages ?? 5));
-  const transferPages = Math.min(10, Math.max(1, options?.transferPages ?? 3));
+  const mode = options?.mode === "older" ? "older" : "recent";
+  const orderPages = Math.min(
+    20,
+    Math.max(1, options?.orderPages ?? (mode === "older" ? 5 : 2))
+  );
+  const transferPages = Math.min(
+    10,
+    Math.max(1, options?.transferPages ?? (mode === "older" ? 3 : 1))
+  );
   const supabase = createSupabaseAdmin();
   const syncedAt = new Date().toISOString();
 
+  const empty = (error?: string): UpbitSyncResult => ({
+    accounts: 0,
+    ordersFetched: 0,
+    ordersInserted: 0,
+    ordersSkipped: 0,
+    transfersFetched: 0,
+    transfersInserted: 0,
+    transfersSkipped: 0,
+    orderStartPage: 1,
+    transferStartPage: 1,
+    mode,
+    syncedAt,
+    error,
+  });
+
   try {
+    let orderStartPage = 1;
+    let transferStartPage = 1;
+    let depositStartPage = 1;
+    let withdrawStartPage = 1;
+    if (mode === "older") {
+      const [
+        { count: orderCount },
+        { count: depositCount },
+        { count: withdrawCount },
+      ] = await Promise.all([
+        supabase.from("upbit_orders").select("*", { count: "exact", head: true }),
+        supabase
+          .from("upbit_transfers")
+          .select("*", { count: "exact", head: true })
+          .eq("kind", "deposit"),
+        supabase
+          .from("upbit_transfers")
+          .select("*", { count: "exact", head: true })
+          .eq("kind", "withdraw"),
+      ]);
+      // 마지막 페이지와 1페이지 겹쳐 구멍 방지
+      orderStartPage = Math.max(1, Math.floor((orderCount ?? 0) / 100));
+      depositStartPage = Math.max(1, Math.floor((depositCount ?? 0) / 100));
+      withdrawStartPage = Math.max(1, Math.floor((withdrawCount ?? 0) / 100));
+      transferStartPage = Math.min(depositStartPage, withdrawStartPage);
+    }
+
     const accounts = await fetchUpbitAccounts();
     const { error: snapErr } = await supabase
       .from("upbit_account_snapshots")
       .insert({
         synced_at: syncedAt,
         accounts: accounts as unknown as UpbitAccount[],
-        note: "manual sync",
+        note: mode === "older" ? "older sync" : "manual sync",
       });
     if (snapErr) throw snapErr;
 
@@ -90,8 +144,13 @@ export async function syncUpbitOnce(options?: {
     let ordersInserted = 0;
     let ordersSkipped = 0;
 
-    for (let page = 1; page <= orderPages; page++) {
-      const batch = await fetchUpbitClosedOrders({ page, limit: 100, state: "done" });
+    for (let i = 0; i < orderPages; i++) {
+      const page = orderStartPage + i;
+      const batch = await fetchUpbitClosedOrders({
+        page,
+        limit: 100,
+        state: "done",
+      });
       if (batch.length === 0) break;
       ordersFetched += batch.length;
 
@@ -110,8 +169,8 @@ export async function syncUpbitOnce(options?: {
         ordersInserted += fresh.length;
       }
 
-      // 한 페이지가 전부 이미 있으면 더 오래된 쪽도 이미 있을 가능성 큼 → 조기 종료
-      if (fresh.length === 0 && page >= 2) break;
+      // recent만: 이미 있는 구간이면 조기 종료. older는 더 뒤로 계속
+      if (mode === "recent" && fresh.length === 0 && i >= 1) break;
       if (batch.length < 100) break;
     }
 
@@ -121,9 +180,11 @@ export async function syncUpbitOnce(options?: {
 
     async function ingestTransfers(
       kind: "deposit" | "withdraw",
+      startPage: number,
       fetcher: (p: number) => Promise<UpbitTransfer[]>
     ) {
-      for (let page = 1; page <= transferPages; page++) {
+      for (let i = 0; i < transferPages; i++) {
+        const page = startPage + i;
         const batch = await fetcher(page);
         if (batch.length === 0) break;
         transfersFetched += batch.length;
@@ -142,15 +203,15 @@ export async function syncUpbitOnce(options?: {
           if (error) throw error;
           transfersInserted += fresh.length;
         }
-        if (fresh.length === 0 && page >= 2) break;
+        if (mode === "recent" && fresh.length === 0 && i >= 1) break;
         if (batch.length < 100) break;
       }
     }
 
-    await ingestTransfers("deposit", (page) =>
+    await ingestTransfers("deposit", depositStartPage, (page) =>
       fetchUpbitDeposits({ page, limit: 100 })
     );
-    await ingestTransfers("withdraw", (page) =>
+    await ingestTransfers("withdraw", withdrawStartPage, (page) =>
       fetchUpbitWithdraws({ page, limit: 100 })
     );
 
@@ -162,19 +223,12 @@ export async function syncUpbitOnce(options?: {
       transfersFetched,
       transfersInserted,
       transfersSkipped,
+      orderStartPage,
+      transferStartPage,
+      mode,
       syncedAt,
     };
   } catch (err) {
-    return {
-      accounts: 0,
-      ordersFetched: 0,
-      ordersInserted: 0,
-      ordersSkipped: 0,
-      transfersFetched: 0,
-      transfersInserted: 0,
-      transfersSkipped: 0,
-      syncedAt,
-      error: err instanceof Error ? err.message : String(err),
-    };
+    return empty(err instanceof Error ? err.message : String(err));
   }
 }

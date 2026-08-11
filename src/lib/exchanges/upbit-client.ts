@@ -52,6 +52,13 @@ function signJwt(
   return `${data}.${sig}`;
 }
 
+async function sleep(ms: number) {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+let lastCallAt = 0;
+const MIN_GAP_MS = 400;
+
 async function upbitGet<T>(
   path: string,
   params: Record<string, string | number | undefined> = {}
@@ -63,20 +70,44 @@ async function upbitGet<T>(
     qs.set(k, String(v));
   }
   const query = qs.toString();
-  const token = signJwt(accessKey, secretKey, query || undefined);
   const url = query ? `${UPBIT_BASE}${path}?${query}` : `${UPBIT_BASE}${path}`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-    },
-    cache: "no-store",
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Upbit ${path} HTTP ${res.status}: ${text.slice(0, 240)}`);
+
+  let lastErr: Error | null = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const wait = MIN_GAP_MS - (Date.now() - lastCallAt);
+    if (wait > 0) await sleep(wait);
+
+    const token = signJwt(accessKey, secretKey, query || undefined);
+    lastCallAt = Date.now();
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+    const text = await res.text();
+
+    if (res.ok) {
+      return JSON.parse(text) as T;
+    }
+
+    const rateLimited =
+      res.status === 429 ||
+      text.includes("너무 많") ||
+      text.includes("too_many") ||
+      text.includes("Too many");
+
+    lastErr = new Error(
+      rateLimited
+        ? `업비트 요청 한도입니다. 1~2분 기다린 뒤 다시 「1회 동기화」를 눌러주세요. (${path})`
+        : `Upbit ${path} HTTP ${res.status}: ${text.slice(0, 240)}`
+    );
+
+    if (!rateLimited) throw lastErr;
+    await sleep(1500 * (attempt + 1));
   }
-  return JSON.parse(text) as T;
+  throw lastErr ?? new Error(`Upbit ${path} 실패`);
 }
 
 export interface UpbitAccount {

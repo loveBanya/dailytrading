@@ -85,7 +85,7 @@ export function UpbitPanel() {
     void load();
   }, [load]);
 
-  async function syncOnce() {
+  async function syncOnce(mode: "recent" | "older" = "recent") {
     setSyncing(true);
     setMessage(null);
     setError(null);
@@ -93,7 +93,11 @@ export function UpbitPanel() {
       const res = await fetch("/api/upbit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderPages: 5, transferPages: 3 }),
+        body: JSON.stringify(
+          mode === "older"
+            ? { mode: "older", orderPages: 5, transferPages: 3 }
+            : { mode: "recent", orderPages: 2, transferPages: 1 }
+        ),
       });
       const data = (await res.json()) as {
         ok?: boolean;
@@ -103,13 +107,18 @@ export function UpbitPanel() {
         ordersSkipped?: number;
         transfersInserted?: number;
         transfersSkipped?: number;
+        orderStartPage?: number;
         syncedAt?: string;
       };
       if (!res.ok || data.error) {
         throw new Error(data.error ?? "동기화 실패");
       }
+      const pageHint =
+        mode === "older" && data.orderStartPage
+          ? ` · 주문 p${data.orderStartPage}~`
+          : "";
       setMessage(
-        `동기화 완료 · 잔고 ${data.accounts ?? 0}종 · 주문 +${data.ordersInserted ?? 0}/건너뜀 ${data.ordersSkipped ?? 0} · 입출금 +${data.transfersInserted ?? 0}/건너뜀 ${data.transfersSkipped ?? 0}`
+        `${mode === "older" ? "이전 이력" : "동기화"} 완료${pageHint} · 잔고 ${data.accounts ?? 0}종 · 주문 +${data.ordersInserted ?? 0}/건너뜀 ${data.ordersSkipped ?? 0} · 입출금 +${data.transfersInserted ?? 0}/건너뜀 ${data.transfersSkipped ?? 0}`
       );
       await load();
     } catch (err) {
@@ -166,19 +175,28 @@ export function UpbitPanel() {
     <div className="space-y-4">
       <p className="text-sm text-zinc-500">
         업비트 API는{" "}
-        <span className="text-zinc-300">로컬에서 1회</span> 동기화해 DB에
-        저장합니다. 종료된 주문·입출금 uuid는 다시 안 바뀌므로 이미 있는 건은
-        건너뜁니다. 평소에는 DB/캐시만 읽습니다 (Vercel 고정 IP 불필요).
+        <span className="text-zinc-300">로컬에서</span> 동기화해 DB에
+        저장합니다. 「더 이전」을 여러 번 누르면 과거 주문이 이어서
+        쌓입니다. 한도가 나면 1~2분 후 다시 누르세요.
       </p>
 
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           disabled={syncing}
-          onClick={() => void syncOnce()}
+          onClick={() => void syncOnce("recent")}
           className="rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm text-sky-200 disabled:opacity-40"
         >
-          {syncing ? "업비트 호출 중…" : "업비트 1회 동기화"}
+          {syncing ? "업비트 호출 중…" : "최근 동기화"}
+        </button>
+        <button
+          type="button"
+          disabled={syncing}
+          onClick={() => void syncOnce("older")}
+          className="rounded-md border border-violet-500/40 bg-violet-500/10 px-3 py-2 text-sm text-violet-200 disabled:opacity-40"
+          title="이미 저장된 다음 페이지부터 더 옛 주문·입출금 가져오기"
+        >
+          {syncing ? "불러오는 중…" : "더 이전 불러오기"}
         </button>
         <button
           type="button"

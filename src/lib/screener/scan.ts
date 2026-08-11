@@ -18,7 +18,7 @@ import {
   INTERVAL_MS,
   pctChange,
 } from "./indicators";
-import { computeLevels } from "./levels";
+import { computeLevels, computeTurtleLevels } from "./levels";
 import {
   aggregateScores,
   buildTfMetrics,
@@ -158,10 +158,19 @@ async function analyzeSymbol(
   // recompute levels for final direction
   const finalSide =
     agg.direction.startsWith("SHORT") ? "SHORT" : "LONG";
-  const finalLevels =
+  let finalLevels =
     finalSide === (prelimLong ? "LONG" : "SHORT")
       ? levels
       : computeLevels(finalSide, m15, m15.atr);
+
+  const turtle = strategies.find((s) => s.id === "turtle_donchian");
+  if (
+    turtle &&
+    turtle.score >= 55 &&
+    (turtle.side === "LONG" || turtle.side === "SHORT")
+  ) {
+    finalLevels = computeTurtleLevels(turtle.side, m15);
+  }
 
   if (!evaluate) {
     if (filters.strategies.length > 0) {

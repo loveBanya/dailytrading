@@ -205,6 +205,26 @@ export function swingHigh(candles: OhlcvCandle[], lookback = 20): number {
   return Math.max(...slice.map((c) => c.high));
 }
 
+/** 직전 N봉(현재 봉 제외) 최고가 — 돈치안/터틀 돌파 기준 */
+export function priorSwingHigh(
+  candles: OhlcvCandle[],
+  lookback = 20
+): number {
+  const slice = candles.slice(-(lookback + 1), -1);
+  if (slice.length === 0) return NaN;
+  return Math.max(...slice.map((c) => c.high));
+}
+
+/** 직전 N봉(현재 봉 제외) 최저가 */
+export function priorSwingLow(
+  candles: OhlcvCandle[],
+  lookback = 20
+): number {
+  const slice = candles.slice(-(lookback + 1), -1);
+  if (slice.length === 0) return NaN;
+  return Math.min(...slice.map((c) => c.low));
+}
+
 export const INTERVAL_MS: Record<string, number> = {
   "5m": 5 * 60_000,
   "15m": 15 * 60_000,

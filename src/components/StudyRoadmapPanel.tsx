@@ -21,8 +21,8 @@ const STEPS: Array<{
   },
   {
     step: 2,
-    title: "차트 · EMA200 + MACD 0선",
-    body: "롱: 가격이 200EMA 위 + (0선 위 골든크로스 또는 골든 상태에서 0선 상향 돌파). 숏은 반대. 스크리너 「EMA200·0선」 필터로 후보를 좁히세요.",
+    title: "차트 · EMA200 + MACD 0선 / 터틀",
+    body: "EMA200·0선 필터와 「터틀·돈치안」(20봉 돌파 진입·10봉 청산·2×ATR 손절·위험 % 제한)으로 후보를 좁히세요. 조건 없으면 관망.",
     tabs: [
       { id: "screener", label: "코인 스크리너" },
       { id: "screener-watch", label: "지정 평가" },

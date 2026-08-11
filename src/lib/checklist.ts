@@ -51,6 +51,17 @@ export const BUILTIN_CHECKLIST_TEMPLATES: ChecklistTemplate[] = [
     ],
   },
   {
+    id: "turtle_donchian",
+    name: "터틀·돈치안",
+    items: [
+      { id: "t1", text: "최근 20봉 고점 돌파(롱) / 저점 이탈(숏)인가" },
+      { id: "t2", text: "손절을 2×ATR(20)로 잡았는가" },
+      { id: "t3", text: "청산은 10봉 반대 채널로 정해 두었는가" },
+      { id: "t4", text: "이번 거래 위험이 계좌의 일정 %(예:1%) 이내인가" },
+      { id: "t5", text: "조건이 없으면 관망하는가 (억지 진입 금지)" },
+    ],
+  },
+  {
     id: "pre_entry",
     name: "진입 직전",
     items: [

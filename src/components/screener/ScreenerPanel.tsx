@@ -256,6 +256,15 @@ export function ScreenerPanel() {
     }));
   }
 
+  function setTurtleStrategies() {
+    setFilters((f) => ({
+      ...f,
+      strategies: ["turtle_donchian"],
+      minScore: 55,
+      direction: "ALL",
+    }));
+  }
+
   async function addExclusionManual() {
     const raw = excludeInput.trim().toUpperCase();
     if (!raw) return;
@@ -358,6 +367,14 @@ export function ScreenerPanel() {
             title="EMA200 위 + 0선 위 골든 / 골든 상태에서 0선 돌파 (숏은 반대)"
           >
             EMA200·0선
+          </button>
+          <button
+            type="button"
+            onClick={() => setTurtleStrategies()}
+            className="rounded border border-amber-500/40 px-2 py-1 text-xs text-amber-200"
+            title="20봉 고점 돌파 매수 / 10봉 저점 이탈 청산 / 손절 2×ATR / 조건 없으면 관망"
+          >
+            터틀·돈치안
           </button>
           <button
             type="button"

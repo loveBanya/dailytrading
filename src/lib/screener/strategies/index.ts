@@ -8,6 +8,8 @@ import {
   mean,
   median,
   pctChange,
+  priorSwingHigh,
+  priorSwingLow,
   recentCross,
   recentZeroCross,
   rsi,
@@ -47,8 +49,15 @@ export interface TfMetrics {
   bbWidthExpanding: boolean;
   atr: number;
   atrPrev: number;
+  /** 터틀 N — ATR(20) */
+  atr20: number;
   high20: number;
   low20: number;
+  /** 현재 봉 제외 직전 20/10봉 돈치안 */
+  high20Prior: number;
+  low20Prior: number;
+  high10Prior: number;
+  low10Prior: number;
   takerBuyRatio: number | null;
   bodyPct: number;
   upperWickPct: number;
@@ -72,8 +81,10 @@ export function buildTfMetrics(candles: OhlcvCandle[]): TfMetrics | null {
   const m = macd(closes);
   const bb = bollinger(closes, 20, 2);
   const a = atr(candles, 14);
+  const a20 = atr(candles, 20);
   const atrLast = lastFinite(a);
   const atrPrev = a.length >= 6 ? a[a.length - 6] : atrLast;
+  const atr20Last = lastFinite(a20);
   const range = last.high - last.low || last.close * 0.001;
   const body = Math.abs(last.close - last.open);
   const upperWick = last.high - Math.max(last.open, last.close);
@@ -124,8 +135,13 @@ export function buildTfMetrics(candles: OhlcvCandle[]): TfMetrics | null {
     bbWidthExpanding: widthNow > widthPrev,
     atr: atrLast,
     atrPrev,
+    atr20: atr20Last,
     high20: swingHigh(candles, 20),
     low20: swingLow(candles, 20),
+    high20Prior: priorSwingHigh(candles, 20),
+    low20Prior: priorSwingLow(candles, 20),
+    high10Prior: priorSwingHigh(candles, 10),
+    low10Prior: priorSwingLow(candles, 10),
     takerBuyRatio: taker,
     bodyPct: body / range,
     upperWickPct: upperWick / range,
@@ -399,6 +415,85 @@ export function scoreStrategies(input: {
       side: "SHORT",
       notes: brokeLow ? ["20봉 저점 이탈 마감"] : [],
     });
+  }
+
+  // turtle / donchian — 20봉 돌파 진입, 10봉 반대 이탈 청산, 손절 2×ATR(20), 조건 없으면 관망
+  {
+    const N = m15.atr20 > 0 ? m15.atr20 : m15.atr;
+    const h20 = m15.high20Prior;
+    const l20 = m15.low20Prior;
+    const h10 = m15.high10Prior;
+    const l10 = m15.low10Prior;
+    const price = m15.last.close;
+    const longEntry =
+      Number.isFinite(h20) &&
+      price > h20 &&
+      m15.prev.close <= h20;
+    const shortEntry =
+      Number.isFinite(l20) &&
+      price < l20 &&
+      m15.prev.close >= l20;
+    const longExit =
+      Number.isFinite(l10) &&
+      price < l10 &&
+      m15.prev.close >= l10;
+    const shortExit =
+      Number.isFinite(h10) &&
+      price > h10 &&
+      m15.prev.close <= h10;
+
+    if (longEntry) {
+      const stopDist = 2 * N;
+      const notes = [
+        "돈치안20 고점 돌파 → 매수",
+        `손절 2×ATR(20)=${stopDist.toPrecision(6)} (≈${((stopDist / price) * 100).toFixed(2)}%)`,
+        `청산 참고: 10봉 저 ${l10.toPrecision(6)}`,
+        "계좌 위험은 1회 1% 내 권장 (수량=위험금액/손절폭)",
+      ];
+      if (m15.volMult >= 1.3) notes.push(`거래량 ${m15.volMult.toFixed(1)}배`);
+      out.push({
+        id: "turtle_donchian",
+        score: clamp(88 + (m15.volMult >= 1.5 ? 6 : 0)),
+        side: "LONG",
+        notes,
+      });
+    } else if (shortEntry) {
+      const stopDist = 2 * N;
+      const notes = [
+        "돈치안20 저점 이탈 → 매도",
+        `손절 2×ATR(20)=${stopDist.toPrecision(6)} (≈${((stopDist / price) * 100).toFixed(2)}%)`,
+        `청산 참고: 10봉 고 ${h10.toPrecision(6)}`,
+        "계좌 위험은 1회 1% 내 권장 (수량=위험금액/손절폭)",
+      ];
+      if (m15.volMult >= 1.3) notes.push(`거래량 ${m15.volMult.toFixed(1)}배`);
+      out.push({
+        id: "turtle_donchian",
+        score: clamp(88 + (m15.volMult >= 1.5 ? 6 : 0)),
+        side: "SHORT",
+        notes,
+      });
+    } else if (longExit) {
+      out.push({
+        id: "turtle_donchian",
+        score: 48,
+        side: "NEUTRAL",
+        notes: ["10봉 저점 이탈 — 롱 청산 신호 (신규 진입 없음)"],
+      });
+    } else if (shortExit) {
+      out.push({
+        id: "turtle_donchian",
+        score: 48,
+        side: "NEUTRAL",
+        notes: ["10봉 고점 돌파 — 숏 청산 신호 (신규 진입 없음)"],
+      });
+    } else {
+      out.push({
+        id: "turtle_donchian",
+        score: 15,
+        side: "NEUTRAL",
+        notes: ["조건 없음 — 관망"],
+      });
+    }
   }
 
   // retest

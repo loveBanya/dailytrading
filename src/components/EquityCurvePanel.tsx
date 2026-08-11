@@ -11,6 +11,7 @@ import type { DailyPnl } from "@/lib/stats/compute";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
 import { formatPnl } from "@/lib/utils/format";
 import type { AssetFlow } from "@/app/api/asset-flows/route";
+import { loadGoalChallenge } from "@/lib/prefs";
 
 interface EquityCurvePanelProps {
   daily: DailyPnl[];
@@ -21,6 +22,10 @@ interface EquityCurvePanelProps {
   goalUsdt?: number | null;
   /** 외부에서 flows 갱신 트리거 */
   flowsRefreshKey?: number;
+}
+
+function won(n: number): string {
+  return `₩${Math.round(n).toLocaleString("ko-KR")}`;
 }
 
 const STABLES = new Set([
@@ -54,6 +59,11 @@ export function EquityCurvePanel({
 }: EquityCurvePanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [flows, setFlows] = useState<AssetFlow[]>([]);
+  const [fxRate, setFxRate] = useState(1350);
+
+  useEffect(() => {
+    setFxRate(loadGoalChallenge().fxRate || 1350);
+  }, [goalUsdt, flowsRefreshKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -261,26 +271,34 @@ export function EquityCurvePanel({
   return (
     <div className="space-y-4">
       <p className="text-sm text-zinc-500">
-        코인 계좌 자산 곡선입니다. 선물 실현손익 + USDT 외부 입출금(업비트 등)을
-        누적하고, 거래소 실시간 자산으로 맞춥니다. 파란 점선=현재
-        {goalUsdt != null ? " · 노란 점선=1억 목표" : ""}.
+        단위는 USDT($)입니다. 한화는 챌린지 환율로 환산한 참고값입니다. 파란
+        점선=현재
+        {goalUsdt != null ? " · 노란 점선=목표" : ""}.
       </p>
 
       <div className="flex flex-wrap gap-4 text-sm">
         <div>
-          <p className="text-[11px] text-zinc-500">곡선 최신</p>
+          <p className="text-[11px] text-zinc-500">곡선 최신 (USDT)</p>
           <p className="font-semibold tabular-nums text-zinc-100">
             {last != null ? `$${last.toFixed(2)}` : "—"}
           </p>
+          {last != null && (
+            <p className="text-[11px] tabular-nums text-zinc-600">
+              {won(last * fxRate)}
+            </p>
+          )}
         </div>
         <div>
-          <p className="text-[11px] text-zinc-500">누적 실현손익</p>
+          <p className="text-[11px] text-zinc-500">누적 실현손익 (USDT)</p>
           <p
             className={`font-semibold tabular-nums ${
               totalPnl >= 0 ? "text-emerald-400" : "text-rose-400"
             }`}
           >
             {formatPnl(totalPnl)}
+          </p>
+          <p className="text-[11px] tabular-nums text-zinc-600">
+            {won(totalPnl * fxRate)}
           </p>
         </div>
         <div>
@@ -292,9 +310,12 @@ export function EquityCurvePanel({
           >
             ${netExternalAll.toFixed(2)}
           </p>
+          <p className="text-[11px] tabular-nums text-zinc-600">
+            {won(netExternalAll * fxRate)}
+          </p>
         </div>
         <div>
-          <p className="text-[11px] text-zinc-500">실시간 자산</p>
+          <p className="text-[11px] text-zinc-500">실시간 자산 (USDT)</p>
           <p className="font-semibold tabular-nums text-sky-300">
             {walletLoading
               ? "…"
@@ -302,6 +323,11 @@ export function EquityCurvePanel({
                 ? `$${liveEquity.toFixed(2)}`
                 : "—"}
           </p>
+          {!walletLoading && liveEquity != null && (
+            <p className="text-[11px] tabular-nums text-zinc-600">
+              {won(liveEquity * fxRate)}
+            </p>
+          )}
         </div>
         <div>
           <p className="text-[11px] text-zinc-500">비안정 코인</p>

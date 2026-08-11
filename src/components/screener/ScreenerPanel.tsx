@@ -666,8 +666,81 @@ export function ScreenerPanel() {
         </p>
       )}
 
-      <div className="pretty-scroll overflow-x-auto rounded-lg border border-zinc-800">
-        <table className="w-full min-w-[1400px] text-left text-xs">
+      {/* 모바일: 카드 / 데스크톱: 테이블 */}
+      <div className="space-y-2 md:hidden">
+        {rows.map((c, i) => (
+          <button
+            key={`${c.exchange}-${c.symbol}-m`}
+            type="button"
+            onClick={() => setSelected(c)}
+            className="w-full rounded-xl border border-zinc-800 bg-zinc-950/50 p-3 text-left transition active:bg-zinc-900"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-zinc-100">
+                  <span className="mr-1 text-zinc-600">{i + 1}.</span>
+                  {favKeys.has(`${c.exchange}:${c.symbol}`) ? "★ " : ""}
+                  {c.baseAsset}
+                  <span className="ml-1 text-[11px] font-normal text-zinc-600">
+                    {exchangeLabel(c.exchange)}
+                  </span>
+                </p>
+                <p className={`mt-0.5 text-xs font-medium ${dirCls(c.direction)}`}>
+                  {c.direction} · {stars(c.stars)}
+                </p>
+              </div>
+              <div className="shrink-0 text-right">
+                <p className="text-base font-semibold tabular-nums text-zinc-50">
+                  {c.scoreTotal}
+                </p>
+                <p className="text-[10px] text-zinc-500">종합</p>
+              </div>
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-zinc-400">
+              <div>
+                <span className="text-zinc-600">15m </span>
+                <span
+                  className={
+                    c.change15m >= 0 ? "text-emerald-400" : "text-rose-400"
+                  }
+                >
+                  {c.change15m.toFixed(1)}%
+                </span>
+              </div>
+              <div>
+                <span className="text-zinc-600">RSI </span>
+                {c.rsi.toFixed(0)}
+              </div>
+              <div>
+                <span className="text-zinc-600">RR </span>
+                {c.rr1 ?? "—"}
+              </div>
+              <div className="col-span-2 truncate">
+                <span className="text-zinc-600">전략 </span>
+                {c.strongestStrategy
+                  ? STRATEGY_LABELS[c.strongestStrategy]
+                  : "—"}
+              </div>
+              <div className="truncate tabular-nums text-zinc-300">
+                {c.price}
+              </div>
+            </div>
+            <div className="mt-1 flex gap-3 text-[11px]">
+              <span className="text-emerald-400/80">L {c.scoreLong}</span>
+              <span className="text-rose-400/80">S {c.scoreShort}</span>
+              <span className="text-zinc-600">Vol×{c.volMult.toFixed(1)}</span>
+            </div>
+          </button>
+        ))}
+        {!loading && rows.length === 0 && (
+          <p className="p-6 text-center text-sm text-zinc-500">
+            조건에 맞는 후보가 없습니다. 필터를 낮춰보세요.
+          </p>
+        )}
+      </div>
+
+      <div className="pretty-scroll hidden overflow-x-auto rounded-lg border border-zinc-800 md:block">
+        <table className="w-full min-w-[1100px] text-left text-xs">
           <thead className="bg-zinc-950 text-zinc-500">
             <tr>
               {(
@@ -684,10 +757,7 @@ export function ScreenerPanel() {
                   ["change1h", "1h%"],
                   ["change24h", "24h%"],
                   ["volMult", "Vol×"],
-                  ["turnoverMult", "대금×"],
                   ["rsi", "RSI"],
-                  ["oiChangePct", "OI%"],
-                  ["fundingRate", "펀딩"],
                   ["rr1", "RR"],
                   ["price", "가격"],
                 ] as [SortKey, string][]
@@ -761,18 +831,7 @@ export function ScreenerPanel() {
                   {c.volMult.toFixed(1)}
                 </td>
                 <td className="px-2 py-2 tabular-nums text-zinc-300">
-                  {c.turnoverMult.toFixed(1)}
-                </td>
-                <td className="px-2 py-2 tabular-nums text-zinc-300">
                   {c.rsi.toFixed(0)}
-                </td>
-                <td className="px-2 py-2 tabular-nums text-zinc-400">
-                  {c.oiChangePct != null ? c.oiChangePct.toFixed(1) : "—"}
-                </td>
-                <td className="px-2 py-2 tabular-nums text-zinc-400">
-                  {c.fundingRate != null
-                    ? `${(c.fundingRate * 100).toFixed(3)}%`
-                    : "—"}
                 </td>
                 <td className="px-2 py-2 tabular-nums text-zinc-300">
                   {c.rr1 ?? "—"}

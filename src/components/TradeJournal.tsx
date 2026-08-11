@@ -19,6 +19,7 @@ import { CollapsiblePositions } from "./CollapsiblePositions";
 import { CashLedgerPanel } from "./CashLedgerPanel";
 import { KellyPanel } from "./KellyPanel";
 import { MindsetPanel } from "./MindsetPanel";
+import { TradeChecklist } from "./TradeChecklist";
 import { JournalPostsPanel } from "./JournalPostsPanel";
 import { ScreenerPanel } from "./screener/ScreenerPanel";
 import { ScreenerPerfPanel } from "./screener/ScreenerPerfPanel";
@@ -600,6 +601,10 @@ export function TradeJournal() {
         </div>
       </header>
 
+      <div className="sticky top-0 z-30 mb-4 -mx-1 px-1 py-1 sm:static sm:mx-0 sm:px-0 sm:py-0">
+        <TradeChecklist mode="compact" defaultOpen />
+      </div>
+
       {/* 실시간 포지션 — 기본 접힘 */}
       <div className="mb-6">
         <CollapsiblePositions
@@ -993,9 +998,14 @@ export function TradeJournal() {
       )}
 
       {tab === "mindset" && (
-        <Section title="매매 마인드">
-          <MindsetPanel />
-        </Section>
+        <div className="space-y-6">
+          <Section title="매매 체크리스트 (편집)">
+            <TradeChecklist mode="edit" />
+          </Section>
+          <Section title="매매 마인드">
+            <MindsetPanel />
+          </Section>
+        </div>
       )}
 
       {tab === "posts" && (

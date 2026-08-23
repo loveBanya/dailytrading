@@ -26,6 +26,7 @@ export type StrategyId =
   | "breakout_high"
   | "breakdown_low"
   | "turtle_donchian"
+  | "demand_supply"
   | "retest"
   | "pullback"
   | "overheat_revert"
@@ -46,6 +47,7 @@ export const STRATEGY_LABELS: Record<StrategyId, string> = {
   breakout_high: "고점 돌파",
   breakdown_low: "저점 이탈",
   turtle_donchian: "터틀·돈치안",
+  demand_supply: "수요↑·공급↓",
   retest: "돌파 후 재테스트",
   pullback: "눌림목 반등",
   overheat_revert: "과열 후 되돌림",

@@ -62,6 +62,17 @@ export const BUILTIN_CHECKLIST_TEMPLATES: ChecklistTemplate[] = [
     ],
   },
   {
+    id: "demand_supply",
+    name: "수요↑·공급↓",
+    items: [
+      { id: "d1", text: "당일 이미 +10% 이상인가 (수요)" },
+      { id: "d2", text: "상대거래량이 평소 대비 5배 이상인가 (수요)" },
+      { id: "d3", text: "상승을 이끄는 뉴스/이슈를 확인했는가 (수요)" },
+      { id: "d4", text: "가격이 선호대($2–20 근처)인가 (수요)" },
+      { id: "d5", text: "유통·거래가능 물량이 얇은가 / 20M 미만 근사 (공급)" },
+    ],
+  },
+  {
     id: "pre_entry",
     name: "진입 직전",
     items: [

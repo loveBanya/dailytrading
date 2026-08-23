@@ -130,6 +130,9 @@ async function analyzeSymbol(
     fundingRate,
     change15m,
     change1h,
+    change24h: ticker.change24hPct,
+    price: ticker.lastPrice,
+    turnover24h: ticker.turnover24h,
     minVolMult: filters.minVolMult,
   });
 

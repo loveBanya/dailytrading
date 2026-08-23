@@ -153,6 +153,32 @@ function clamp(n: number, lo = 0, hi = 100): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
+/** 롤링 24h 거래량 ÷ 직전 N일 평균 일거래량 (상대거래량) */
+function dayRelativeVolume(
+  candles: OhlcvCandle[],
+  barsPerDay: number,
+  lookbackDays = 5
+): number {
+  const need = barsPerDay * (lookbackDays + 1);
+  if (candles.length < need) return 0;
+  const dayVol = (offsetDays: number) => {
+    const end = candles.length - offsetDays * barsPerDay;
+    const start = end - barsPerDay;
+    if (start < 0 || end <= start) return 0;
+    return candles
+      .slice(start, end)
+      .reduce((s, c) => s + c.volume, 0);
+  };
+  const recent = dayVol(0);
+  const priors: number[] = [];
+  for (let d = 1; d <= lookbackDays; d++) {
+    const v = dayVol(d);
+    if (v > 0) priors.push(v);
+  }
+  const avg = mean(priors);
+  return avg > 0 ? recent / avg : 0;
+}
+
 export function scoreStrategies(input: {
   m15: TfMetrics;
   m1h: TfMetrics;
@@ -162,10 +188,23 @@ export function scoreStrategies(input: {
   fundingRate: number | null;
   change15m: number;
   change1h: number;
+  change24h?: number;
+  price?: number;
+  turnover24h?: number;
   minVolMult: number;
 }): StrategyScore[] {
-  const { m15, m1h, oiChangePct, fundingRate, change15m, change1h, minVolMult } =
-    input;
+  const {
+    m15,
+    m1h,
+    oiChangePct,
+    fundingRate,
+    change15m,
+    change1h,
+    change24h = 0,
+    price = m15.last.close,
+    turnover24h = 0,
+    minVolMult,
+  } = input;
   const out: StrategyScore[] = [];
 
   // volume spike
@@ -631,6 +670,90 @@ export function scoreStrategies(input: {
       side:
         m15.changePct > 0 ? "LONG" : m15.changePct < 0 ? "SHORT" : "NEUTRAL",
       notes: atrUp ? ["ATR 확대"] : [],
+    });
+  }
+
+  // demand ↑ / supply ↓ (고수요·저공급 — 데이트레이딩 스타일, 코인 적응)
+  {
+    const dayRvol = dayRelativeVolume(m1h.candles, 24, 5);
+    const rvol =
+      dayRvol >= 1 ? dayRvol : Math.max(m15.volMult, m1h.volMult);
+    const baseVol24h =
+      price > 0 && turnover24h > 0 ? turnover24h / price : 0;
+    // 유통 플로트 API 없음 → 일평균 거래량 규모로 얇은 공급 근사
+    const thinSupply = baseVol24h > 0 && baseVol24h < 20_000_000;
+
+    let score = 12;
+    const notes: string[] = [];
+    let hits = 0;
+
+    // Demand: 당일 +10%
+    if (change24h >= 10) {
+      score += 22;
+      hits += 1;
+      notes.push(`당일 +${change24h.toFixed(1)}% (≥10%)`);
+    } else if (change24h >= 5) {
+      score += 10;
+      notes.push(`당일 +${change24h.toFixed(1)}% (10% 미달)`);
+    }
+
+    // Demand: 상대거래량 5배
+    if (rvol >= 5) {
+      score += 22;
+      hits += 1;
+      notes.push(`상대거래량 ${rvol.toFixed(1)}배 (≥5×)`);
+    } else if (rvol >= 3) {
+      score += 12;
+      notes.push(`상대거래량 ${rvol.toFixed(1)}배 (5× 미달)`);
+    } else if (rvol >= 1.5) {
+      score += 4;
+    }
+
+    // Demand: 뉴스/이슈 — API 없음, 촉매 프록시 + 수동 확인
+    const catalystProxy =
+      change24h >= 15 ||
+      (change24h >= 10 && oiChangePct != null && oiChangePct >= 3);
+    if (catalystProxy) {
+      score += 12;
+      hits += 1;
+      notes.push("촉매 프록시(급등·OI) — 뉴스 수동 확인");
+    } else {
+      notes.push("뉴스/이슈는 수동 확인");
+    }
+
+    // Demand: 선호 가격대 $2–$20
+    if (price >= 2 && price <= 20) {
+      score += 16;
+      hits += 1;
+      notes.push(`가격 $${price.toPrecision(4)} (선호 $2–20)`);
+    } else if (price >= 0.5 && price <= 50) {
+      score += 6;
+      notes.push(`가격 $${price.toPrecision(4)} (선호대 밖)`);
+    }
+
+    // Supply: 거래가능 주식 < 2,000만 — 코인은 24h 기초자산 거래량으로 근사
+    if (thinSupply) {
+      score += 16;
+      hits += 1;
+      notes.push(
+        `얇은 공급 근사(24h 수량 ${(baseVol24h / 1e6).toFixed(1)}M < 20M)`
+      );
+    } else if (baseVol24h > 0) {
+      notes.push(
+        `공급 근사 24h 수량 ${(baseVol24h / 1e6).toFixed(1)}M (20M 이상)`
+      );
+    } else {
+      notes.push("공급(플로트) 데이터 부족 — 수동 확인");
+    }
+
+    const strong = hits >= 3 && change24h >= 10 && rvol >= 3;
+    if (strong) score += 8;
+
+    out.push({
+      id: "demand_supply",
+      score: clamp(score),
+      side: strong || (change24h >= 10 && rvol >= 5) ? "LONG" : "NEUTRAL",
+      notes,
     });
   }
 

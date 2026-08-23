@@ -265,6 +265,15 @@ export function ScreenerPanel() {
     }));
   }
 
+  function setDemandSupplyStrategies() {
+    setFilters((f) => ({
+      ...f,
+      strategies: ["demand_supply"],
+      minScore: 55,
+      direction: "LONG",
+    }));
+  }
+
   async function addExclusionManual() {
     const raw = excludeInput.trim().toUpperCase();
     if (!raw) return;
@@ -375,6 +384,14 @@ export function ScreenerPanel() {
             title="20봉 고점 돌파 매수 / 10봉 저점 이탈 청산 / 손절 2×ATR / 조건 없으면 관망"
           >
             터틀·돈치안
+          </button>
+          <button
+            type="button"
+            onClick={() => setDemandSupplyStrategies()}
+            className="rounded border border-rose-500/40 px-2 py-1 text-xs text-rose-200"
+            title="당일+10% · 상대거래량5× · $2–20 · 얇은 공급 · 뉴스는 수동 확인"
+          >
+            수요↑·공급↓
           </button>
           <button
             type="button"

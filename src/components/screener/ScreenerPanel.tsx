@@ -103,6 +103,7 @@ export function ScreenerPanel() {
         exchange: filters.exchange,
         timeframe: filters.timeframe,
         direction: filters.direction,
+        assetKind: filters.assetKind ?? "all",
         minTurnover24h: String(filters.minTurnover24h),
         minVolMult: String(filters.minVolMult),
         minScore: String(filters.minScore),
@@ -549,6 +550,21 @@ export function ScreenerPanel() {
               <option value="LONG">롱만</option>
               <option value="SHORT">숏만</option>
             </select>
+            <select
+              value={filters.assetKind ?? "all"}
+              onChange={(e) =>
+                setFilters((f) => ({
+                  ...f,
+                  assetKind: e.target.value as ScanFilters["assetKind"],
+                }))
+              }
+              className={inputCls}
+              title="코인 선물 / 토큰화 주식·원자재·ETF (TradFi)"
+            >
+              <option value="all">코인+주식</option>
+              <option value="crypto">코인만</option>
+              <option value="stock">주식·TradFi</option>
+            </select>
             <label className="text-xs text-zinc-500">
               최소거래대금
               <input
@@ -714,7 +730,12 @@ export function ScreenerPanel() {
                 <p className="truncate text-sm font-semibold text-zinc-100">
                   <span className="mr-1 text-zinc-600">{i + 1}.</span>
                   {favKeys.has(`${c.exchange}:${c.symbol}`) ? "★ " : ""}
-                  {c.baseAsset}
+                  {c.displayName ?? c.baseAsset}
+                  {c.assetKind === "stock" && (
+                    <span className="ml-1 rounded bg-amber-500/15 px-1 py-0.5 text-[10px] font-normal text-amber-200/90">
+                      주식
+                    </span>
+                  )}
                   <span className="ml-1 text-[11px] font-normal text-zinc-600">
                     {exchangeLabel(c.exchange)}
                   </span>
@@ -816,8 +837,13 @@ export function ScreenerPanel() {
                 <td className="px-2 py-2">
                   <span className="font-medium text-zinc-100">
                     {favKeys.has(`${c.exchange}:${c.symbol}`) ? "★ " : ""}
-                    {c.baseAsset}
+                    {c.displayName ?? c.baseAsset}
                   </span>
+                  {c.assetKind === "stock" && (
+                    <span className="ml-1 rounded bg-amber-500/15 px-1 text-[10px] text-amber-200/90">
+                      주식
+                    </span>
+                  )}
                   <span className="ml-1 text-zinc-600">
                     {exchangeLabel(c.exchange)}
                   </span>

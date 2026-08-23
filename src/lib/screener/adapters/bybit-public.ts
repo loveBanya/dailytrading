@@ -11,14 +11,18 @@ const TF_MAP: Record<Timeframe, string> = {
   "4h": "240",
 };
 
+interface InstrumentRow {
+  symbol: string;
+  status: string;
+  quoteCoin: string;
+  contractType?: string;
+  baseCoin?: string;
+  symbolType?: string;
+}
+
 interface InstrumentsResult {
-  list?: Array<{
-    symbol: string;
-    status: string;
-    quoteCoin: string;
-    contractType?: string;
-    baseCoin?: string;
-  }>;
+  list?: InstrumentRow[];
+  nextPageCursor?: string;
 }
 
 interface TickersResult {
@@ -38,38 +42,61 @@ interface KlineResult {
   list?: string[][];
 }
 
+async function fetchAllLinearInstruments(): Promise<InstrumentRow[]> {
+  const all: InstrumentRow[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 12; page++) {
+    const params: Record<string, string> = {
+      category: "linear",
+      limit: "1000",
+    };
+    if (cursor) params.cursor = cursor;
+    const result = await bybitPublicGet<InstrumentsResult>(
+      "/v5/market/instruments-info",
+      params
+    );
+    all.push(...(result.list ?? []));
+    cursor = result.nextPageCursor || undefined;
+    if (!cursor) break;
+  }
+  return all;
+}
+
 export const bybitPublicAdapter: ExchangePublicAdapter = {
   exchange: "bybit",
 
   async listUniverse() {
     return withCache("bybit:universe", TTL.tickers, async () => {
-      const [inst, tickers] = await Promise.all([
+      const [instruments, tickers] = await Promise.all([
         withCache("bybit:instruments", TTL.instruments, () =>
-          bybitPublicGet<InstrumentsResult>("/v5/market/instruments-info", {
-            category: "linear",
-            limit: "1000",
-          })
+          fetchAllLinearInstruments()
         ),
         bybitPublicGet<TickersResult>("/v5/market/tickers", {
           category: "linear",
         }),
       ]);
 
-      const tradable = new Set(
-        (inst.list ?? [])
+      const tradableMeta = new Map(
+        instruments
           .filter(
             (s) =>
               s.status === "Trading" &&
               s.quoteCoin === "USDT" &&
               (s.contractType === "LinearPerpetual" || !s.contractType)
           )
-          .map((s) => s.symbol)
+          .map((s) => [
+            s.symbol,
+            s.symbolType === "stock"
+              ? ("stock" as const)
+              : ("crypto" as const),
+          ])
       );
 
       return (tickers.list ?? [])
-        .filter((t) => tradable.has(t.symbol) && t.symbol.endsWith("USDT"))
-        .map(
-          (t): UniverseTicker => ({
+        .filter((t) => tradableMeta.has(t.symbol) && t.symbol.endsWith("USDT"))
+        .map((t): UniverseTicker => {
+          const assetKind = tradableMeta.get(t.symbol) ?? "crypto";
+          return {
             exchange: "bybit",
             symbol: t.symbol,
             baseAsset: baseFromSymbol(t.symbol),
@@ -78,8 +105,9 @@ export const bybitPublicAdapter: ExchangePublicAdapter = {
             turnover24h: Number(t.turnover24h),
             high24h: Number(t.highPrice24h),
             low24h: Number(t.lowPrice24h),
-          })
-        );
+            assetKind,
+          };
+        });
     });
   },
 
@@ -92,7 +120,6 @@ export const bybitPublicAdapter: ExchangePublicAdapter = {
         interval: TF_MAP[timeframe],
         limit: String(limit),
       });
-      // Bybit returns newest first
       return (result.list ?? [])
         .map(
           (r): OhlcvCandle => ({

@@ -12,7 +12,7 @@ import {
   yahooPublicAdapter,
 } from "./adapters/yahoo-public";
 import { withConcurrency } from "./cache";
-import { filterUniverse, takeTop } from "./filters";
+import { filterUniverse, takeScanUniverse, tickerLabel } from "./filters";
 import {
   completedCandles,
   INTERVAL_MS,
@@ -207,6 +207,8 @@ async function analyzeSymbol(
     exchange: ticker.exchange,
     symbol: ticker.symbol,
     baseAsset: ticker.baseAsset,
+    displayName: tickerLabel(ticker),
+    assetKind: ticker.assetKind ?? "crypto",
     price: m15.last.close,
     direction: agg.direction,
     label: agg.label,
@@ -288,10 +290,18 @@ export async function runScreenerScan(
     }
   }
 
-  const filtered = filterUniverse(universes, filters.minTurnover24h).filter(
+  const filtered = filterUniverse(
+    universes,
+    filters.minTurnover24h,
+    filters.assetKind ?? "all"
+  ).filter(
     (t) => !excluded.has(`${t.exchange}:${t.symbol.toUpperCase()}`)
   );
-  const top = takeTop(filtered, filters.topN);
+  const top = takeScanUniverse(
+    filtered,
+    filters.topN,
+    filters.assetKind ?? "all"
+  );
 
   // Prefer analyzing by adapter match
   const tasks = top.map((ticker) => {

@@ -20,6 +20,7 @@ function parseFilters(req: NextRequest): Partial<ScanFilters> {
     exchange: (sp.get("exchange") as ScanFilters["exchange"]) || undefined,
     timeframe: (sp.get("timeframe") as ScanFilters["timeframe"]) || undefined,
     direction: (sp.get("direction") as ScanFilters["direction"]) || undefined,
+    assetKind: (sp.get("assetKind") as ScanFilters["assetKind"]) || undefined,
     strategies: strategies
       ? (strategies.split(",").filter(Boolean) as StrategyId[])
       : undefined,

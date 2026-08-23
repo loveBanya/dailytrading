@@ -59,10 +59,14 @@ export const STRATEGY_LABELS: Record<StrategyId, string> = {
   volatility_expand: "변동성 증가",
 };
 
+export type AssetKind = "crypto" | "stock";
+
 export interface ScanFilters {
   exchange: ScreenerExchange | "all";
   timeframe: "5m" | "15m" | "1h";
   direction: "LONG" | "SHORT" | "ALL";
+  /** 코인 / 토큰화주식 / 전체 */
+  assetKind: AssetKind | "all";
   strategies: StrategyId[];
   minTurnover24h: number;
   minVolMult: number;
@@ -84,6 +88,7 @@ export const DEFAULT_FILTERS: ScanFilters = {
   exchange: "binance",
   timeframe: "15m",
   direction: "ALL",
+  assetKind: "all",
   strategies: [],
   minTurnover24h: 50_000_000,
   minVolMult: 2,
@@ -121,6 +126,8 @@ export interface UniverseTicker {
   turnover24h: number;
   high24h: number;
   low24h: number;
+  /** 선물 코인 vs 토큰화 주식(TradFi) */
+  assetKind?: AssetKind;
 }
 
 export interface StrategyScore {
@@ -134,6 +141,9 @@ export interface ScreenerCandidate {
   exchange: ScreenerExchange;
   symbol: string;
   baseAsset: string;
+  /** UI용 표시명 (테슬라 · TSLA 등) */
+  displayName?: string;
+  assetKind?: AssetKind;
   price: number;
   direction: Direction;
   label: string;

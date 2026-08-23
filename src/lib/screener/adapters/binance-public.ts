@@ -56,21 +56,28 @@ export const binancePublicAdapter: ExchangePublicAdapter = {
         binancePublicGet<Ticker24h[]>("/fapi/v1/ticker/24hr"),
       ]);
 
-      const tradable = new Set(
+      const tradableMeta = new Map(
         info.symbols
           .filter(
             (s) =>
               s.status === "TRADING" &&
-              s.contractType === "PERPETUAL" &&
-              s.quoteAsset === "USDT"
+              s.quoteAsset === "USDT" &&
+              (s.contractType === "PERPETUAL" ||
+                s.contractType === "TRADIFI_PERPETUAL")
           )
-          .map((s) => s.symbol)
+          .map((s) => [
+            s.symbol,
+            s.contractType === "TRADIFI_PERPETUAL"
+              ? ("stock" as const)
+              : ("crypto" as const),
+          ])
       );
 
       return tickers
-        .filter((t) => tradable.has(t.symbol))
-        .map(
-          (t): UniverseTicker => ({
+        .filter((t) => tradableMeta.has(t.symbol))
+        .map((t): UniverseTicker => {
+          const assetKind = tradableMeta.get(t.symbol) ?? "crypto";
+          return {
             exchange: "binance",
             symbol: t.symbol,
             baseAsset: baseFromSymbol(t.symbol),
@@ -79,8 +86,9 @@ export const binancePublicAdapter: ExchangePublicAdapter = {
             turnover24h: Number(t.quoteVolume),
             high24h: Number(t.highPrice),
             low24h: Number(t.lowPrice),
-          })
-        );
+            assetKind,
+          };
+        });
     });
   },
 

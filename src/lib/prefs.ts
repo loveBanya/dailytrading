@@ -7,6 +7,62 @@ export const ALL_STRATEGY_IDS = Object.keys(STRATEGY_LABELS) as StrategyId[];
 const TAB_KEY = "dailytrading.ui.tab.v1";
 const SCREENER_FILTERS_KEY = "dailytrading.screener.filters.v1";
 const WATCH_ASSETS_KEY = "dailytrading.screener.watch.v1";
+const SCREENER_UNIVERSE_KEY = "dailytrading.screener.universe.v1";
+
+/** 스크리너 유니버스·전략 표시 설정 (필터 선택과 별개 — 아예 제외) */
+export interface ScreenerUniversePrefs {
+  /** 코인 선물 포함 */
+  includeCrypto: boolean;
+  /** 토큰화 주식·TradFi 포함 */
+  includeStock: boolean;
+  /** 필터 UI에 노출할 전략. 비어 있으면 전체 */
+  visibleStrategies: StrategyId[];
+}
+
+export const DEFAULT_SCREENER_UNIVERSE: ScreenerUniversePrefs = {
+  includeCrypto: true,
+  includeStock: true,
+  visibleStrategies: [],
+};
+
+export function loadScreenerUniverse(): ScreenerUniversePrefs {
+  if (typeof window === "undefined") return { ...DEFAULT_SCREENER_UNIVERSE };
+  try {
+    const raw = localStorage.getItem(SCREENER_UNIVERSE_KEY);
+    if (!raw) return { ...DEFAULT_SCREENER_UNIVERSE };
+    const saved = JSON.parse(raw) as Partial<ScreenerUniversePrefs>;
+    const visible = Array.isArray(saved.visibleStrategies)
+      ? (saved.visibleStrategies.filter((id) =>
+          ALL_STRATEGY_IDS.includes(id as StrategyId)
+        ) as StrategyId[])
+      : [];
+    return {
+      includeCrypto: saved.includeCrypto !== false,
+      includeStock: saved.includeStock !== false,
+      visibleStrategies: visible,
+    };
+  } catch {
+    return { ...DEFAULT_SCREENER_UNIVERSE };
+  }
+}
+
+export function saveScreenerUniverse(prefs: ScreenerUniversePrefs): void {
+  try {
+    localStorage.setItem(SCREENER_UNIVERSE_KEY, JSON.stringify(prefs));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 유니버스 설정 → 스캔용 assetKind */
+export function assetKindFromUniverse(
+  prefs: ScreenerUniversePrefs
+): "all" | "crypto" | "stock" {
+  if (prefs.includeCrypto && prefs.includeStock) return "all";
+  if (prefs.includeCrypto) return "crypto";
+  if (prefs.includeStock) return "stock";
+  return "crypto"; // 둘 다 끄면 코인만 폴백
+}
 
 export function loadSavedTab<T extends string>(fallback: T, allowed: T[]): T {
   if (typeof window === "undefined") return fallback;

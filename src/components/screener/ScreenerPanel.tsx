@@ -14,9 +14,13 @@ import { ScreenerDetail } from "./ScreenerDetail";
 import { fireAlarm } from "@/lib/alarms/notify";
 import { loadAlarmSettings } from "@/lib/alarms/settings";
 import {
+  assetKindFromUniverse,
   defaultScreenerFilters,
   loadScreenerFilters,
+  loadScreenerUniverse,
   saveScreenerFilters,
+  saveScreenerUniverse,
+  type ScreenerUniversePrefs,
 } from "@/lib/prefs";
 
 type SortKey = keyof ScreenerCandidate | "rank";
@@ -44,6 +48,12 @@ function dirCls(d: string): string {
 export function ScreenerPanel() {
   const [filters, setFilters] = useState<ScanFilters>(defaultScreenerFilters);
   const [filtersReady, setFiltersReady] = useState(false);
+  const [universe, setUniverse] = useState<ScreenerUniversePrefs>(() => ({
+    includeCrypto: true,
+    includeStock: true,
+    visibleStrategies: [],
+  }));
+  const [showUniverseSettings, setShowUniverseSettings] = useState(false);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,6 +82,7 @@ export function ScreenerPanel() {
 
   useEffect(() => {
     setFilters(loadScreenerFilters());
+    setUniverse(loadScreenerUniverse());
     setFiltersReady(true);
   }, []);
 
@@ -79,6 +90,56 @@ export function ScreenerPanel() {
     if (!filtersReady) return;
     saveScreenerFilters(filters);
   }, [filters, filtersReady]);
+
+  useEffect(() => {
+    if (!filtersReady) return;
+    saveScreenerUniverse(universe);
+  }, [universe, filtersReady]);
+
+  const visibleStrategyOpts = useMemo(() => {
+    if (!universe.visibleStrategies.length) return STRATEGY_OPTS;
+    const allow = new Set(universe.visibleStrategies);
+    return STRATEGY_OPTS.filter(([id]) => allow.has(id));
+  }, [universe.visibleStrategies]);
+
+  function patchUniverse(patch: Partial<ScreenerUniversePrefs>) {
+    setUniverse((u) => {
+      const next = { ...u, ...patch };
+      // 스캔 assetKind도 즉시 맞춤
+      setFilters((f) => ({
+        ...f,
+        assetKind: assetKindFromUniverse(next),
+      }));
+      return next;
+    });
+  }
+
+  function toggleVisibleStrategy(id: StrategyId) {
+    setUniverse((u) => {
+      const current =
+        u.visibleStrategies.length > 0
+          ? u.visibleStrategies
+          : STRATEGY_OPTS.map(([sid]) => sid);
+      const has = current.includes(id);
+      let nextVisible: StrategyId[];
+      if (has) {
+        nextVisible = current.filter((x) => x !== id);
+      } else {
+        nextVisible = [...current, id];
+      }
+      // 전부 켜면 [] = 전체 노출
+      if (nextVisible.length === STRATEGY_OPTS.length) nextVisible = [];
+      // 필터에서 숨긴 전략은 strategies에서도 제거
+      setFilters((f) => ({
+        ...f,
+        strategies:
+          nextVisible.length === 0
+            ? f.strategies
+            : f.strategies.filter((s) => nextVisible.includes(s)),
+      }));
+      return { ...u, visibleStrategies: nextVisible };
+    });
+  }
 
   const loadMeta = useCallback(async () => {
     try {
@@ -103,7 +164,7 @@ export function ScreenerPanel() {
         exchange: filters.exchange,
         timeframe: filters.timeframe,
         direction: filters.direction,
-        assetKind: filters.assetKind ?? "all",
+        assetKind: assetKindFromUniverse(universe),
         minTurnover24h: String(filters.minTurnover24h),
         minVolMult: String(filters.minVolMult),
         minScore: String(filters.minScore),
@@ -166,7 +227,7 @@ export function ScreenerPanel() {
     } finally {
       setLoading(false);
     }
-  }, [filters, favorites]);
+  }, [filters, favorites, universe]);
 
   useEffect(() => {
     void load();
@@ -227,7 +288,7 @@ export function ScreenerPanel() {
   function selectAllStrategies() {
     setFilters((f) => ({
       ...f,
-      strategies: STRATEGY_OPTS.map(([id]) => id),
+      strategies: visibleStrategyOpts.map(([id]) => id),
     }));
   }
 
@@ -358,6 +419,14 @@ export function ScreenerPanel() {
           </button>
           <button
             type="button"
+            onClick={() => setShowUniverseSettings((v) => !v)}
+            className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400"
+            title="코인/주식 유니버스·전략 목록에서 아예 제외"
+          >
+            유니버스 설정
+          </button>
+          <button
+            type="button"
             onClick={() => setShowLists((v) => !v)}
             className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400"
           >
@@ -423,6 +492,73 @@ export function ScreenerPanel() {
 
       {paperMsg && (
         <p className="text-xs text-sky-300/90">{paperMsg}</p>
+      )}
+
+      {showUniverseSettings && (
+        <div className="space-y-3 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3">
+          <p className="text-xs text-zinc-400">
+            여기서 끈 항목은 스캔·필터 목록에서{" "}
+            <span className="text-amber-200/90">아예 빠집니다</span> (일시 선택이
+            아님).
+          </p>
+          <div className="flex flex-wrap gap-4">
+            <label className="flex items-center gap-2 text-sm text-zinc-200">
+              <input
+                type="checkbox"
+                checked={universe.includeCrypto}
+                onChange={(e) =>
+                  patchUniverse({ includeCrypto: e.target.checked })
+                }
+                className="rounded border-zinc-600"
+              />
+              코인 선물 포함
+            </label>
+            <label className="flex items-center gap-2 text-sm text-zinc-200">
+              <input
+                type="checkbox"
+                checked={universe.includeStock}
+                onChange={(e) =>
+                  patchUniverse({ includeStock: e.target.checked })
+                }
+                className="rounded border-zinc-600"
+              />
+              토큰화 주식·TradFi 포함
+            </label>
+          </div>
+          <div>
+            <p className="mb-1.5 text-[11px] text-zinc-500">
+              필터에 보일 전략 (체크 해제 = 목록에서 숨김)
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {STRATEGY_OPTS.map(([id, label]) => {
+                const on =
+                  universe.visibleStrategies.length === 0 ||
+                  universe.visibleStrategies.includes(id);
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => toggleVisibleStrategy(id)}
+                    className={`rounded border px-2 py-0.5 text-[11px] ${
+                      on
+                        ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
+                        : "border-zinc-800 text-zinc-600 line-through"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => patchUniverse({ visibleStrategies: [] })}
+              className="mt-2 text-[11px] text-zinc-500 underline hover:text-zinc-300"
+            >
+              전략 전부 다시 보이기
+            </button>
+          </div>
+        </div>
       )}
 
       {showLists && (
@@ -550,21 +686,6 @@ export function ScreenerPanel() {
               <option value="LONG">롱만</option>
               <option value="SHORT">숏만</option>
             </select>
-            <select
-              value={filters.assetKind ?? "all"}
-              onChange={(e) =>
-                setFilters((f) => ({
-                  ...f,
-                  assetKind: e.target.value as ScanFilters["assetKind"],
-                }))
-              }
-              className={inputCls}
-              title="코인 선물 / 토큰화 주식·원자재·ETF (TradFi)"
-            >
-              <option value="all">코인+주식</option>
-              <option value="crypto">코인만</option>
-              <option value="stock">주식·TradFi</option>
-            </select>
             <label className="text-xs text-zinc-500">
               최소거래대금
               <input
@@ -580,7 +701,7 @@ export function ScreenerPanel() {
               />
             </label>
             <label className="text-xs text-zinc-500">
-              거래량배율
+              상대거래량≥
               <select
                 value={filters.minVolMult}
                 onChange={(e) =>
@@ -674,13 +795,13 @@ export function ScreenerPanel() {
               선택 해제
             </button>
               <span className="mx-1 text-[10px] text-zinc-600">
-                {filters.strategies.length === STRATEGY_OPTS.length
-                  ? "전체 선택"
+                {filters.strategies.length === visibleStrategyOpts.length
+                  ? "보이는 전략 전체"
                   : filters.strategies.length === 0
                     ? "미선택 = 전략 필터 없음"
                     : `${filters.strategies.length}개 선택`}
               </span>
-            {STRATEGY_OPTS.map(([id, label]) => {
+            {visibleStrategyOpts.map(([id, label]) => {
               const on = filters.strategies.includes(id);
               return (
                 <button
@@ -783,7 +904,7 @@ export function ScreenerPanel() {
             <div className="mt-1 flex gap-3 text-[11px]">
               <span className="text-emerald-400/80">L {c.scoreLong}</span>
               <span className="text-rose-400/80">S {c.scoreShort}</span>
-              <span className="text-zinc-600">Vol×{c.volMult.toFixed(1)}</span>
+              <span className="text-zinc-600">상대Vol×{c.volMult.toFixed(1)}</span>
             </div>
           </button>
         ))}
@@ -811,7 +932,7 @@ export function ScreenerPanel() {
                   ["change15m", "15m%"],
                   ["change1h", "1h%"],
                   ["change24h", "24h%"],
-                  ["volMult", "Vol×"],
+                  ["volMult", "상대Vol×"],
                   ["rsi", "RSI"],
                   ["rr1", "RR"],
                   ["price", "가격"],

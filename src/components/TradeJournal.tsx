@@ -24,6 +24,7 @@ import { JournalPostsPanel } from "./JournalPostsPanel";
 import { ScreenerPanel } from "./screener/ScreenerPanel";
 import { ScreenerPerfPanel } from "./screener/ScreenerPerfPanel";
 import { WatchEvaluatePanel } from "./screener/WatchEvaluatePanel";
+import { DemandSupplyPanel } from "./screener/DemandSupplyPanel";
 import { EquityCurvePanel } from "./EquityCurvePanel";
 import { ReviewCommentsFeed } from "./ReviewCommentsFeed";
 import { GoalChallengePanel } from "./GoalChallengePanel";
@@ -70,6 +71,7 @@ type Tab =
   | "screener"
   | "screener-watch"
   | "screener-perf"
+  | "demand-supply"
   | "alerts"
   | "bookmarks";
 type SortKey = "newest" | "oldest" | "pnl_desc" | "pnl_asc";
@@ -84,6 +86,7 @@ const TAB_IDS: Tab[] = [
   "cash",
   "mindset",
   "posts",
+  "demand-supply",
   "screener",
   "screener-watch",
   "screener-perf",
@@ -686,6 +689,7 @@ export function TradeJournal() {
             ["review", "오답노트"],
             ["live", "실시간"],
             ["overview", "한눈에"],
+            ["demand-supply", "수요·공급"],
             ["screener", "코인 스크리너"],
             ["screener-watch", "지정 평가"],
             ["screener-perf", "스크리너 성과"],
@@ -702,8 +706,12 @@ export function TradeJournal() {
             onClick={() => setTab(id as Tab)}
             className={`-mb-px shrink-0 border-b-2 px-4 py-2.5 text-sm transition ${
               tab === id
-                ? "border-emerald-500 text-emerald-400"
-                : "border-transparent text-zinc-500 hover:text-zinc-300"
+                ? id === "demand-supply"
+                  ? "border-amber-500 text-amber-300"
+                  : "border-emerald-500 text-emerald-400"
+                : id === "demand-supply"
+                  ? "border-transparent text-amber-500/70 hover:text-amber-300"
+                  : "border-transparent text-zinc-500 hover:text-zinc-300"
             }`}
           >
             {label}
@@ -1119,6 +1127,12 @@ export function TradeJournal() {
             return null;
           })}
         </div>
+      )}
+
+      {tab === "demand-supply" && (
+        <Section title="수요·공급 (고수요·저공급)">
+          <DemandSupplyPanel />
+        </Section>
       )}
 
       {tab === "screener" && (

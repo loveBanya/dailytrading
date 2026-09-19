@@ -222,20 +222,9 @@ export function GoalChallengePanel({
                   className="mt-1 block rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200"
                 />
               </label>
-              <label className="text-xs text-zinc-500">
-                환율 (원/USDT)
-                <input
-                  type="number"
-                  step={10}
-                  value={prefs.fxRate}
-                  onChange={(e) =>
-                    update({
-                      fxRate: Math.max(1, Number(e.target.value) || 1350),
-                    })
-                  }
-                  className="mt-1 block w-28 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200"
-                />
-              </label>
+              <p className="self-end pb-2 text-[11px] text-zinc-600">
+                환율 {fx.toLocaleString("ko-KR")}원/USDT (월간 목표)
+              </p>
             </div>
             <div className="grid gap-3 sm:grid-cols-3">
               <Stat

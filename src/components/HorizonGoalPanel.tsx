@@ -14,7 +14,7 @@ interface HorizonGoalPanelProps {
 }
 
 type Currency = "usdt" | "krw";
-type PaceTab = "week" | "month";
+type PaceTab = "day" | "week" | "month";
 
 interface Milestone {
   date: string;
@@ -84,6 +84,38 @@ function shortDate(yyyyMmDd: string): string {
 function monthLabel(yyyyMmDd: string): string {
   const [y, m] = yyyyMmDd.split("-");
   return `${y}.${Number(m)}`;
+}
+
+function buildDayMilestones(
+  today: string,
+  deadline: string,
+  current: number,
+  dailyNeed: number
+): Milestone[] {
+  const out: Milestone[] = [];
+  let cursor = today;
+  let prev = current;
+  let guard = 0;
+  while (cmpDate(cursor, deadline) <= 0 && guard < 400) {
+    const days = daysLeftInclusive(today, cursor);
+    const expected = current + dailyNeed * days;
+    out.push({
+      date: cursor,
+      label:
+        cursor === today
+          ? `${shortDate(cursor)} 오늘`
+          : cursor === deadline
+            ? `${shortDate(cursor)} 기한`
+            : shortDate(cursor),
+      expectedUsdt: expected,
+      deltaUsdt: expected - prev,
+    });
+    prev = expected;
+    if (cursor === deadline) break;
+    cursor = addDaysKst(cursor, 1);
+    guard += 1;
+  }
+  return out;
 }
 
 function buildWeekMilestones(
@@ -172,7 +204,7 @@ export function HorizonGoalPanel({
   prefs,
   onPrefsChange,
 }: HorizonGoalPanelProps) {
-  const [paceTab, setPaceTab] = useState<PaceTab>("month");
+  const [paceTab, setPaceTab] = useState<PaceTab>("day");
   const fx = prefs.fxRate > 0 ? prefs.fxRate : 1350;
   const currency: Currency =
     prefs.horizonCurrency === "usdt" ? "usdt" : "krw";
@@ -190,6 +222,11 @@ export function HorizonGoalPanel({
     target > 0 ? Math.min(100, (current / target) * 100) : current > 0 ? 100 : 0;
   const done = gap <= 0;
 
+  const dayMs = useMemo(
+    () =>
+      done ? [] : buildDayMilestones(today, deadline, current, dailyNeed),
+    [done, today, deadline, current, dailyNeed]
+  );
   const weekMs = useMemo(
     () =>
       done
@@ -231,14 +268,17 @@ export function HorizonGoalPanel({
     return currency === "krw" ? n / fx : n;
   }
 
-  const milestones = paceTab === "week" ? weekMs : monthMs;
+  const milestones =
+    paceTab === "day" ? dayMs : paceTab === "week" ? weekMs : monthMs;
 
   return (
     <div className="space-y-4">
       <p className="text-sm text-zinc-500">
         목표·지금 금액과 기한을 넣으면{" "}
-        <span className="text-zinc-300">오늘 필요 금액</span>과 주/월 중간
-        목표를 보여줍니다.
+        <span className="text-zinc-300">오늘 필요 금액</span>과 일/주/월 중간
+        목표를 보여줍니다. 환율은{" "}
+        <span className="text-zinc-400">월간 목표</span>에서 설정한 값을
+        씁니다 ({fx.toLocaleString("ko-KR")}원/USDT).
       </p>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -262,18 +302,6 @@ export function HorizonGoalPanel({
             {label}
           </button>
         ))}
-        <label className="ml-auto text-xs text-zinc-500">
-          환율
-          <input
-            type="number"
-            step={10}
-            value={prefs.fxRate}
-            onChange={(e) =>
-              update({ fxRate: Math.max(1, Number(e.target.value) || 1350) })
-            }
-            className="ml-2 w-24 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-200"
-          />
-        </label>
       </div>
 
       <div className="flex flex-wrap items-end gap-3">
@@ -407,8 +435,9 @@ export function HorizonGoalPanel({
             <p className="text-sm font-medium text-zinc-300">중간 목표</p>
             {(
               [
-                ["month", "월 단위"],
+                ["day", "일 단위"],
                 ["week", "주 단위"],
+                ["month", "월 단위"],
               ] as const
             ).map(([id, label]) => (
               <button
@@ -429,7 +458,7 @@ export function HorizonGoalPanel({
             </p>
           </div>
 
-          <div className="overflow-x-auto rounded-xl border border-zinc-800">
+          <div className="max-h-[28rem] overflow-auto rounded-xl border border-zinc-800">
             <table className="w-full min-w-[480px] text-left text-sm">
               <thead className="border-b border-zinc-800 bg-zinc-950/80 text-[11px] uppercase tracking-wide text-zinc-500">
                 <tr>

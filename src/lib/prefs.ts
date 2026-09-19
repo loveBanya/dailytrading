@@ -165,6 +165,12 @@ export interface GoalChallengePrefs {
   monthStartEquity: number | null;
   /** 날짜(YYYY-MM-DD) → 일일 목표 달성 여부 (자동) */
   dailyHits: Record<string, boolean>;
+  /** 기한 목표 금액 (USDT) — 예: 12월까지 */
+  horizonTargetUsdt: number;
+  /** 기한 목표용 현재 금액 (USDT). null이면 지갑 자산 사용 */
+  horizonCurrentUsdt: number | null;
+  /** 기한 (YYYY-MM-DD) */
+  horizonDeadline: string;
 }
 
 const GOAL_KEY = "dailytrading.goal.challenge.v1";
@@ -178,6 +184,9 @@ export const DEFAULT_GOAL_CHALLENGE: GoalChallengePrefs = {
   monthKey: "",
   monthStartEquity: null,
   dailyHits: {},
+  horizonTargetUsdt: 10_000,
+  horizonCurrentUsdt: null,
+  horizonDeadline: "2026-12-31",
 };
 
 export function loadGoalChallenge(): GoalChallengePrefs {
@@ -205,6 +214,16 @@ export function loadGoalChallenge(): GoalChallengePrefs {
         saved.dailyHits && typeof saved.dailyHits === "object"
           ? saved.dailyHits
           : {},
+      horizonTargetUsdt:
+        Number(saved.horizonTargetUsdt) ||
+        DEFAULT_GOAL_CHALLENGE.horizonTargetUsdt,
+      horizonCurrentUsdt:
+        saved.horizonCurrentUsdt == null ||
+        saved.horizonCurrentUsdt === undefined
+          ? null
+          : Number(saved.horizonCurrentUsdt),
+      horizonDeadline:
+        saved.horizonDeadline || DEFAULT_GOAL_CHALLENGE.horizonDeadline,
     };
   } catch {
     return { ...DEFAULT_GOAL_CHALLENGE, dailyHits: {} };
@@ -222,6 +241,7 @@ export function saveGoalChallenge(prefs: GoalChallengePrefs): void {
 /** 한눈에 탭 섹션 순서 */
 export type OverviewSectionId =
   | "monthly_goal"
+  | "horizon_goal"
   | "equity"
   | "flows"
   | "roadmap"
@@ -232,6 +252,7 @@ export type OverviewSectionId =
 
 export const OVERVIEW_SECTION_LABELS: Record<OverviewSectionId, string> = {
   monthly_goal: "월간 목표",
+  horizon_goal: "기한 목표",
   equity: "자산 그래프",
   flows: "USDT 자본 흐름",
   roadmap: "학습 로드맵",
@@ -243,6 +264,7 @@ export const OVERVIEW_SECTION_LABELS: Record<OverviewSectionId, string> = {
 
 export const DEFAULT_OVERVIEW_ORDER: OverviewSectionId[] = [
   "monthly_goal",
+  "horizon_goal",
   "equity",
   "flows",
   "roadmap",

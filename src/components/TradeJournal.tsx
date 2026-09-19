@@ -28,6 +28,7 @@ import { DemandSupplyPanel } from "./screener/DemandSupplyPanel";
 import { EquityCurvePanel } from "./EquityCurvePanel";
 import { ReviewCommentsFeed } from "./ReviewCommentsFeed";
 import { GoalChallengePanel } from "./GoalChallengePanel";
+import { HorizonGoalPanel } from "./HorizonGoalPanel";
 import { StudyRoadmapPanel } from "./StudyRoadmapPanel";
 import { AssetFlowsPanel } from "./AssetFlowsPanel";
 import { UpbitPanel } from "./UpbitPanel";
@@ -1032,6 +1033,18 @@ export function TradeJournal() {
                     walletLoading={walletLoading}
                     daily={daily}
                     onGoalUsdtChange={setGoalUsdt}
+                  />
+                </Section>
+              );
+            }
+            if (id === "horizon_goal") {
+              return (
+                <Section key={id} title="기한 목표">
+                  <HorizonGoalPanel
+                    prefs={goalPrefs}
+                    onPrefsChange={patchGoalPrefs}
+                    wallet={walletOverview}
+                    walletLoading={walletLoading}
                   />
                 </Section>
               );

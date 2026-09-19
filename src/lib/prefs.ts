@@ -171,6 +171,8 @@ export interface GoalChallengePrefs {
   horizonCurrentUsdt: number | null;
   /** 기한 (YYYY-MM-DD) */
   horizonDeadline: string;
+  /** 기한 목표 입력/표시 통화 */
+  horizonCurrency: "usdt" | "krw";
 }
 
 const GOAL_KEY = "dailytrading.goal.challenge.v1";
@@ -187,6 +189,7 @@ export const DEFAULT_GOAL_CHALLENGE: GoalChallengePrefs = {
   horizonTargetUsdt: 10_000,
   horizonCurrentUsdt: null,
   horizonDeadline: "2026-12-31",
+  horizonCurrency: "krw",
 };
 
 export function loadGoalChallenge(): GoalChallengePrefs {
@@ -224,6 +227,10 @@ export function loadGoalChallenge(): GoalChallengePrefs {
           : Number(saved.horizonCurrentUsdt),
       horizonDeadline:
         saved.horizonDeadline || DEFAULT_GOAL_CHALLENGE.horizonDeadline,
+      horizonCurrency:
+        saved.horizonCurrency === "usdt" || saved.horizonCurrency === "krw"
+          ? saved.horizonCurrency
+          : DEFAULT_GOAL_CHALLENGE.horizonCurrency,
     };
   } catch {
     return { ...DEFAULT_GOAL_CHALLENGE, dailyHits: {} };

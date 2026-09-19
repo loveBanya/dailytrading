@@ -57,6 +57,19 @@ function monthLabel(yyyyMm: string): string {
   return `${y}년 ${Number(m)}월`;
 }
 
+function compoundDailyRate(
+  current: number,
+  target: number,
+  days: number
+): number {
+  if (days <= 0 || current <= 0 || target <= current) return 0;
+  return Math.pow(target / current, 1 / days) - 1;
+}
+
+function pct(rate: number, digits = 2): string {
+  return `${(rate * 100).toFixed(digits)}%`;
+}
+
 export function GoalChallengePanel({
   wallet,
   walletLoading,
@@ -105,12 +118,36 @@ export function GoalChallengePanel({
   const dayNum = dayOfMonth(today);
   const daysLeft = Math.max(1, dim - dayNum + 1);
   const monthlyTarget = Math.max(0, prefs.monthlyTargetUsdt);
-  const dailyQuota = monthlyTarget > 0 ? monthlyTarget / dim : 0;
+  const paceMode = prefs.monthlyPaceMode === "rate" ? "rate" : "flat";
+  const dailyQuotaFlat = monthlyTarget > 0 ? monthlyTarget / dim : 0;
   const monthRemaining = Math.max(0, monthlyTarget - monthPnl);
-  const dailyNeedAdaptive = monthRemaining / daysLeft;
+  const dailyNeedAdaptiveFlat = monthRemaining / daysLeft;
+
+  const monthStart =
+    prefs.monthKey === monthKey && prefs.monthStartEquity != null
+      ? prefs.monthStartEquity
+      : liveUsdt;
+  const monthEndTargetUsdt = monthStart + monthlyTarget;
+  const currentEquity = liveUsdt > 0 ? liveUsdt : monthStart + monthPnl;
+  const canRate =
+    paceMode === "rate" &&
+    currentEquity > 0 &&
+    monthEndTargetUsdt > currentEquity &&
+    daysLeft > 0;
+  const dailyRate = canRate
+    ? compoundDailyRate(currentEquity, monthEndTargetUsdt, daysLeft)
+    : 0;
+  const dailyNeedRateAmt = currentEquity * dailyRate;
+
+  const dailyQuota =
+    paceMode === "rate" ? dailyNeedRateAmt : dailyQuotaFlat;
+  const dailyNeedAdaptive =
+    paceMode === "rate" ? dailyNeedRateAmt : dailyNeedAdaptiveFlat;
 
   const todayHit =
-    dailyQuota <= 0 ? todayPnlUsdt > 0 : todayPnlUsdt >= dailyQuota;
+    dailyQuota <= 0
+      ? todayPnlUsdt > 0
+      : todayPnlUsdt >= dailyQuota;
   const monthProgress =
     monthlyTarget > 0
       ? Math.min(150, (monthPnl / monthlyTarget) * 100)
@@ -134,12 +171,6 @@ export function GoalChallengePanel({
       };
     });
   }, [variant, today, todayHit, onPrefsChange]);
-
-  const monthStart =
-    prefs.monthKey === monthKey && prefs.monthStartEquity != null
-      ? prefs.monthStartEquity
-      : liveUsdt;
-  const monthEndTargetUsdt = monthStart + monthlyTarget;
 
   const ultimateGoalUsdt = prefs.targetKrw / fx;
   const ultimateGap = Math.max(0, ultimateGoalUsdt - liveUsdt);
@@ -266,6 +297,29 @@ export function GoalChallengePanel({
         목표를 정하면, 일일 할당량과 오늘 달성 여부를 자동으로 체크합니다.
       </p>
 
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-zinc-500">배분</span>
+        {(
+          [
+            ["flat", "균등 금액"],
+            ["rate", "수익률(복리)"],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => update({ monthlyPaceMode: id })}
+            className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+              paceMode === id
+                ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-200"
+                : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div className="flex flex-wrap items-end gap-3">
         <label className="text-xs text-zinc-500">
           이번 달 목표 수익 (USDT)
@@ -310,6 +364,13 @@ export function GoalChallengePanel({
         </button>
       </div>
 
+      {paceMode === "rate" && currentEquity <= 0 && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-100/90">
+          수익률 모드는 현재 자산이 필요합니다. 지갑 연동 또는 월초 자산을
+          확인하세요.
+        </div>
+      )}
+
       <div
         className={`rounded-xl border p-4 ${
           todayHit
@@ -320,13 +381,21 @@ export function GoalChallengePanel({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-              오늘 일일 목표
+              {paceMode === "rate" ? "필요 일일 수익률" : "오늘 일일 목표"}
             </p>
             <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-50">
-              {usdt(dailyQuota)}
+              {paceMode === "rate"
+                ? canRate
+                  ? pct(dailyRate)
+                  : "—"
+                : usdt(dailyQuota)}
             </p>
             <p className="text-xs text-zinc-600">
-              월 목표 ÷ {dim}일 · 남은 기간 기준 필요 {usdt(dailyNeedAdaptive)}
+              {paceMode === "rate"
+                ? canRate
+                  ? `오늘 필요 ≈ ${usdt(dailyNeedRateAmt)} · 월말 자산 목표 ${usdt(monthEndTargetUsdt)}`
+                  : "자산·목표를 확인하세요"
+                : `월 목표 ÷ ${dim}일 · 남은 기간 기준 필요 ${usdt(dailyNeedAdaptiveFlat)}`}
             </p>
           </div>
           <div

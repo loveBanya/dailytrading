@@ -17,7 +17,7 @@ import { MarketPanel } from "./MarketPanel";
 import { BookmarkPanel } from "./BookmarkPanel";
 import { CollapsiblePositions } from "./CollapsiblePositions";
 import { CashLedgerPanel } from "./CashLedgerPanel";
-import { KellyPanel } from "./KellyPanel";
+import { RiskCalculatorPanel } from "./RiskCalculatorPanel";
 import { MindsetPanel } from "./MindsetPanel";
 import { QuickMemo } from "./QuickMemo";
 import { JournalPostsPanel } from "./JournalPostsPanel";
@@ -29,8 +29,6 @@ import { EquityCurvePanel } from "./EquityCurvePanel";
 import { ReviewCommentsFeed } from "./ReviewCommentsFeed";
 import { GoalChallengePanel } from "./GoalChallengePanel";
 import { HorizonGoalPanel } from "./HorizonGoalPanel";
-import { StudyRoadmapPanel } from "./StudyRoadmapPanel";
-import { AssetFlowsPanel } from "./AssetFlowsPanel";
 import { UpbitPanel } from "./UpbitPanel";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
 import { AlarmToastHost } from "./AlarmToastHost";
@@ -261,7 +259,6 @@ export function TradeJournal() {
     ...DEFAULT_GOAL_CHALLENGE,
     dailyHits: {},
   }));
-  const [flowsRefreshKey, setFlowsRefreshKey] = useState(0);
   const [overviewOrder, setOverviewOrder] = useState<OverviewSectionId[]>(
     () => [...DEFAULT_OVERVIEW_ORDER]
   );
@@ -1049,20 +1046,6 @@ export function TradeJournal() {
                 </Section>
               );
             }
-            if (id === "ultimate_goal") {
-              return (
-                <Section key={id} title="최종 목표 (1억)">
-                  <GoalChallengePanel
-                    variant="ultimate"
-                    prefs={goalPrefs}
-                    onPrefsChange={patchGoalPrefs}
-                    wallet={walletOverview}
-                    walletLoading={walletLoading}
-                    daily={daily}
-                  />
-                </Section>
-              );
-            }
             if (id === "equity") {
               return (
                 <Section key={id} title="자산 그래프">
@@ -1072,30 +1055,6 @@ export function TradeJournal() {
                     wallet={walletOverview}
                     walletLoading={walletLoading}
                     goalUsdt={goalUsdt}
-                    flowsRefreshKey={flowsRefreshKey}
-                  />
-                </Section>
-              );
-            }
-            if (id === "flows") {
-              return (
-                <Section key={id} title="USDT 자본 흐름 (업비트 등)">
-                  <AssetFlowsPanel
-                    compact
-                    onChanged={() => setFlowsRefreshKey((k) => k + 1)}
-                  />
-                </Section>
-              );
-            }
-            if (id === "roadmap") {
-              return (
-                <Section key={id} title="학습 로드맵">
-                  <StudyRoadmapPanel
-                    onNavigate={(navId) => {
-                      if ((TAB_IDS as string[]).includes(navId)) {
-                        setTab(navId as Tab);
-                      }
-                    }}
                   />
                 </Section>
               );
@@ -1126,13 +1085,14 @@ export function TradeJournal() {
                 </Section>
               );
             }
-            if (id === "kelly") {
+            if (id === "risk_calc") {
               return (
-                <Section key={id} title="켈리 베팅">
-                  <KellyPanel
-                    overall={overall}
-                    loading={statsLoading}
-                    defaultBankroll={walletOverview?.totalEquity ?? null}
+                <Section key={id} title="리스크 계산기">
+                  <RiskCalculatorPanel
+                    wallet={walletOverview}
+                    walletLoading={walletLoading}
+                    fxRate={goalPrefs.fxRate}
+                    tickers={tickers}
                   />
                 </Section>
               );
@@ -1179,11 +1139,6 @@ export function TradeJournal() {
           </Section>
           <Section title="현금 입출금 (KRW)">
             <CashLedgerPanel />
-          </Section>
-          <Section title="USDT 자본 흐름 (업비트→테더 등)">
-            <AssetFlowsPanel
-              onChanged={() => setFlowsRefreshKey((k) => k + 1)}
-            />
           </Section>
         </div>
       )}

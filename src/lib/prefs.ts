@@ -264,35 +264,26 @@ export type OverviewSectionId =
   | "monthly_goal"
   | "horizon_goal"
   | "equity"
-  | "flows"
-  | "roadmap"
   | "pnl"
   | "market"
-  | "kelly"
-  | "ultimate_goal";
+  | "risk_calc";
 
 export const OVERVIEW_SECTION_LABELS: Record<OverviewSectionId, string> = {
   monthly_goal: "월간 목표",
   horizon_goal: "기한 목표",
   equity: "자산 그래프",
-  flows: "USDT 자본 흐름",
-  roadmap: "학습 로드맵",
   pnl: "All-time PNL",
   market: "현재 시장",
-  kelly: "켈리 베팅",
-  ultimate_goal: "최종 목표 (1억)",
+  risk_calc: "리스크 계산기",
 };
 
 export const DEFAULT_OVERVIEW_ORDER: OverviewSectionId[] = [
   "monthly_goal",
   "horizon_goal",
+  "risk_calc",
   "equity",
-  "flows",
-  "roadmap",
   "pnl",
   "market",
-  "kelly",
-  "ultimate_goal",
 ];
 
 const OVERVIEW_ORDER_KEY = "dailytrading.overview.order.v1";
@@ -308,7 +299,16 @@ export function loadOverviewOrder(): OverviewSectionId[] {
       (DEFAULT_OVERVIEW_ORDER as string[]).includes(id)
     );
     const missing = DEFAULT_OVERVIEW_ORDER.filter((id) => !valid.includes(id));
-    return [...valid, ...missing];
+    const merged = [...valid];
+    for (const id of missing) {
+      if (id === "risk_calc") {
+        const after = merged.indexOf("horizon_goal");
+        merged.splice(after >= 0 ? after + 1 : 0, 0, id);
+      } else {
+        merged.push(id);
+      }
+    }
+    return merged;
   } catch {
     return [...DEFAULT_OVERVIEW_ORDER];
   }

@@ -22,6 +22,8 @@ interface SavedInputs {
   side: Side;
   /** 현재가 버튼으로 고른 코인 */
   coin: string;
+  /** 주문 수량 단위. 비우면 내림 없음 */
+  qtyUnit: string;
 }
 
 const DEFAULTS: SavedInputs = {
@@ -34,6 +36,7 @@ const DEFAULTS: SavedInputs = {
   rewardR: "2",
   side: "long",
   coin: "",
+  qtyUnit: "",
 };
 
 function qtyFmt(n: number, step?: number): string {
@@ -51,22 +54,16 @@ function qtyFmt(n: number, step?: number): string {
   });
 }
 
-const LOT_SYMBOL: Record<string, string> = {
-  BTC: "BTCUSDT",
-  ETH: "ETHUSDT",
-  XRP: "XRPUSDT",
-  SOXL: "SOXLUSDT",
-  KORU: "KORUUSDT",
+/** 현재가 버튼을 누르면 이 단위로 맞춘다 */
+const COIN_STEP: Record<string, string> = {
+  BTC: "0.001",
+  ETH: "0.01",
+  XRP: "0.1",
+  SOXL: "0.01",
+  KORU: "0.01",
 };
 
-/** 시세 API에 단위가 없어도 이 코인들은 바이비트 선물 단위로 내린다 */
-const FALLBACK_LOT: Record<string, { min: number; step: number }> = {
-  BTC: { min: 0.001, step: 0.001 },
-  ETH: { min: 0.01, step: 0.01 },
-  XRP: { min: 0.1, step: 0.1 },
-  SOXL: { min: 0.01, step: 0.01 },
-  KORU: { min: 0.01, step: 0.01 },
-};
+const QTY_UNIT_PRESETS = ["0.001", "0.01", "0.1", "1"] as const;
 
 function floorToStep(qty: number, step: number): number {
   if (!(step > 0)) return qty;
@@ -126,6 +123,7 @@ export function RiskCalculatorPanel({
   const [rewardR, setRewardR] = useState(DEFAULTS.rewardR);
   const [side, setSide] = useState<Side>(DEFAULTS.side);
   const [coin, setCoin] = useState(DEFAULTS.coin);
+  const [qtyUnit, setQtyUnit] = useState(DEFAULTS.qtyUnit);
   const [linkWallet, setLinkWallet] = useState(false);
   const [ready, setReady] = useState(false);
 
@@ -145,6 +143,11 @@ export function RiskCalculatorPanel({
         if (saved.rewardR) setRewardR(String(saved.rewardR));
         if (saved.side === "long" || saved.side === "short") setSide(saved.side);
         if (saved.coin) setCoin(String(saved.coin));
+        if (saved.qtyUnit != null) {
+          setQtyUnit(String(saved.qtyUnit));
+        } else if (saved.coin && COIN_STEP[String(saved.coin)]) {
+          setQtyUnit(COIN_STEP[String(saved.coin)]);
+        }
       }
     } catch {
       /* ignore */
@@ -169,13 +172,14 @@ export function RiskCalculatorPanel({
       rewardR,
       side,
       coin,
+      qtyUnit,
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch {
       /* ignore */
     }
-  }, [ready, equity, riskPct, entry, stop, leverage, feePct, rewardR, side, coin]);
+  }, [ready, equity, riskPct, entry, stop, leverage, feePct, rewardR, side, coin, qtyUnit]);
 
   const result = useMemo(() => {
     const eq = Number(equity);
@@ -205,14 +209,9 @@ export function RiskCalculatorPanel({
     // 개당 손실 = 가격 간격 + 진입·청산 수수료
     const lossPerUnit = distance + px * feeRate * 2;
     const rawQty = lossPerUnit > 0 ? riskAmount / lossPerUnit : 0;
-    const lotSymbol = LOT_SYMBOL[coin];
-    const lot = lotSymbol
-      ? tickers.find((t) => t.symbol === lotSymbol)
-      : undefined;
-    const fallback = FALLBACK_LOT[coin];
-    const qtyStep = lot?.qtyStep || fallback?.step || 0;
-    const minOrderQty = lot?.minOrderQty || fallback?.min || 0;
-    const lotApplied = qtyStep > 0 && minOrderQty > 0;
+    const qtyStep = Number(qtyUnit);
+    const lotApplied = qtyStep > 0;
+    const minOrderQty = lotApplied ? qtyStep : 0;
     const steppedQty = lotApplied ? floorToStep(rawQty, qtyStep) : rawQty;
     const belowMin = lotApplied && steppedQty < minOrderQty;
     const qty = belowMin ? rawQty : steppedQty;
@@ -258,7 +257,7 @@ export function RiskCalculatorPanel({
       tpInvalid,
       wrongSide,
     };
-  }, [equity, riskPct, entry, stop, leverage, feePct, rewardR, side, coin, tickers]);
+  }, [equity, riskPct, entry, stop, leverage, feePct, rewardR, side, qtyUnit]);
 
   const pricesOk =
     !!result && !result.wrongSide && !result.tpInvalid && !result.belowMin;
@@ -386,34 +385,46 @@ export function RiskCalculatorPanel({
           <div className="space-y-1.5">
             <p className="text-[11px] text-zinc-500">
               수량 단위
-              {FALLBACK_LOT[coin]
-                ? ` · ${qtyFmt(FALLBACK_LOT[coin].step, FALLBACK_LOT[coin].step)}개`
-                : " · 제한 없음"}
+              {Number(qtyUnit) > 0
+                ? ` · ${qtyUnit}개씩`
+                : " · 단위 없음"}
             </p>
-            <div className="flex flex-wrap gap-1">
-              {(
-                [
-                  ["", "없음"],
-                  ["BTC", "BTC"],
-                  ["ETH", "ETH"],
-                  ["XRP", "XRP"],
-                  ["SOXL", "SOXL"],
-                  ["KORU", "KORU"],
-                ] as const
-              ).map(([id, label]) => (
+            <div className="flex flex-wrap items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setQtyUnit("")}
+                className={`rounded px-2 py-0.5 text-[11px] transition ${
+                  !(Number(qtyUnit) > 0)
+                    ? "bg-zinc-200 text-zinc-900"
+                    : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                없음
+              </button>
+              {QTY_UNIT_PRESETS.map((unit) => (
                 <button
-                  key={id || "none"}
+                  key={unit}
                   type="button"
-                  onClick={() => setCoin(id)}
-                  className={`rounded px-2 py-0.5 text-[11px] transition ${
-                    coin === id
+                  onClick={() => setQtyUnit(unit)}
+                  className={`rounded px-2 py-0.5 text-[11px] tabular-nums transition ${
+                    Number(qtyUnit) === Number(unit)
                       ? "bg-zinc-200 text-zinc-900"
                       : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"
                   }`}
                 >
-                  {label}
+                  {unit}
                 </button>
               ))}
+              <input
+                type="number"
+                inputMode="decimal"
+                min={0}
+                step="any"
+                value={qtyUnit}
+                placeholder="직접"
+                onChange={(e) => setQtyUnit(e.target.value)}
+                className="w-20 rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] tabular-nums text-zinc-100 outline-none focus:border-sky-500/50"
+              />
             </div>
           </div>
           <div className="flex flex-wrap gap-1.5">
@@ -437,6 +448,7 @@ export function RiskCalculatorPanel({
                     if (!(px && px > 0)) return;
                     setEntry(px.toFixed(2));
                     setCoin(unit);
+                    setQtyUnit(COIN_STEP[unit] ?? "");
                   }}
                   className={`rounded-md border px-2.5 py-1 text-[11px] tabular-nums transition disabled:opacity-40 ${
                     on
@@ -512,11 +524,10 @@ export function RiskCalculatorPanel({
                       ? "롱이면 손절가는 현재가보다 아래여야 합니다."
                       : "숏이면 손절가는 현재가보다 위여야 합니다."
                     : result.belowMin
-                      ? `계산 ${qtyFmt(result.rawQty)}개는 바이비트 최소 ${qtyFmt(result.minOrderQty, result.qtyStep)}개보다 작습니다. 손절을 더 가깝게 하거나 리스크를 키워야 주문할 수 있습니다.`
+                      ? `계산 ${qtyFmt(result.rawQty)}개는 ${qtyFmt(result.qtyStep, result.qtyStep)}개 단위보다 작아서 주문할 수 없습니다.`
                       : result.lotApplied &&
-                          Math.abs(result.qty - result.rawQty) >=
-                            result.qtyStep / 2
-                        ? `계산 ${qtyFmt(result.rawQty)}개를 ${qtyFmt(result.qtyStep, result.qtyStep)}개 단위로 내림 · 손절 시 −$${money(result.netLoss)} · ${won(result.netLoss, fx)}`
+                          result.rawQty - result.qty > result.qtyStep * 1e-8
+                        ? `계산 ${qtyFmt(result.rawQty)}개를 ${qtyFmt(result.qtyStep, result.qtyStep)}개 단위로 내려 ${qtyFmt(result.qty, result.qtyStep)}개 · 손절 시 −$${money(result.netLoss)} · ${won(result.netLoss, fx)}`
                         : `손절까지 가면 −$${money(result.netLoss)} · ${won(result.netLoss, fx)} · 증거금 ${won(result.margin, fx)} (${result.betPct.toFixed(1)}%)`}
                 </p>
               </div>

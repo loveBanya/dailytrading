@@ -126,6 +126,7 @@ export function RiskCalculatorPanel({
   const [rewardR, setRewardR] = useState(DEFAULTS.rewardR);
   const [side, setSide] = useState<Side>(DEFAULTS.side);
   const [coin, setCoin] = useState(DEFAULTS.coin);
+  const [linkWallet, setLinkWallet] = useState(false);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -150,6 +151,11 @@ export function RiskCalculatorPanel({
     }
     setReady(true);
   }, []);
+
+  useEffect(() => {
+    if (!linkWallet || !wallet || !(wallet.totalEquity > 0)) return;
+    setEquity(wallet.totalEquity.toFixed(2));
+  }, [linkWallet, wallet]);
 
   useEffect(() => {
     if (!ready) return;
@@ -284,50 +290,65 @@ export function RiskCalculatorPanel({
         <span className="text-[11px] text-zinc-600">
           환율 {fx.toLocaleString("ko-KR")}원
         </span>
-        <button
-          type="button"
-          disabled={!wallet || walletLoading || !(wallet.totalEquity > 0)}
-          onClick={() => {
-            if (!wallet || !(wallet.totalEquity > 0)) return;
-            setEquity(wallet.totalEquity.toFixed(2));
-          }}
-          className="ml-auto rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
-        >
-          {walletLoading ? "지갑 불러오는 중…" : "지갑 자산 넣기"}
-        </button>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
         <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">
           <p className="text-xs font-medium text-zinc-400">계좌</p>
           <div className="grid grid-cols-2 items-start gap-x-3 gap-y-1.5">
-            <Field
-              label="자산 USDT"
-              value={equity}
-              step="10"
-              onChange={setEquity}
-              hint={
-                Number(equity) > 0 ? won(Number(equity), fx) : "금액을 입력하세요"
-              }
-            />
-            <Field
-              label="리스크 %"
-              value={riskPct}
-              step="0.1"
-              onChange={setRiskPct}
-              hint={
-                Number(equity) > 0 && Number(riskPct) > 0
-                  ? `$${money(Number(equity) * (Number(riskPct) / 100))} · ${won(Number(equity) * (Number(riskPct) / 100), fx)}`
-                  : "\u00a0"
-              }
-            />
-            <div />
-            <Chips
-              values={["1", "2", "3", "4", "5"]}
-              current={riskPct}
-              onPick={setRiskPct}
-              suffix="%"
-            />
+            <div className="min-w-0">
+              <Field
+                label="자산 USDT"
+                value={equity}
+                step="10"
+                onChange={(v) => {
+                  setLinkWallet(false);
+                  setEquity(v);
+                }}
+                hint={
+                  Number(equity) > 0 ? won(Number(equity), fx) : "금액을 입력하세요"
+                }
+              />
+              <button
+                type="button"
+                disabled={!wallet || walletLoading || !(wallet.totalEquity > 0)}
+                onClick={() => {
+                  if (!wallet || !(wallet.totalEquity > 0)) return;
+                  setEquity(wallet.totalEquity.toFixed(2));
+                  setLinkWallet(true);
+                }}
+                className={`mt-1.5 rounded-md border px-2.5 py-1 text-[11px] transition disabled:opacity-40 ${
+                  linkWallet
+                    ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-200"
+                    : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {walletLoading
+                  ? "지갑 불러오는 중…"
+                  : linkWallet
+                    ? "지갑 연동 중"
+                    : "현재 지갑 연동"}
+              </button>
+            </div>
+            <div className="min-w-0">
+              <Field
+                label="리스크 %"
+                value={riskPct}
+                step="0.1"
+                onChange={setRiskPct}
+                hint={
+                  Number(equity) > 0 && Number(riskPct) > 0
+                    ? `$${money(Number(equity) * (Number(riskPct) / 100))} · ${won(Number(equity) * (Number(riskPct) / 100), fx)}`
+                    : "\u00a0"
+                }
+              />
+              <Chips
+                values={["1", "2", "3", "4", "5"]}
+                current={riskPct}
+                onPick={setRiskPct}
+                suffix="%"
+              />
+            </div>
           </div>
           <div>
             <Field
@@ -351,10 +372,7 @@ export function RiskCalculatorPanel({
               label="현재가"
               value={entry}
               step="any"
-              onChange={(v) => {
-                setEntry(v);
-                setCoin("");
-              }}
+              onChange={setEntry}
               placeholder="진입가"
             />
             <Field
@@ -364,6 +382,39 @@ export function RiskCalculatorPanel({
               onChange={setStop}
               placeholder="여기까지"
             />
+          </div>
+          <div className="space-y-1.5">
+            <p className="text-[11px] text-zinc-500">
+              수량 단위
+              {FALLBACK_LOT[coin]
+                ? ` · ${qtyFmt(FALLBACK_LOT[coin].step, FALLBACK_LOT[coin].step)}개`
+                : " · 제한 없음"}
+            </p>
+            <div className="flex flex-wrap gap-1">
+              {(
+                [
+                  ["", "없음"],
+                  ["BTC", "BTC"],
+                  ["ETH", "ETH"],
+                  ["XRP", "XRP"],
+                  ["SOXL", "SOXL"],
+                  ["KORU", "KORU"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id || "none"}
+                  type="button"
+                  onClick={() => setCoin(id)}
+                  className={`rounded px-2 py-0.5 text-[11px] transition ${
+                    coin === id
+                      ? "bg-zinc-200 text-zinc-900"
+                      : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="flex flex-wrap gap-1.5">
             {(

@@ -20,10 +20,14 @@ interface SavedInputs {
   /** 가격 기준 손익비. 2면 1:2 */
   rewardR: string;
   side: Side;
-  /** 현재가 버튼으로 고른 코인 */
+  /** 현재가 버튼으로 고른 코인. 비우면 기타 */
   coin: string;
   /** 주문 수량 단위. 비우면 내림 없음 */
   qtyUnit: string;
+  /** 기타로 돌아갈 때 복원할 직접 입력값 */
+  customEntry: string;
+  customStop: string;
+  customQtyUnit: string;
 }
 
 const DEFAULTS: SavedInputs = {
@@ -37,7 +41,12 @@ const DEFAULTS: SavedInputs = {
   side: "long",
   coin: "",
   qtyUnit: "",
+  customEntry: "",
+  customStop: "",
+  customQtyUnit: "",
 };
+
+type CustomQuote = { entry: string; stop: string; qtyUnit: string };
 
 function qtyFmt(n: number, step?: number): string {
   if (step && step > 0) {
@@ -124,6 +133,7 @@ export function RiskCalculatorPanel({
   const [side, setSide] = useState<Side>(DEFAULTS.side);
   const [coin, setCoin] = useState(DEFAULTS.coin);
   const [qtyUnit, setQtyUnit] = useState(DEFAULTS.qtyUnit);
+  const [customQuote, setCustomQuote] = useState<CustomQuote | null>(null);
   const [linkWallet, setLinkWallet] = useState(false);
   const [ready, setReady] = useState(false);
 
@@ -148,6 +158,23 @@ export function RiskCalculatorPanel({
         } else if (saved.coin && COIN_STEP[String(saved.coin)]) {
           setQtyUnit(COIN_STEP[String(saved.coin)]);
         }
+        if (
+          saved.customEntry != null ||
+          saved.customStop != null ||
+          saved.customQtyUnit != null
+        ) {
+          setCustomQuote({
+            entry: String(saved.customEntry ?? ""),
+            stop: String(saved.customStop ?? ""),
+            qtyUnit: String(saved.customQtyUnit ?? ""),
+          });
+        } else if (!saved.coin || !COIN_STEP[String(saved.coin)]) {
+          setCustomQuote({
+            entry: String(saved.entry ?? ""),
+            stop: String(saved.stop ?? ""),
+            qtyUnit: String(saved.qtyUnit ?? ""),
+          });
+        }
       }
     } catch {
       /* ignore */
@@ -159,6 +186,13 @@ export function RiskCalculatorPanel({
     if (!linkWallet || !wallet || !(wallet.totalEquity > 0)) return;
     setEquity(wallet.totalEquity.toFixed(2));
   }, [linkWallet, wallet]);
+
+  useEffect(() => {
+    const px = Number(entry);
+    const stopPx = Number(stop);
+    if (!(px > 0) || !(stopPx > 0) || stopPx === px) return;
+    setSide(stopPx < px ? "long" : "short");
+  }, [entry, stop]);
 
   useEffect(() => {
     if (!ready) return;
@@ -173,13 +207,16 @@ export function RiskCalculatorPanel({
       side,
       coin,
       qtyUnit,
+      customEntry: customQuote?.entry ?? "",
+      customStop: customQuote?.stop ?? "",
+      customQtyUnit: customQuote?.qtyUnit ?? "",
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch {
       /* ignore */
     }
-  }, [ready, equity, riskPct, entry, stop, leverage, feePct, rewardR, side, coin, qtyUnit]);
+  }, [ready, equity, riskPct, entry, stop, leverage, feePct, rewardR, side, coin, qtyUnit, customQuote]);
 
   const result = useMemo(() => {
     const eq = Number(equity);
@@ -264,32 +301,9 @@ export function RiskCalculatorPanel({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        {(
-          [
-            ["long", "롱"],
-            ["short", "숏"],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setSide(id)}
-            className={`rounded-md border px-4 py-1.5 text-sm font-medium transition ${
-              side === id
-                ? id === "long"
-                  ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-200"
-                  : "border-rose-500/50 bg-rose-500/15 text-rose-200"
-                : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-        <span className="text-[11px] text-zinc-600">
-          환율 {fx.toLocaleString("ko-KR")}원
-        </span>
-      </div>
+      <p className="text-[11px] text-zinc-600">
+        환율 {fx.toLocaleString("ko-KR")}원
+      </p>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
         <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">
@@ -371,14 +385,22 @@ export function RiskCalculatorPanel({
               label="현재가"
               value={entry}
               step="any"
-              onChange={setEntry}
+              onChange={(v) => {
+                setEntry(v);
+                setCoin("");
+                setCustomQuote({ entry: v, stop, qtyUnit });
+              }}
               placeholder="진입가"
             />
             <Field
               label="손절가"
               value={stop}
               step="any"
-              onChange={setStop}
+              onChange={(v) => {
+                setStop(v);
+                setCoin("");
+                setCustomQuote({ entry, stop: v, qtyUnit });
+              }}
               placeholder="여기까지"
             />
           </div>
@@ -392,7 +414,12 @@ export function RiskCalculatorPanel({
             <div className="flex flex-wrap items-center gap-1">
               <button
                 type="button"
-                onClick={() => setQtyUnit("")}
+                onClick={() => {
+                  setQtyUnit("");
+                  if (!COIN_STEP[coin]) {
+                    setCustomQuote({ entry, stop, qtyUnit: "" });
+                  }
+                }}
                 className={`rounded px-2 py-0.5 text-[11px] transition ${
                   !(Number(qtyUnit) > 0)
                     ? "bg-zinc-200 text-zinc-900"
@@ -405,7 +432,12 @@ export function RiskCalculatorPanel({
                 <button
                   key={unit}
                   type="button"
-                  onClick={() => setQtyUnit(unit)}
+                  onClick={() => {
+                    setQtyUnit(unit);
+                    if (!COIN_STEP[coin]) {
+                      setCustomQuote({ entry, stop, qtyUnit: unit });
+                    }
+                  }}
                   className={`rounded px-2 py-0.5 text-[11px] tabular-nums transition ${
                     Number(qtyUnit) === Number(unit)
                       ? "bg-zinc-200 text-zinc-900"
@@ -422,7 +454,13 @@ export function RiskCalculatorPanel({
                 step="any"
                 value={qtyUnit}
                 placeholder="직접"
-                onChange={(e) => setQtyUnit(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setQtyUnit(v);
+                  if (!COIN_STEP[coin]) {
+                    setCustomQuote({ entry, stop, qtyUnit: v });
+                  }
+                }}
                 className="w-20 rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] tabular-nums text-zinc-100 outline-none focus:border-sky-500/50"
               />
             </div>
@@ -446,6 +484,9 @@ export function RiskCalculatorPanel({
                   disabled={!(px && px > 0)}
                   onClick={() => {
                     if (!(px && px > 0)) return;
+                    if (!COIN_STEP[coin]) {
+                      setCustomQuote({ entry, stop, qtyUnit });
+                    }
                     setEntry(px.toFixed(2));
                     setCoin(unit);
                     setQtyUnit(COIN_STEP[unit] ?? "");
@@ -461,6 +502,25 @@ export function RiskCalculatorPanel({
                 </button>
               );
             })}
+            <button
+              type="button"
+              disabled={!customQuote}
+              onClick={() => {
+                if (!customQuote) return;
+                setEntry(customQuote.entry);
+                setStop(customQuote.stop);
+                setQtyUnit(customQuote.qtyUnit);
+                setCoin("");
+              }}
+              className={`rounded-md border px-2.5 py-1 text-[11px] tabular-nums transition disabled:opacity-40 ${
+                !COIN_STEP[coin]
+                  ? "border-sky-500/50 bg-sky-500/15 text-sky-200"
+                  : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              기타
+              {customQuote?.entry ? ` ${customQuote.entry}` : ""}
+            </button>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -507,17 +567,36 @@ export function RiskCalculatorPanel({
 
           {result && (
             <>
-              <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-4">
-                <p className="text-[11px] font-medium text-zinc-400">
-                  {coin ? `${coin} ` : ""}살 수량
-                </p>
-                <p className="mt-1 text-3xl font-semibold tabular-nums text-zinc-50">
-                  {result.wrongSide
-                    ? "—"
-                    : result.belowMin
-                      ? "최소 수량 미달"
-                      : `${qtyFmt(result.qty, result.qtyStep)}개`}
-                </p>
+              <div
+                className={`rounded-xl border p-4 ${
+                  side === "long"
+                    ? "border-emerald-500/40 bg-emerald-500/10"
+                    : "border-rose-500/40 bg-rose-500/10"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-medium text-zinc-400">
+                      {coin || "기타"} 살 수량
+                    </p>
+                    <p className="mt-1 text-3xl font-semibold tabular-nums text-zinc-50">
+                      {result.wrongSide
+                        ? "—"
+                        : result.belowMin
+                          ? "최소 수량 미달"
+                          : `${qtyFmt(result.qty, result.qtyStep)}개`}
+                    </p>
+                  </div>
+                  <p
+                    className={`rounded-lg px-3 py-2 text-2xl font-bold leading-none ${
+                      side === "long"
+                        ? "bg-emerald-500 text-zinc-950"
+                        : "bg-rose-500 text-white"
+                    }`}
+                  >
+                    {side === "long" ? "롱" : "숏"}
+                  </p>
+                </div>
                 <p className="mt-1 text-xs text-zinc-500">
                   {result.wrongSide
                     ? side === "long"

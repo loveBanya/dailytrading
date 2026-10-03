@@ -5,6 +5,7 @@ import type { FearGreed, MarketTicker } from "@/lib/exchanges/market";
 import type { Candle } from "@/lib/exchanges/klines";
 import { formatPrice } from "@/lib/utils/format";
 import { fearGreedKo } from "@/lib/utils/labels";
+import { AltHeatPanel } from "./AltHeatPanel";
 import { TradeChart } from "./TradeChart";
 
 interface MarketPanelProps {
@@ -55,6 +56,11 @@ export function MarketPanel({
           </div>
         </div>
       )}
+
+      <AltHeatPanel
+        btcPrice={tickers.find((ticker) => ticker.symbol === "BTCUSDT")?.lastPrice}
+        btcChange={tickers.find((ticker) => ticker.symbol === "BTCUSDT")?.change24h}
+      />
 
       <p className="text-[11px] text-zinc-600">
         코인을 클릭하면 TradingView lightweight-charts로 최근 차트가 열립니다

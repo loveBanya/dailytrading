@@ -52,7 +52,7 @@ export function saveCalcPinned(pinned: boolean) {
 }
 
 export function calcWindowSize(folded: boolean): { width: number; height: number } {
-  return folded ? { width: 200, height: 320 } : { width: 920, height: 760 };
+  return folded ? { width: 200, height: 460 } : { width: 920, height: 760 };
 }
 
 export function popupFeatures(size: { width: number; height: number }) {

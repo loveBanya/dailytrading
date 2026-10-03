@@ -6,6 +6,10 @@ import type { MarketTicker } from "@/lib/exchanges/market";
 import {
   computeRisk,
   COIN_STEP,
+  linkedStop,
+  linkedTp,
+  mirrorPrice,
+  priceInput,
   quoteFromTicker,
   RISK_DEFAULTS,
   RISK_STORAGE_KEY,
@@ -61,6 +65,9 @@ function persist() {
     customEntry: state.customQuote?.entry ?? "",
     customStop: state.customQuote?.stop ?? "",
     customQtyUnit: state.customQuote?.qtyUnit ?? "",
+    useTp: state.useTp,
+    tp: state.tp,
+    priceAnchor: state.priceAnchor,
   };
   try {
     localStorage.setItem(RISK_STORAGE_KEY, JSON.stringify(payload));
@@ -111,7 +118,25 @@ function applySaved(raw: string) {
       qtyUnit: String(saved.qtyUnit ?? ""),
     };
   }
+  if (saved.tp != null) next.tp = String(saved.tp);
+  if (saved.useTp === "0" || saved.useTp === "1") next.useTp = saved.useTp;
+  if (saved.priceAnchor === "stop" || saved.priceAnchor === "tp") {
+    next.priceAnchor = saved.priceAnchor;
+  }
   state = withSide(next);
+}
+
+function linkedPartial(cur: State, entry: string): Partial<State> {
+  if (cur.useTp !== "1") return {};
+  const px = Number(entry);
+  const reward = Number(cur.rewardR);
+  if (!(px > 0) || !(reward > 0)) return {};
+  if (cur.priceAnchor === "tp") {
+    const stop = linkedStop(px, Number(cur.tp), reward);
+    return stop == null ? {} : { stop: priceInput(stop) };
+  }
+  const tp = linkedTp(px, Number(cur.stop), reward);
+  return tp == null ? {} : { tp: priceInput(tp) };
 }
 
 function hydrate() {
@@ -147,6 +172,11 @@ export function useRiskCalc(wallet?: WalletOverview | null): State & {
   setRiskPct: (v: string) => void;
   setEntry: (v: string) => void;
   setStop: (v: string) => void;
+  setTp: (v: string) => void;
+  setUseTp: (on: boolean) => void;
+  convertStopToTp: () => void;
+  revertTpToStop: () => void;
+  flipSide: () => void;
   setLeverage: (v: string) => void;
   setFeePct: (v: string) => void;
   setRewardR: (v: string) => void;
@@ -156,6 +186,8 @@ export function useRiskCalc(wallet?: WalletOverview | null): State & {
   setLinkWallet: (v: boolean) => void;
   pickTicker: (ticker: MarketTicker) => void;
   pickShortcut: (unit: string, price: number) => void;
+  applyListedCoin: (unit: string, price: number, qtyUnit: string) => void;
+  refreshEntry: (price: number) => void;
   restoreCustom: () => void;
 } {
   const snap = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
@@ -203,11 +235,126 @@ export function useRiskCalc(wallet?: WalletOverview | null): State & {
     result,
     setEquity: (v) => patch({ equity: v, linkWallet: false }),
     setRiskPct: (v) => patch({ riskPct: v }),
-    setEntry: (v) => patch({ entry: v }),
-    setStop: (v) => patch({ stop: v }),
+    setEntry: (v) => {
+      const cur = getSnapshot();
+      const linked = linkedPartial(cur, v);
+      patch({
+        entry: v,
+        ...linked,
+        coin: "",
+        customQuote: {
+          entry: v,
+          stop: linked.stop ?? cur.stop,
+          qtyUnit: cur.qtyUnit,
+        },
+      });
+    },
+    setStop: (v) => {
+      const cur = getSnapshot();
+      const partial: Partial<State> = {
+        stop: v,
+        coin: "",
+        customQuote: { entry: cur.entry, stop: v, qtyUnit: cur.qtyUnit },
+      };
+      if (cur.useTp === "1") {
+        const tp = linkedTp(Number(cur.entry), Number(v), Number(cur.rewardR));
+        if (tp != null) {
+          partial.tp = priceInput(tp);
+          partial.priceAnchor = "stop";
+        }
+      }
+      patch(partial);
+    },
+    setTp: (v) => {
+      const cur = getSnapshot();
+      const partial: Partial<State> = { tp: v, useTp: "1" };
+      const stop = linkedStop(Number(cur.entry), Number(v), Number(cur.rewardR));
+      if (stop != null) {
+        partial.stop = priceInput(stop);
+        partial.priceAnchor = "tp";
+        if (!cur.coin) {
+          partial.customQuote = {
+            entry: cur.entry,
+            stop: partial.stop,
+            qtyUnit: cur.qtyUnit,
+          };
+        }
+      }
+      patch(partial);
+    },
+    setUseTp: (on) => {
+      const cur = getSnapshot();
+      if (!on) {
+        patch({ useTp: "0" });
+        return;
+      }
+      const tp = linkedTp(Number(cur.entry), Number(cur.stop), Number(cur.rewardR));
+      patch({
+        useTp: "1",
+        priceAnchor: "stop",
+        ...(tp != null ? { tp: priceInput(tp) } : {}),
+      });
+    },
+    convertStopToTp: () => {
+      const cur = getSnapshot();
+      const stop = linkedStop(Number(cur.entry), Number(cur.stop), Number(cur.rewardR));
+      if (stop == null) return;
+      const nextStop = priceInput(stop);
+      patch({
+        tp: cur.stop,
+        useTp: "1",
+        stop: nextStop,
+        priceAnchor: "tp",
+        ...(!cur.coin
+          ? {
+              customQuote: {
+                entry: cur.entry,
+                stop: nextStop,
+                qtyUnit: cur.qtyUnit,
+              },
+            }
+          : {}),
+      });
+    },
+    revertTpToStop: () => {
+      const cur = getSnapshot();
+      const stop = Number(cur.tp) > 0 ? cur.tp : cur.stop;
+      patch({
+        stop,
+        useTp: "0",
+        priceAnchor: "stop",
+        ...(!cur.coin
+          ? {
+              customQuote: { entry: cur.entry, stop, qtyUnit: cur.qtyUnit },
+            }
+          : {}),
+      });
+    },
+    flipSide: () => {
+      const cur = getSnapshot();
+      const px = Number(cur.entry);
+      const stop = mirrorPrice(px, Number(cur.stop));
+      const partial: Partial<State> = {
+        side: cur.side === "long" ? "short" : "long",
+      };
+      if (stop != null) {
+        partial.stop = priceInput(stop);
+        if (cur.useTp === "1") {
+          const tp = linkedTp(px, stop, Number(cur.rewardR));
+          if (tp != null) partial.tp = priceInput(tp);
+        }
+      }
+      patch(partial);
+    },
     setLeverage: (v) => patch({ leverage: v }),
     setFeePct: (v) => patch({ feePct: v }),
-    setRewardR: (v) => patch({ rewardR: v }),
+    setRewardR: (v) => {
+      const cur = getSnapshot();
+      patch({
+        rewardR: v,
+        ...linkedPartial({ ...cur, rewardR: v }, cur.entry),
+      });
+    },
     setCoin: (v) => patch({ coin: v }),
     setQtyUnit: (v) => patch({ qtyUnit: v }),
     setCustomQuote: (v) => patch({ customQuote: v }),
@@ -221,6 +368,7 @@ export function useRiskCalc(wallet?: WalletOverview | null): State & {
         entry: next.entry,
         coin: next.coin,
         qtyUnit: next.qtyUnit,
+        ...linkedPartial(cur, next.entry),
         ...(!sameCoin && next.customQuote ? { customQuote: next.customQuote } : {}),
       });
     },
@@ -229,21 +377,51 @@ export function useRiskCalc(wallet?: WalletOverview | null): State & {
       const customQuote = !COIN_STEP[cur.coin]
         ? { entry: cur.entry, stop: cur.stop, qtyUnit: cur.qtyUnit }
         : cur.customQuote;
+      const entry = priceInput(price);
       patch({
-        entry: price.toFixed(2),
+        entry,
         coin: unit,
         qtyUnit: COIN_STEP[unit] ?? "",
         customQuote,
+        ...linkedPartial(cur, entry),
       });
+    },
+    applyListedCoin: (unit, price, qtyUnit) => {
+      if (!(price > 0) || !unit) return;
+      const cur = getSnapshot();
+      const customQuote = cur.coin
+        ? cur.customQuote
+        : { entry: cur.entry, stop: cur.stop, qtyUnit: cur.qtyUnit };
+      const entry = priceInput(price);
+      patch({
+        entry,
+        coin: unit,
+        qtyUnit: qtyUnit || COIN_STEP[unit] || cur.qtyUnit,
+        customQuote,
+        ...linkedPartial(cur, entry),
+      });
+    },
+    refreshEntry: (price) => {
+      const cur = getSnapshot();
+      if (!(price > 0) || !cur.coin) return;
+      const entry = priceInput(price);
+      patch({ entry, ...linkedPartial(cur, entry) });
     },
     restoreCustom: () => {
       const cur = getSnapshot();
       if (!cur.customQuote) return;
+      const entry = cur.customQuote.entry;
+      const stop = cur.customQuote.stop;
       patch({
-        entry: cur.customQuote.entry,
-        stop: cur.customQuote.stop,
+        entry,
+        stop,
         qtyUnit: cur.customQuote.qtyUnit,
         coin: "",
+        ...(cur.useTp === "1" ? { priceAnchor: "stop" as const } : {}),
+        ...linkedPartial(
+          { ...cur, stop, priceAnchor: "stop" },
+          entry
+        ),
       });
     },
   };

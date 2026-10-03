@@ -1113,7 +1113,6 @@ export function TradeJournal() {
                     wallet={walletOverview}
                     walletLoading={walletLoading}
                     fxRate={goalPrefs.fxRate}
-                    tickers={tickers}
                   />
                 </Section>
               );

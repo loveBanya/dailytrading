@@ -16,6 +16,11 @@ export interface SavedInputs {
   customEntry: string;
   customStop: string;
   customQtyUnit: string;
+  /** 익절가를 직접 쓸 때만 "1" */
+  useTp: "0" | "1";
+  tp: string;
+  /** 손익비를 바꿀 때 고정하는 쪽 */
+  priceAnchor: "stop" | "tp";
 }
 
 export const RISK_STORAGE_KEY = "dailytrading.riskcalc.v1";
@@ -34,6 +39,9 @@ export const RISK_DEFAULTS: SavedInputs = {
   customEntry: "",
   customStop: "",
   customQtyUnit: "",
+  useTp: "0",
+  tp: "",
+  priceAnchor: "stop",
 };
 
 export type CustomQuote = { entry: string; stop: string; qtyUnit: string };
@@ -92,6 +100,47 @@ export function priceFmt(n: number): string {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
+}
+
+/** 입력칸에 넣을 현재가. 싼 코인은 소수점을 더 남긴다 */
+export function priceInput(n: number): string {
+  const abs = Math.abs(n);
+  const digits = abs >= 100 ? 2 : abs >= 1 ? 4 : 6;
+  return n.toFixed(digits);
+}
+
+/** 한 글자씩 치는 중간 값은 반대 가격을 건드리지 않는다 */
+export function priceReady(entry: number, price: number): boolean {
+  if (!(entry > 0) || !(price > 0) || price === entry) return false;
+  if (Math.abs(price - entry) / entry > 0.95) return false;
+  if (entry >= 1) {
+    const need = String(Math.floor(entry)).length;
+    const got = String(Math.floor(Math.abs(price))).length;
+    if (got < need) return false;
+  }
+  return true;
+}
+
+/** 손절과 손익비로 익절가. 손절이 현재가 아래면 롱 */
+export function linkedTp(entry: number, stop: number, rewardR: number): number | null {
+  if (!priceReady(entry, stop) || !(rewardR > 0)) return null;
+  const dist = Math.abs(entry - stop) * rewardR;
+  const tp = stop < entry ? entry + dist : entry - dist;
+  return tp > 0 ? tp : null;
+}
+
+/** 익절과 손익비로 손절가. 익절이 현재가 위면 롱 */
+export function linkedStop(entry: number, tp: number, rewardR: number): number | null {
+  if (!priceReady(entry, tp) || !(rewardR > 0)) return null;
+  const dist = Math.abs(tp - entry) / rewardR;
+  const stop = tp > entry ? entry - dist : entry + dist;
+  return stop > 0 ? stop : null;
+}
+
+export function mirrorPrice(entry: number, price: number): number | null {
+  if (!(entry > 0) || !(price > 0) || price === entry) return null;
+  const next = 2 * entry - price;
+  return next > 0 ? next : null;
 }
 
 export function won(usdtAmt: number, fx: number): string {

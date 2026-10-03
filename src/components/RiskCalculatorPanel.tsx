@@ -1,15 +1,15 @@
 "use client";
 
+import type { ReactNode } from "react";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
-import type { MarketTicker } from "@/lib/exchanges/market";
-import { SymbolSearch } from "./SymbolSearch";
+import { CalcCoinList } from "./CalcCoinList";
 import { useRiskCalc } from "./useRiskCalc";
 import {
-  COIN_SHORTCUTS,
   COIN_STEP,
   QTY_UNIT_PRESETS,
   money,
   priceFmt,
+  priceReady,
   qtyFmt,
   ratioLabel,
   won,
@@ -20,13 +20,11 @@ export function RiskCalculatorPanel({
   wallet,
   walletLoading,
   fxRate,
-  tickers = [],
   embedded = false,
 }: {
   wallet: WalletOverview | null;
   walletLoading?: boolean;
   fxRate?: number;
-  tickers?: MarketTicker[];
   /** 작은 계산 창. 좁으면 한 줄, 넓으면 입력과 결과를 나란히 둔다 */
   embedded?: boolean;
 }) {
@@ -48,16 +46,19 @@ export function RiskCalculatorPanel({
     setRewardR,
     side,
     coin,
-    setCoin,
     qtyUnit,
     setQtyUnit,
     customQuote,
     setCustomQuote,
     linkWallet,
     setLinkWallet,
+    useTp,
+    tp,
+    setTp,
+    convertStopToTp,
+    revertTpToStop,
+    flipSide,
     result,
-    pickTicker,
-    pickShortcut,
     restoreCustom,
   } = useRiskCalc(wallet);
 
@@ -156,23 +157,35 @@ export function RiskCalculatorPanel({
               label="현재가"
               value={entry}
               step="any"
-              onChange={(v) => {
-                setEntry(v);
-                setCoin("");
-                setCustomQuote({ entry: v, stop, qtyUnit });
-              }}
+              onChange={setEntry}
               placeholder="진입가"
             />
             <Field
-              label="손절가"
-              value={stop}
+              label={useTp === "1" ? "익절가" : "손절가"}
+              value={useTp === "1" ? tp : stop}
               step="any"
-              onChange={(v) => {
-                setStop(v);
-                setCoin("");
-                setCustomQuote({ entry, stop: v, qtyUnit });
-              }}
-              placeholder="여기까지"
+              onChange={useTp === "1" ? setTp : setStop}
+              placeholder={useTp === "1" ? "목표 가격" : "여기까지"}
+              hint={
+                useTp === "1" && priceReady(Number(entry), Number(stop))
+                  ? `익절대비 손절 ${priceFmt(Number(stop))} · 수량도 이 손절에 맞춥니다`
+                  : undefined
+              }
+              aside={
+                <button
+                  type="button"
+                  disabled={useTp !== "1" && !priceReady(Number(entry), Number(stop))}
+                  onClick={() => (useTp === "1" ? revertTpToStop() : convertStopToTp())}
+                  title={
+                    useTp === "1"
+                      ? "익절가를 다시 손절가로 되돌립니다"
+                      : "이 손절가를 익절가로 바꾸고, 손절은 손익비로 다시 잡습니다"
+                  }
+                  className="rounded border border-emerald-500/40 px-1.5 py-0.5 text-[10px] text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-40"
+                >
+                  {useTp === "1" ? "손절" : "익절"}
+                </button>
+              }
             />
           </div>
           <div className="space-y-1.5">
@@ -236,45 +249,20 @@ export function RiskCalculatorPanel({
               />
             </div>
           </div>
-          <div className="flex flex-wrap gap-1.5">
-            {COIN_SHORTCUTS.map(([symbol, label, unit]) => {
-              const px = tickers.find((t) => t.symbol === symbol)?.lastPrice;
-              const on = coin === unit && px != null && Number(entry) === Number(px.toFixed(2));
-              return (
-                <button
-                  key={symbol}
-                  type="button"
-                  disabled={!(px && px > 0)}
-                  onClick={() => {
-                    if (!(px && px > 0)) return;
-                    pickShortcut(unit, px);
-                  }}
-                  className={`rounded-md border px-2.5 py-1 text-[11px] tabular-nums transition disabled:opacity-40 ${
-                    on
-                      ? "border-sky-500/50 bg-sky-500/15 text-sky-200"
-                      : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  {label}
-                  {px && px > 0 ? ` ${priceFmt(px)}` : " …"}
-                </button>
-              );
-            })}
-            <button
-              type="button"
-              disabled={!customQuote}
-              onClick={restoreCustom}
-              className={`rounded-md border px-2.5 py-1 text-[11px] tabular-nums transition disabled:opacity-40 ${
-                !COIN_STEP[coin]
-                  ? "border-sky-500/50 bg-sky-500/15 text-sky-200"
-                  : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              기타
-              {customQuote?.entry ? ` ${customQuote.entry}` : ""}
-            </button>
-            <SymbolSearch onPick={pickTicker} flow={embedded} />
-          </div>
+          <CalcCoinList flow={embedded} />
+          <button
+            type="button"
+            disabled={!customQuote}
+            onClick={restoreCustom}
+            className={`rounded-md border px-2.5 py-1 text-[11px] tabular-nums transition disabled:opacity-40 ${
+              !COIN_STEP[coin]
+                ? "border-sky-500/50 bg-sky-500/15 text-sky-200"
+                : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            기타
+            {customQuote?.entry ? ` ${customQuote.entry}` : ""}
+          </button>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Field
@@ -340,7 +328,10 @@ export function RiskCalculatorPanel({
                           : `${qtyFmt(result.qty, result.qtyStep)}개`}
                     </p>
                   </div>
-                  <p
+                  <button
+                    type="button"
+                    onClick={flipSide}
+                    title={side === "long" ? "숏으로 바꾸기" : "롱으로 바꾸기"}
                     className={`rounded-lg px-3 py-2 text-2xl font-bold leading-none ${
                       side === "long"
                         ? "bg-emerald-500 text-zinc-950"
@@ -348,7 +339,7 @@ export function RiskCalculatorPanel({
                     }`}
                   >
                     {side === "long" ? "롱" : "숏"}
-                  </p>
+                  </button>
                 </div>
                 <p className="mt-1 text-xs text-zinc-500">
                   {result.wrongSide
@@ -367,7 +358,7 @@ export function RiskCalculatorPanel({
               <div className="grid grid-cols-2 gap-3">
                 <Outcome
                   tone={result.wrongSide ? "bad" : result.stopBeyondLiq ? "warn" : "stop"}
-                  kicker="손절"
+                  kicker={useTp === "1" ? "익절대비 손절" : "손절"}
                   price={result.wrongSide ? "—" : priceFmt(result.stopPrice)}
                   move={pricesOk ? `${result.stopPct.toFixed(2)}%` : undefined}
                   usdt={pricesOk ? `−$${money(result.netLoss)}` : undefined}
@@ -641,6 +632,7 @@ function Field({
   step,
   placeholder,
   hint,
+  aside,
 }: {
   label: string;
   value: string;
@@ -648,10 +640,14 @@ function Field({
   step: string;
   placeholder?: string;
   hint?: string;
+  aside?: ReactNode;
 }) {
   return (
-    <label className="block min-w-0 text-xs text-zinc-500">
-      <span className="block leading-4">{label}</span>
+    <div className="min-w-0 text-xs text-zinc-500">
+      <span className="flex items-center justify-between gap-1 leading-4">
+        <span>{label}</span>
+        {aside}
+      </span>
       <input
         type="number"
         inputMode="decimal"
@@ -660,12 +656,13 @@ function Field({
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
+        aria-label={label}
         className="mt-1 block w-full rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-100 outline-none focus:border-sky-500/50"
       />
       <span className="mt-0.5 block min-h-4 text-[11px] leading-4 break-all text-zinc-600">
         {hint || "\u00a0"}
       </span>
-    </label>
+    </div>
   );
 }
 

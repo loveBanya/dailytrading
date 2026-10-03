@@ -8,11 +8,13 @@ export function SymbolSearch({
   onPick,
   className = "",
   flow = false,
+  placeholder = "검색",
 }: {
   onPick: (ticker: MarketTicker) => void;
   className?: string;
   /** 스크롤되는 팝업 안에서는 목록을 아래로 밀어 잘리지 않게 한다 */
   flow?: boolean;
+  placeholder?: string;
 }) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<MarketTicker[]>([]);
@@ -74,7 +76,7 @@ export function SymbolSearch({
     <div className={`relative min-w-28 ${className}`}>
       <input
         value={query}
-        placeholder="검색"
+        placeholder={placeholder}
         onChange={(e) => setQuery(e.target.value)}
         onFocus={() => {
           if (hits.length > 0) setOpen(true);

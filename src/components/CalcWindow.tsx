@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import type { MarketTicker } from "@/lib/exchanges/market";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
 import { loadGoalChallenge } from "@/lib/prefs";
 import {
@@ -13,8 +12,9 @@ import {
   saveCalcFolded,
   saveCalcPinned,
 } from "./calc-host";
+import { CalcCoinList } from "./CalcCoinList";
 import { RiskCalculatorPanel } from "./RiskCalculatorPanel";
-import { money, priceFmt, qtyFmt, ratioLabel } from "./risk-calc";
+import { money, priceFmt, priceReady, qtyFmt, ratioLabel } from "./risk-calc";
 import { useRiskCalc } from "./useRiskCalc";
 
 export function CalcWindow() {
@@ -26,7 +26,6 @@ export function CalcWindow() {
   const [scale, setScale] = useState(1);
   const [wallet, setWallet] = useState<WalletOverview | null>(null);
   const [walletLoading, setWalletLoading] = useState(true);
-  const [tickers, setTickers] = useState<MarketTicker[]>([]);
   const calc = useRiskCalc(wallet);
 
   useEffect(() => {
@@ -85,12 +84,6 @@ export function CalcWindow() {
       .finally(() => {
         if (!cancel) setWalletLoading(false);
       });
-    void fetch("/api/market")
-      .then(async (res) => (await res.json()) as { tickers?: MarketTicker[] })
-      .then((data) => {
-        if (!cancel) setTickers(data.tickers ?? []);
-      })
-      .catch(() => undefined);
     return () => {
       cancel = true;
     };
@@ -198,38 +191,49 @@ export function CalcWindow() {
                 type="number"
                 inputMode="decimal"
                 value={calc.entry}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  calc.setEntry(value);
-                  calc.setCoin("");
-                  calc.setCustomQuote({
-                    entry: value,
-                    stop: calc.stop,
-                    qtyUnit: calc.qtyUnit,
-                  });
-                }}
+                onChange={(e) => calc.setEntry(e.target.value)}
                 className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm tabular-nums text-zinc-50 outline-none focus:border-sky-500/60"
               />
             </label>
-            <label className="flex items-center gap-2 text-[10px] text-zinc-500">
-              <span className="w-9 shrink-0">손절가</span>
+            <div className="flex items-center gap-1 text-[10px] text-zinc-500">
+              <span className="w-9 shrink-0">
+                {calc.useTp === "1" ? "익절가" : "손절가"}
+              </span>
               <input
                 type="number"
                 inputMode="decimal"
-                value={calc.stop}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  calc.setStop(value);
-                  calc.setCoin("");
-                  calc.setCustomQuote({
-                    entry: calc.entry,
-                    stop: value,
-                    qtyUnit: calc.qtyUnit,
-                  });
-                }}
-                className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm tabular-nums text-zinc-50 outline-none focus:border-sky-500/60"
+                aria-label={calc.useTp === "1" ? "익절가" : "손절가"}
+                value={calc.useTp === "1" ? calc.tp : calc.stop}
+                onChange={(e) =>
+                  calc.useTp === "1"
+                    ? calc.setTp(e.target.value)
+                    : calc.setStop(e.target.value)
+                }
+                className={`min-w-0 flex-1 rounded-md border bg-zinc-900 px-2 py-1 text-sm tabular-nums text-zinc-50 outline-none ${
+                  calc.useTp === "1"
+                    ? "border-emerald-700 focus:border-emerald-500/60"
+                    : "border-zinc-700 focus:border-sky-500/60"
+                }`}
               />
-            </label>
+              <button
+                type="button"
+                disabled={
+                  calc.useTp !== "1" &&
+                  !priceReady(Number(calc.entry), Number(calc.stop))
+                }
+                onClick={() =>
+                  calc.useTp === "1" ? calc.revertTpToStop() : calc.convertStopToTp()
+                }
+                title={
+                  calc.useTp === "1"
+                    ? "익절가를 다시 손절가로 되돌립니다"
+                    : "이 손절가를 익절가로 바꾸고, 손절은 손익비로 다시 잡습니다"
+                }
+                className="shrink-0 rounded-md border border-emerald-500/40 px-1.5 py-1 text-[10px] text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-40"
+              >
+                {calc.useTp === "1" ? "손절" : "익절"}
+              </button>
+            </div>
           </div>
           <div className="flex flex-col gap-1.5">
             <div
@@ -241,7 +245,10 @@ export function CalcWindow() {
             >
               <div className="flex min-w-0 items-center gap-1.5">
                 {result && (
-                  <p
+                  <button
+                    type="button"
+                    onClick={calc.flipSide}
+                    title={calc.side === "long" ? "숏으로 바꾸기" : "롱으로 바꾸기"}
                     className={`rounded px-1.5 py-1 text-[11px] font-bold leading-none ${
                       calc.side === "long"
                         ? "bg-emerald-500 text-zinc-950"
@@ -249,7 +256,7 @@ export function CalcWindow() {
                     }`}
                   >
                     {calc.side === "long" ? "롱" : "숏"}
-                  </p>
+                  </button>
                 )}
                 <p
                   className={`truncate text-sm font-semibold leading-none tabular-nums ${
@@ -266,7 +273,9 @@ export function CalcWindow() {
               )}
             </div>
             <div className="flex items-center justify-between gap-1 rounded-lg border border-rose-500/25 bg-rose-500/10 px-2 py-1.5">
-              <p className="shrink-0 text-[10px] text-rose-300/80">손절</p>
+              <p className="shrink-0 text-[10px] text-rose-300/80">
+                {calc.useTp === "1" ? "대비손절" : "손절"}
+              </p>
               <p className="min-w-0 truncate text-xs font-semibold tabular-nums text-rose-100">
                 {pricesOk && result ? priceFmt(result.stopPrice) : "—"}
               </p>
@@ -288,6 +297,7 @@ export function CalcWindow() {
               </p>
             </div>
           </div>
+          <CalcCoinList folded flow />
         </div>
       ) : (
         <div className="px-3 py-3">
@@ -296,7 +306,6 @@ export function CalcWindow() {
             wallet={wallet}
             walletLoading={walletLoading}
             fxRate={fx}
-            tickers={tickers}
           />
         </div>
       )}

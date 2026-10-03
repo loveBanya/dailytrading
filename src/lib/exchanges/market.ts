@@ -87,16 +87,62 @@ async function lotSizeFor(symbol: string): Promise<{
   return {};
 }
 
+let linearCache: {
+  at: number;
+  list: NonNullable<TickerListResult["list"]>;
+} | null = null;
+
+async function linearTickers() {
+  if (linearCache && Date.now() - linearCache.at < 20_000) return linearCache.list;
+  const result = await bybitPublicGet<TickerListResult>("/v5/market/tickers", {
+    category: "linear",
+  });
+  const list = result.list ?? [];
+  linearCache = { at: Date.now(), list };
+  return list;
+}
+
+/** 심볼 앞글자 검색. 수량 단위는 고른 뒤에 따로 가져온다. */
+export async function searchMarketTickers(
+  query: string,
+  limit = 8
+): Promise<MarketTicker[]> {
+  const q = query.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (q.length < 1) return [];
+  const base = q.endsWith("USDT") ? q.slice(0, -4) : q;
+  if (base.length < 1) return [];
+  const list = await linearTickers();
+  const ranked = list
+    .map((t) => {
+      if (!t.symbol.endsWith("USDT")) return null;
+      const name = t.symbol.slice(0, -4);
+      let score = 3;
+      if (name === base) score = 0;
+      else if (name.startsWith(base)) score = 1;
+      else if (name.includes(base)) score = 2;
+      else return null;
+      return { t, score, turnover: Number(t.turnover24h) || 0 };
+    })
+    .filter((row): row is NonNullable<typeof row> => row != null)
+    .sort((a, b) => a.score - b.score || b.turnover - a.turnover)
+    .slice(0, limit);
+
+  return ranked.map(({ t }) => ({
+    symbol: t.symbol,
+    lastPrice: Number(t.lastPrice),
+    change24h: Number(t.price24hPcnt) * 100,
+    high24h: Number(t.highPrice24h),
+    low24h: Number(t.lowPrice24h),
+    turnover24h: Number(t.turnover24h),
+  }));
+}
+
 export async function fetchMarketTickers(
   symbols: string[] = DEFAULT_SYMBOLS
 ): Promise<MarketTicker[]> {
-  const result = await bybitPublicGet<TickerListResult>(
-    "/v5/market/tickers",
-    { category: "linear" }
-  );
-
+  const list = await linearTickers();
   const wanted = new Set(symbols);
-  const rows = (result.list ?? []).filter((t) => wanted.has(t.symbol));
+  const rows = list.filter((t) => wanted.has(t.symbol));
   const lots = await Promise.all(rows.map((t) => lotSizeFor(t.symbol)));
   return rows
     .map((t, i) => ({

@@ -18,6 +18,7 @@ import { BookmarkPanel } from "./BookmarkPanel";
 import { CollapsiblePositions } from "./CollapsiblePositions";
 import { CashLedgerPanel } from "./CashLedgerPanel";
 import { RiskCalculatorPanel } from "./RiskCalculatorPanel";
+import { RiskCalcPopup } from "./RiskCalcPopup";
 import { MindsetPanel } from "./MindsetPanel";
 import { QuickMemo } from "./QuickMemo";
 import { JournalPostsPanel } from "./JournalPostsPanel";
@@ -263,6 +264,18 @@ export function TradeJournal() {
     () => [...DEFAULT_OVERVIEW_ORDER]
   );
   const [overviewOrderOpen, setOverviewOrderOpen] = useState(false);
+  const [pageScale, setPageScale] = useState(1);
+
+  useEffect(() => {
+    const apply = () => {
+      const width = document.documentElement.clientWidth;
+      if (width <= 0) return;
+      setPageScale(Math.min(1, width / 1152));
+    };
+    apply();
+    window.addEventListener("resize", apply);
+    return () => window.removeEventListener("resize", apply);
+  }, []);
 
   useEffect(() => {
     setTab(loadSavedTab<Tab>("trades", TAB_IDS));
@@ -615,8 +628,15 @@ export function TradeJournal() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6">
-      <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
+    <div
+      className="mx-auto w-full max-w-6xl px-6 py-10"
+      style={
+        pageScale < 0.999
+          ? { width: 1152, maxWidth: 1152, zoom: pageScale }
+          : undefined
+      }
+    >
+      <header className="relative z-40 mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-xs font-medium tracking-[0.15em] text-zinc-500">
             데일리 트레이딩
@@ -626,6 +646,7 @@ export function TradeJournal() {
           </h1>
         </div>
         <div className="flex items-center gap-2">
+          <RiskCalcPopup />
           <AlarmSettingsButton />
           <button
             type="button"
@@ -657,7 +678,7 @@ export function TradeJournal() {
         </div>
       </header>
 
-      <div className="sticky top-0 z-30 mb-4 -mx-1 px-1 py-1 sm:static sm:mx-0 sm:px-0 sm:py-0">
+      <div className="mb-4">
         <QuickMemo defaultOpen={false} />
       </div>
 

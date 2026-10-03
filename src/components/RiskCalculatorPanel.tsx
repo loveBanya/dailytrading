@@ -1,300 +1,65 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
 import type { MarketTicker } from "@/lib/exchanges/market";
-
-const STORAGE_KEY = "dailytrading.riskcalc.v1";
-
-type Side = "long" | "short";
-
-interface SavedInputs {
-  equity: string;
-  riskPct: string;
-  entry: string;
-  /** 직접 정한 손절가 */
-  stop: string;
-  leverage: string;
-  /** 편도 수수료 % */
-  feePct: string;
-  /** 가격 기준 손익비. 2면 1:2 */
-  rewardR: string;
-  side: Side;
-  /** 현재가 버튼으로 고른 코인. 비우면 기타 */
-  coin: string;
-  /** 주문 수량 단위. 비우면 내림 없음 */
-  qtyUnit: string;
-  /** 기타로 돌아갈 때 복원할 직접 입력값 */
-  customEntry: string;
-  customStop: string;
-  customQtyUnit: string;
-}
-
-const DEFAULTS: SavedInputs = {
-  equity: "1000",
-  riskPct: "3",
-  entry: "",
-  stop: "",
-  leverage: "10",
-  feePct: "0.055",
-  rewardR: "2",
-  side: "long",
-  coin: "",
-  qtyUnit: "",
-  customEntry: "",
-  customStop: "",
-  customQtyUnit: "",
-};
-
-type CustomQuote = { entry: string; stop: string; qtyUnit: string };
-
-function qtyFmt(n: number, step?: number): string {
-  if (step && step > 0) {
-    const decimals = (String(step).split(".")[1] ?? "").length;
-    return n.toLocaleString("en-US", {
-      minimumFractionDigits: decimals,
-      maximumFractionDigits: decimals,
-    });
-  }
-  const digits = n >= 1000 ? 2 : n >= 1 ? 4 : 6;
-  return n.toLocaleString("en-US", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: digits,
-  });
-}
-
-/** 현재가 버튼을 누르면 이 단위로 맞춘다 */
-const COIN_STEP: Record<string, string> = {
-  BTC: "0.001",
-  ETH: "0.01",
-  XRP: "0.1",
-  SOXL: "0.01",
-  KORU: "0.01",
-};
-
-const QTY_UNIT_PRESETS = ["0.001", "0.01", "0.1", "1"] as const;
-
-function floorToStep(qty: number, step: number): number {
-  if (!(step > 0)) return qty;
-  const decimals = (String(step).split(".")[1] ?? "").length;
-  const units = Math.floor(qty / step + 1e-8);
-  return Number((units * step).toFixed(decimals));
-}
-
-function money(n: number, digits = 2): string {
-  return n.toLocaleString("en-US", {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-}
-
-function priceFmt(n: number): string {
-  const abs = Math.abs(n);
-  const digits = abs >= 1000 ? 2 : abs >= 1 ? 4 : 6;
-  return n.toLocaleString("en-US", {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-}
-
-function won(usdtAmt: number, fx: number): string {
-  return `₩${Math.round(usdtAmt * fx).toLocaleString("ko-KR")}`;
-}
-
-/** 1:2 처럼 손익비 표기 */
-function ratioLabel(rewardPerRisk: number): string {
-  if (!Number.isFinite(rewardPerRisk) || rewardPerRisk <= 0) return "—";
-  const rounded =
-    rewardPerRisk >= 10
-      ? rewardPerRisk.toFixed(1)
-      : rewardPerRisk.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-  return `1 : ${rounded}`;
-}
+import { SymbolSearch } from "./SymbolSearch";
+import { useRiskCalc } from "./useRiskCalc";
+import {
+  COIN_SHORTCUTS,
+  COIN_STEP,
+  QTY_UNIT_PRESETS,
+  money,
+  priceFmt,
+  qtyFmt,
+  ratioLabel,
+  won,
+  type Side,
+} from "./risk-calc";
 
 export function RiskCalculatorPanel({
   wallet,
   walletLoading,
   fxRate,
   tickers = [],
+  embedded = false,
 }: {
   wallet: WalletOverview | null;
   walletLoading?: boolean;
   fxRate?: number;
   tickers?: MarketTicker[];
+  /** 작은 계산 창. 좁으면 한 줄, 넓으면 입력과 결과를 나란히 둔다 */
+  embedded?: boolean;
 }) {
   const fx = fxRate && fxRate > 0 ? fxRate : 1350;
-  const [equity, setEquity] = useState(DEFAULTS.equity);
-  const [riskPct, setRiskPct] = useState(DEFAULTS.riskPct);
-  const [entry, setEntry] = useState(DEFAULTS.entry);
-  const [stop, setStop] = useState(DEFAULTS.stop);
-  const [leverage, setLeverage] = useState(DEFAULTS.leverage);
-  const [feePct, setFeePct] = useState(DEFAULTS.feePct);
-  const [rewardR, setRewardR] = useState(DEFAULTS.rewardR);
-  const [side, setSide] = useState<Side>(DEFAULTS.side);
-  const [coin, setCoin] = useState(DEFAULTS.coin);
-  const [qtyUnit, setQtyUnit] = useState(DEFAULTS.qtyUnit);
-  const [customQuote, setCustomQuote] = useState<CustomQuote | null>(null);
-  const [linkWallet, setLinkWallet] = useState(false);
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw) as Partial<SavedInputs>;
-        if (saved.equity) setEquity(String(saved.equity));
-        if (saved.riskPct && String(saved.riskPct) !== "1") {
-          setRiskPct(String(saved.riskPct));
-        }
-        if (saved.entry) setEntry(String(saved.entry));
-        if (saved.stop) setStop(String(saved.stop));
-        if (saved.leverage) setLeverage(String(saved.leverage));
-        if (saved.feePct) setFeePct(String(saved.feePct));
-        if (saved.rewardR) setRewardR(String(saved.rewardR));
-        if (saved.side === "long" || saved.side === "short") setSide(saved.side);
-        if (saved.coin) setCoin(String(saved.coin));
-        if (saved.qtyUnit != null) {
-          setQtyUnit(String(saved.qtyUnit));
-        } else if (saved.coin && COIN_STEP[String(saved.coin)]) {
-          setQtyUnit(COIN_STEP[String(saved.coin)]);
-        }
-        if (
-          saved.customEntry != null ||
-          saved.customStop != null ||
-          saved.customQtyUnit != null
-        ) {
-          setCustomQuote({
-            entry: String(saved.customEntry ?? ""),
-            stop: String(saved.customStop ?? ""),
-            qtyUnit: String(saved.customQtyUnit ?? ""),
-          });
-        } else if (!saved.coin || !COIN_STEP[String(saved.coin)]) {
-          setCustomQuote({
-            entry: String(saved.entry ?? ""),
-            stop: String(saved.stop ?? ""),
-            qtyUnit: String(saved.qtyUnit ?? ""),
-          });
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-    setReady(true);
-  }, []);
-
-  useEffect(() => {
-    if (!linkWallet || !wallet || !(wallet.totalEquity > 0)) return;
-    setEquity(wallet.totalEquity.toFixed(2));
-  }, [linkWallet, wallet]);
-
-  useEffect(() => {
-    const px = Number(entry);
-    const stopPx = Number(stop);
-    if (!(px > 0) || !(stopPx > 0) || stopPx === px) return;
-    setSide(stopPx < px ? "long" : "short");
-  }, [entry, stop]);
-
-  useEffect(() => {
-    if (!ready) return;
-    const payload: SavedInputs = {
-      equity,
-      riskPct,
-      entry,
-      stop,
-      leverage,
-      feePct,
-      rewardR,
-      side,
-      coin,
-      qtyUnit,
-      customEntry: customQuote?.entry ?? "",
-      customStop: customQuote?.stop ?? "",
-      customQtyUnit: customQuote?.qtyUnit ?? "",
-    };
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch {
-      /* ignore */
-    }
-  }, [ready, equity, riskPct, entry, stop, leverage, feePct, rewardR, side, coin, qtyUnit, customQuote]);
-
-  const result = useMemo(() => {
-    const eq = Number(equity);
-    const risk = Number(riskPct);
-    const px = Number(entry);
-    const stopPx = Number(stop);
-    const lev = Number(leverage);
-    const fee = Number(feePct);
-    const rr = Number(rewardR);
-
-    if (
-      !(eq > 0) ||
-      !(risk > 0) ||
-      !(px > 0) ||
-      !(stopPx > 0) ||
-      !(lev >= 1) ||
-      !(fee >= 0) ||
-      !(rr > 0)
-    ) {
-      return null;
-    }
-
-    const riskAmount = eq * (risk / 100);
-    const distance = Math.abs(px - stopPx);
-    const wrongSide = side === "long" ? stopPx >= px : stopPx <= px;
-    const feeRate = fee / 100;
-    // 개당 손실 = 가격 간격 + 진입·청산 수수료
-    const lossPerUnit = distance + px * feeRate * 2;
-    const rawQty = lossPerUnit > 0 ? riskAmount / lossPerUnit : 0;
-    const qtyStep = Number(qtyUnit);
-    const lotApplied = qtyStep > 0;
-    const minOrderQty = lotApplied ? qtyStep : 0;
-    const steppedQty = lotApplied ? floorToStep(rawQty, qtyStep) : rawQty;
-    const belowMin = lotApplied && steppedQty < minOrderQty;
-    const qty = belowMin ? rawQty : steppedQty;
-    const notional = qty * px;
-    const roundTripFee = notional * feeRate * 2;
-    const margin = notional / lev;
-    const betPct = eq > 0 ? (margin / eq) * 100 : 0;
-    const stopPct = px > 0 ? (distance / px) * 100 : 0;
-    const tpDistance = distance * rr;
-    const tpPrice = side === "long" ? px + tpDistance : px - tpDistance;
-    const tpPct = px > 0 ? (tpDistance / px) * 100 : 0;
-    const netLoss = qty * distance + roundTripFee;
-    const netProfit = qty * tpDistance - roundTripFee;
-    const netRatio = netLoss > 0 ? netProfit / netLoss : 0;
-    const liqPrice =
-      side === "long" ? px * (1 - 1 / lev) : px * (1 + 1 / lev);
-    const stopBeyondLiq =
-      !wrongSide &&
-      (side === "long" ? stopPx <= liqPrice : stopPx >= liqPrice);
-    const tpInvalid = side === "short" && tpPrice <= 0;
-
-    return {
-      riskAmount,
-      margin,
-      betPct,
-      notional,
-      qty,
-      rawQty,
-      qtyStep,
-      minOrderQty,
-      lotApplied,
-      belowMin,
-      roundTripFee,
-      stopPrice: stopPx,
-      stopPct,
-      tpPrice,
-      tpPct,
-      netLoss,
-      netProfit,
-      netRatio,
-      liqPrice,
-      stopBeyondLiq,
-      tpInvalid,
-      wrongSide,
-    };
-  }, [equity, riskPct, entry, stop, leverage, feePct, rewardR, side, qtyUnit]);
+  const {
+    equity,
+    setEquity,
+    riskPct,
+    setRiskPct,
+    entry,
+    setEntry,
+    stop,
+    setStop,
+    leverage,
+    setLeverage,
+    feePct,
+    setFeePct,
+    rewardR,
+    setRewardR,
+    side,
+    coin,
+    setCoin,
+    qtyUnit,
+    setQtyUnit,
+    customQuote,
+    setCustomQuote,
+    linkWallet,
+    setLinkWallet,
+    result,
+    pickTicker,
+    pickShortcut,
+    restoreCustom,
+  } = useRiskCalc(wallet);
 
   const pricesOk =
     !!result && !result.wrongSide && !result.tpInvalid && !result.belowMin;
@@ -305,7 +70,13 @@ export function RiskCalculatorPanel({
         환율 {fx.toLocaleString("ko-KR")}원
       </p>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+      <div
+        className={
+          embedded
+            ? "grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3"
+            : "grid grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] gap-4"
+        }
+      >
         <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">
           <p className="text-xs font-medium text-zinc-400">계좌</p>
           <div className="grid grid-cols-2 items-start gap-x-3 gap-y-1.5">
@@ -466,15 +237,7 @@ export function RiskCalculatorPanel({
             </div>
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {(
-              [
-                ["BTCUSDT", "비트", "BTC"],
-                ["ETHUSDT", "이더", "ETH"],
-                ["XRPUSDT", "리플", "XRP"],
-                ["SOXLUSDT", "SOXL", "SOXL"],
-                ["KORUUSDT", "KORU", "KORU"],
-              ] as const
-            ).map(([symbol, label, unit]) => {
+            {COIN_SHORTCUTS.map(([symbol, label, unit]) => {
               const px = tickers.find((t) => t.symbol === symbol)?.lastPrice;
               const on = coin === unit && px != null && Number(entry) === Number(px.toFixed(2));
               return (
@@ -484,12 +247,7 @@ export function RiskCalculatorPanel({
                   disabled={!(px && px > 0)}
                   onClick={() => {
                     if (!(px && px > 0)) return;
-                    if (!COIN_STEP[coin]) {
-                      setCustomQuote({ entry, stop, qtyUnit });
-                    }
-                    setEntry(px.toFixed(2));
-                    setCoin(unit);
-                    setQtyUnit(COIN_STEP[unit] ?? "");
+                    pickShortcut(unit, px);
                   }}
                   className={`rounded-md border px-2.5 py-1 text-[11px] tabular-nums transition disabled:opacity-40 ${
                     on
@@ -505,13 +263,7 @@ export function RiskCalculatorPanel({
             <button
               type="button"
               disabled={!customQuote}
-              onClick={() => {
-                if (!customQuote) return;
-                setEntry(customQuote.entry);
-                setStop(customQuote.stop);
-                setQtyUnit(customQuote.qtyUnit);
-                setCoin("");
-              }}
+              onClick={restoreCustom}
               className={`rounded-md border px-2.5 py-1 text-[11px] tabular-nums transition disabled:opacity-40 ${
                 !COIN_STEP[coin]
                   ? "border-sky-500/50 bg-sky-500/15 text-sky-200"
@@ -521,6 +273,7 @@ export function RiskCalculatorPanel({
               기타
               {customQuote?.entry ? ` ${customQuote.entry}` : ""}
             </button>
+            <SymbolSearch onPick={pickTicker} flow={embedded} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -611,7 +364,7 @@ export function RiskCalculatorPanel({
                 </p>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-2 gap-3">
                 <Outcome
                   tone={result.wrongSide ? "bad" : result.stopBeyondLiq ? "warn" : "stop"}
                   kicker="손절"
@@ -682,7 +435,7 @@ export function RiskCalculatorPanel({
                 </p>
               )}
 
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div className="grid grid-cols-4 gap-2">
                 <Stat
                   label="수량"
                   value={

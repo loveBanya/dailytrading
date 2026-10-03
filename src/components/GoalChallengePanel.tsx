@@ -257,7 +257,7 @@ export function GoalChallengePanel({
                 환율 {fx.toLocaleString("ko-KR")}원/USDT (월간 목표)
               </p>
             </div>
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-3 gap-3">
               <Stat
                 label="현재 (USDT)"
                 value={walletLoading ? "…" : usdt(liveUsdt)}
@@ -433,7 +433,7 @@ export function GoalChallengePanel({
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-4 gap-3">
         <Stat
           label="이번 달 실현 손익"
           value={usdt(monthPnl)}
@@ -561,7 +561,7 @@ function MonthHitCalendar({
       <p className="mb-2 text-[11px] text-zinc-500">
         이번 달 일별 달성 · 초록=달성 / 빨강=미달 / 오늘 테두리
       </p>
-      <div className="grid grid-cols-7 gap-1 sm:grid-cols-10 md:grid-cols-11">
+      <div className="grid grid-cols-11 gap-1">
         {cells}
       </div>
     </div>

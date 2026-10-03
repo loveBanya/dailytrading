@@ -136,7 +136,7 @@ export function DemandSupplyPanel() {
           스크리너 전략 필터가 아니라, 여기서만 쓰는 전용 랭킹입니다.
         </p>
 
-        <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-4 grid grid-cols-4 gap-2">
           {CHECK_META.map((c) => (
             <div
               key={c.key}

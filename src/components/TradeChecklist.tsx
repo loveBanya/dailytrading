@@ -287,7 +287,7 @@ export function TradeChecklist({
         return (
           <li
             key={item.id}
-            className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center sm:gap-3"
+            className="flex flex-row items-center gap-3 px-3 py-2.5"
           >
             <span className="w-5 shrink-0 text-[11px] tabular-nums text-zinc-600">
               {idx + 1}

@@ -66,15 +66,12 @@ type Tab =
   | "review"
   | "live"
   | "overview"
-  | "cash"
   | "mindset"
-  | "posts"
   | "screener"
   | "screener-watch"
   | "screener-perf"
   | "demand-supply"
-  | "alerts"
-  | "bookmarks";
+  | "alerts";
 type SortKey = "newest" | "oldest" | "pnl_desc" | "pnl_asc";
 type PeriodMode = "all" | "year" | "month" | "range";
 type RangePreset = "today" | "7d" | "30d" | "custom";
@@ -84,16 +81,20 @@ const TAB_IDS: Tab[] = [
   "review",
   "live",
   "overview",
-  "cash",
   "mindset",
-  "posts",
   "demand-supply",
   "screener",
   "screener-watch",
   "screener-perf",
   "alerts",
-  "bookmarks",
 ];
+
+/** 예전에 따로 있던 탭은 합친 탭으로 연다 */
+function migrateTab(saved: string): Tab {
+  if (saved === "cash") return "live";
+  if (saved === "posts" || saved === "bookmarks") return "mindset";
+  return (TAB_IDS as string[]).includes(saved) ? (saved as Tab) : "trades";
+}
 
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "newest", label: "최신순" },
@@ -279,7 +280,16 @@ export function TradeJournal() {
   }, []);
 
   useEffect(() => {
-    setTab(loadSavedTab<Tab>("trades", TAB_IDS));
+    setTab(
+      migrateTab(
+        loadSavedTab<string>("trades", [
+          ...TAB_IDS,
+          "cash",
+          "posts",
+          "bookmarks",
+        ])
+      )
+    );
     setOverviewOrder(loadOverviewOrder());
     setGoalPrefs(loadGoalChallenge());
     setTabReady(true);
@@ -722,17 +732,14 @@ export function TradeJournal() {
           [
             ["trades", "매매 기록"],
             ["review", "오답노트"],
-            ["live", "실시간"],
+            ["live", "실시간·입출금"],
             ["overview", "한눈에"],
             ["demand-supply", "수요·공급"],
             ["screener", "코인 스크리너"],
             ["screener-watch", "지정 평가"],
             ["screener-perf", "스크리너 성과"],
             ["alerts", "알림"],
-            ["cash", "입출금"],
-            ["mindset", "매매 마인드"],
-            ["posts", "글"],
-            ["bookmarks", "즐겨찾기"],
+            ["mindset", "마인드·글"],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -981,15 +988,23 @@ export function TradeJournal() {
       )}
 
       {tab === "live" && (
-        <div className="space-y-4">
-          <CollapsiblePositions
-            overview={walletOverview}
-            loading={walletLoading}
-            error={walletError}
-            defaultOpen
-            walletFollow={goalPrefs.walletFollow}
-          />
-          <p className="text-xs text-zinc-600">60초마다 자동 갱신됩니다.</p>
+        <div className="space-y-6">
+          <div className="space-y-4">
+            <CollapsiblePositions
+              overview={walletOverview}
+              loading={walletLoading}
+              error={walletError}
+              defaultOpen
+              walletFollow={goalPrefs.walletFollow}
+            />
+            <p className="text-xs text-zinc-600">60초마다 자동 갱신됩니다.</p>
+          </div>
+          <Section title="업비트 (1회 동기화 → DB)">
+            <UpbitPanel />
+          </Section>
+          <Section title="현금 입출금 (KRW)">
+            <CashLedgerPanel />
+          </Section>
         </div>
       )}
 
@@ -1172,35 +1187,18 @@ export function TradeJournal() {
         </Section>
       )}
 
-      {tab === "cash" && (
-        <div className="space-y-6">
-          <Section title="업비트 (1회 동기화 → DB)">
-            <UpbitPanel />
-          </Section>
-          <Section title="현금 입출금 (KRW)">
-            <CashLedgerPanel />
-          </Section>
-        </div>
-      )}
-
       {tab === "mindset" && (
         <div className="space-y-6">
           <Section title="매매 마인드">
             <MindsetPanel />
           </Section>
+          <Section title="글 · 후기">
+            <JournalPostsPanel />
+          </Section>
+          <Section title="사이트 즐겨찾기">
+            <BookmarkPanel />
+          </Section>
         </div>
-      )}
-
-      {tab === "posts" && (
-        <Section title="글 · 후기">
-          <JournalPostsPanel />
-        </Section>
-      )}
-
-      {tab === "bookmarks" && (
-        <Section title="사이트 즐겨찾기">
-          <BookmarkPanel />
-        </Section>
       )}
 
       <AlarmToastHost onNavigate={goToAlarmTab} />

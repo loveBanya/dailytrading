@@ -209,28 +209,90 @@ export async function fetchBybitOpenPositions(): Promise<OpenPosition[]> {
     }));
 }
 
+/** 단일 자산 모드 합계에 빠지는 달러 연동 담보. USDT는 공식 합계에 이미 들어 있다. */
+const BINANCE_EXTRA_STABLES = new Set([
+  "USDC",
+  "FDUSD",
+  "BFUSD",
+  "BUSD",
+  "TUSD",
+  "USDP",
+  "DAI",
+]);
+
+function binanceNum(value: string | undefined): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * 바이낸스 USD-M 단일 자산 모드의 totalMarginBalance 는 USDT만 더한다.
+ * USDC 잔고는 assets 에 있어도 합계에서 빠지므로, 공식 합계가 USDT 줄과 같으면 더한다.
+ * 멀티 자산 모드처럼 합계가 이미 USDT보다 크면 그대로 둔다.
+ */
+function omittedStableSum(
+  assets: BinanceAccount["assets"],
+  reported: number,
+  usdtAmount: number,
+  pick: (asset: NonNullable<BinanceAccount["assets"]>[number]) => number
+): number {
+  if (Math.abs(reported - usdtAmount) > 0.05) return 0;
+  let extra = 0;
+  for (const asset of assets ?? []) {
+    if (!BINANCE_EXTRA_STABLES.has(asset.asset)) continue;
+    const amount = pick(asset);
+    if (amount > 0.01) extra += amount;
+  }
+  return extra;
+}
+
 export async function fetchBinanceWallet(): Promise<WalletSummary> {
   const account = await binanceGet<BinanceAccount>("/fapi/v2/account");
-  const coins = (account.assets ?? [])
+  const assets = account.assets ?? [];
+  const coins = assets
     .map((a) => ({
       coin: a.asset,
-      equity: Number(a.marginBalance ?? a.walletBalance ?? 0),
-      walletBalance: Number(a.walletBalance ?? 0),
-      availableToWithdraw: Number(a.availableBalance ?? 0),
-      unrealisedPnl: Number(a.unrealizedProfit ?? 0),
-      usdValue: Number(a.marginBalance ?? a.walletBalance ?? 0),
+      equity: binanceNum(a.marginBalance ?? a.walletBalance),
+      walletBalance: binanceNum(a.walletBalance),
+      availableToWithdraw: binanceNum(a.availableBalance),
+      unrealisedPnl: binanceNum(a.unrealizedProfit),
+      usdValue: binanceNum(a.marginBalance ?? a.walletBalance),
     }))
     .filter((c) => c.usdValue > 0.01 || Math.abs(c.walletBalance) > 0)
     .sort((a, b) => b.usdValue - a.usdValue);
 
-  const walletBalance = Number(account.totalWalletBalance ?? 0);
-  const upl = Number(account.totalUnrealizedProfit ?? 0);
+  const usdt = assets.find((a) => a.asset === "USDT");
+  const walletBalance = binanceNum(account.totalWalletBalance);
+  const upl = binanceNum(account.totalUnrealizedProfit);
+  const reportedEquity = binanceNum(
+    account.totalMarginBalance ?? String(walletBalance + upl)
+  );
+  const reportedAvailable = binanceNum(account.availableBalance);
+
+  const extraEquity = omittedStableSum(
+    assets,
+    reportedEquity,
+    binanceNum(usdt?.marginBalance ?? usdt?.walletBalance),
+    (asset) => binanceNum(asset.marginBalance ?? asset.walletBalance)
+  );
+  const extraWallet = omittedStableSum(
+    assets,
+    walletBalance,
+    binanceNum(usdt?.walletBalance),
+    (asset) => binanceNum(asset.walletBalance)
+  );
+  const extraAvailable = omittedStableSum(
+    assets,
+    reportedAvailable,
+    binanceNum(usdt?.availableBalance),
+    (asset) => binanceNum(asset.availableBalance)
+  );
 
   return {
     exchange: "binance",
-    totalEquity: Number(account.totalMarginBalance ?? walletBalance + upl),
-    totalWalletBalance: walletBalance,
-    totalAvailableBalance: Number(account.availableBalance ?? 0),
+    totalEquity: reportedEquity + extraEquity,
+    totalWalletBalance: walletBalance + extraWallet,
+    totalAvailableBalance: reportedAvailable + extraAvailable,
     totalPerpUPL: upl,
     accountType: "USDT-M",
     coins,

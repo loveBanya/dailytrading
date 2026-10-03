@@ -2,13 +2,13 @@
 
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
+import { followedEquity } from "@/lib/wallet-follow";
 import type { MarketTicker } from "@/lib/exchanges/market";
 import {
   computeRisk,
   COIN_STEP,
   linkedStop,
   linkedTp,
-  mirrorPrice,
   priceInput,
   quoteFromTicker,
   RISK_DEFAULTS,
@@ -166,7 +166,10 @@ function getServerSnapshot() {
   return SERVER;
 }
 
-export function useRiskCalc(wallet?: WalletOverview | null): State & {
+export function useRiskCalc(
+  wallet?: WalletOverview | null,
+  walletFollow?: string
+): State & {
   result: RiskResult | null;
   setEquity: (v: string) => void;
   setRiskPct: (v: string) => void;
@@ -176,7 +179,6 @@ export function useRiskCalc(wallet?: WalletOverview | null): State & {
   setUseTp: (on: boolean) => void;
   convertStopToTp: () => void;
   revertTpToStop: () => void;
-  flipSide: () => void;
   setLeverage: (v: string) => void;
   setFeePct: (v: string) => void;
   setRewardR: (v: string) => void;
@@ -208,11 +210,13 @@ export function useRiskCalc(wallet?: WalletOverview | null): State & {
   }, []);
 
   useEffect(() => {
-    if (!snap.linkWallet || !wallet || !(wallet.totalEquity > 0)) return;
-    const next = wallet.totalEquity.toFixed(2);
+    if (!snap.linkWallet || !wallet) return;
+    const amount = followedEquity(wallet, walletFollow);
+    if (!(amount > 0)) return;
+    const next = amount.toFixed(2);
     if (getSnapshot().equity === next) return;
     patch({ equity: next });
-  }, [snap.linkWallet, wallet]);
+  }, [snap.linkWallet, wallet, walletFollow]);
 
   const result = useMemo(
     () =>
@@ -329,22 +333,6 @@ export function useRiskCalc(wallet?: WalletOverview | null): State & {
             }
           : {}),
       });
-    },
-    flipSide: () => {
-      const cur = getSnapshot();
-      const px = Number(cur.entry);
-      const stop = mirrorPrice(px, Number(cur.stop));
-      const partial: Partial<State> = {
-        side: cur.side === "long" ? "short" : "long",
-      };
-      if (stop != null) {
-        partial.stop = priceInput(stop);
-        if (cur.useTp === "1") {
-          const tp = linkedTp(px, stop, Number(cur.rewardR));
-          if (tp != null) partial.tp = priceInput(tp);
-        }
-      }
-      patch(partial);
     },
     setLeverage: (v) => patch({ leverage: v }),
     setFeePct: (v) => patch({ feePct: v }),

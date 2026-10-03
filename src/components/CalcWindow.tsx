@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
-import { loadGoalChallenge } from "@/lib/prefs";
+import { fetchFxRate } from "@/lib/fx/client";
+import { loadGoalChallenge, saveGoalChallenge } from "@/lib/prefs";
+import { DEFAULT_WALLET_FOLLOW } from "@/lib/wallet-follow";
 import {
   calcFolded,
   calcWindowSize,
@@ -20,17 +22,28 @@ import { useRiskCalc } from "./useRiskCalc";
 export function CalcWindow() {
   const rootRef = useRef<HTMLDivElement>(null);
   const [fx, setFx] = useState(1350);
+  const [follow, setFollow] = useState(DEFAULT_WALLET_FOLLOW);
   const [folded, setFolded] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [note, setNote] = useState("");
   const [scale, setScale] = useState(1);
   const [wallet, setWallet] = useState<WalletOverview | null>(null);
   const [walletLoading, setWalletLoading] = useState(true);
-  const calc = useRiskCalc(wallet);
+  const calc = useRiskCalc(wallet, follow);
 
   useEffect(() => {
-    const rate = loadGoalChallenge().fxRate;
-    if (rate > 0) setFx(rate);
+    const savedGoal = loadGoalChallenge();
+    if (savedGoal.fxRate > 0) setFx(savedGoal.fxRate);
+    setFollow(savedGoal.walletFollow);
+    let cancelFx = false;
+    void fetchFxRate().then((quote) => {
+      if (cancelFx || !quote) return;
+      setFx(quote.rate);
+      const saved = loadGoalChallenge();
+      if (saved.fxRate !== quote.rate) {
+        saveGoalChallenge({ ...saved, fxRate: quote.rate });
+      }
+    });
     const nextFolded = calcFolded();
     setFolded(nextFolded);
     const node = rootRef.current;
@@ -48,6 +61,15 @@ export function CalcWindow() {
     const pip = pipWindow();
     setPinned(!!(node && pip && pip.document.contains(node)));
     resizeCalcWindow(nextFolded);
+    const onGoal = (event: StorageEvent) => {
+      if (event.key !== "dailytrading.goal.challenge.v1") return;
+      setFollow(loadGoalChallenge().walletFollow);
+    };
+    window.addEventListener("storage", onGoal);
+    return () => {
+      cancelFx = true;
+      window.removeEventListener("storage", onGoal);
+    };
   }, []);
 
   useEffect(() => {
@@ -245,10 +267,8 @@ export function CalcWindow() {
             >
               <div className="flex min-w-0 items-center gap-1.5">
                 {result && (
-                  <button
-                    type="button"
-                    onClick={calc.flipSide}
-                    title={calc.side === "long" ? "숏으로 바꾸기" : "롱으로 바꾸기"}
+                  <span
+                    title="손절이 현재가보다 낮으면 롱, 높으면 숏입니다. 익절가는 그 반대입니다."
                     className={`rounded px-1.5 py-1 text-[11px] font-bold leading-none ${
                       calc.side === "long"
                         ? "bg-emerald-500 text-zinc-950"
@@ -256,7 +276,7 @@ export function CalcWindow() {
                     }`}
                   >
                     {calc.side === "long" ? "롱" : "숏"}
-                  </button>
+                  </span>
                 )}
                 <p
                   className={`truncate text-sm font-semibold leading-none tabular-nums ${
@@ -306,6 +326,7 @@ export function CalcWindow() {
             wallet={wallet}
             walletLoading={walletLoading}
             fxRate={fx}
+            walletFollow={follow}
           />
         </div>
       )}

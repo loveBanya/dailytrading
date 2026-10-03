@@ -2,9 +2,16 @@ const FOLD_KEY = "dailytrading.calcfold";
 const PIN_KEY = "dailytrading.calcpin";
 
 export type PipHost = {
-  requestWindow: (options?: { width?: number; height?: number }) => Promise<Window>;
+  requestWindow: (options?: {
+    width?: number;
+    height?: number;
+    preferInitialWindowPlacement?: boolean;
+  }) => Promise<Window>;
   readonly window: Window | null;
 };
+
+/** 크롬·엣지 맨 위 창은 가로 240 미만이면 크기 변경을 통째로 무시한다. */
+export const CALC_MIN_WINDOW_WIDTH = 240;
 
 export function pipHost(): PipHost | null {
   return (
@@ -52,7 +59,9 @@ export function saveCalcPinned(pinned: boolean) {
 }
 
 export function calcWindowSize(folded: boolean): { width: number; height: number } {
-  return folded ? { width: 200, height: 460 } : { width: 920, height: 760 };
+  return folded
+    ? { width: CALC_MIN_WINDOW_WIDTH, height: 460 }
+    : { width: 920, height: 760 };
 }
 
 export function popupFeatures(size: { width: number; height: number }) {
@@ -64,8 +73,9 @@ export function resizeCalcWindow(folded: boolean) {
   const target = pip ?? (window.opener ? window : null);
   if (!target) return;
   const size = calcWindowSize(folded);
+  const width = Math.max(CALC_MIN_WINDOW_WIDTH, size.width);
   try {
-    target.resizeTo(size.width + 16, size.height + 40);
+    target.resizeTo(width, size.height + 40);
   } catch {
     /* 브라우저가 크기 변경을 막을 수 있다 */
   }
@@ -77,7 +87,7 @@ export function openPlainCalc(view: Window = window) {
   if (!popup) return null;
   popup.focus();
   try {
-    popup.resizeTo(size.width + 16, size.height + 40);
+    popup.resizeTo(Math.max(CALC_MIN_WINDOW_WIDTH, size.width), size.height + 40);
     popup.moveTo(80, 80);
   } catch {
     /* ignore */

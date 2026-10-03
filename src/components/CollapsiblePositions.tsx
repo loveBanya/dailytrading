@@ -7,6 +7,7 @@ import type {
   WalletOverview,
 } from "@/lib/exchanges/wallet";
 import { exchangeLabel } from "@/lib/utils/labels";
+import { followedEquity, walletFollowLabel } from "@/lib/wallet-follow";
 import { formatPnl, formatPrice } from "@/lib/utils/format";
 import { LivePositionCard } from "./LivePositionCard";
 
@@ -18,6 +19,8 @@ interface CollapsiblePositionsProps {
   loading?: boolean;
   error?: string | null;
   defaultOpen?: boolean;
+  /** 월간 목표와 같은 지갑. 접힌 줄의 금액에 쓴다 */
+  walletFollow?: string;
 }
 
 /** 실시간 포지션 — 거래소별 자산, 기본 접힘 */
@@ -28,12 +31,16 @@ export function CollapsiblePositions({
   loading,
   error,
   defaultOpen = false,
+  walletFollow,
 }: CollapsiblePositionsProps) {
   const [open, setOpen] = useState(defaultOpen);
 
   const accounts = overview?.accounts ?? [];
   const allPositions = overview?.positions ?? positions ?? [];
-  const equity = overview?.totalEquity ?? wallet?.totalEquity ?? 0;
+  const equity = overview
+    ? followedEquity(overview, walletFollow)
+    : (wallet?.totalEquity ?? 0);
+  const equityLabel = walletFollowLabel(walletFollow);
   const upl = overview?.totalPerpUPL ?? wallet?.totalPerpUPL ?? 0;
 
   return (
@@ -54,7 +61,7 @@ export function CollapsiblePositions({
             </span>
           </p>
           <p className="mt-0.5 truncate text-xs text-zinc-500">
-            합계 ${equity.toFixed(2)}
+            {equityLabel} ${equity.toFixed(2)}
             {" · "}
             미실현{" "}
             <span className={upl >= 0 ? "text-emerald-400" : "text-rose-400"}>

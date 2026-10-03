@@ -1,9 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { DailyPnl } from "@/lib/stats/compute";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
 import type { GoalChallengePrefs } from "@/lib/prefs";
+import { fetchFxRate } from "@/lib/fx/client";
+import {
+  followedEquity,
+  normalizeWalletFollow,
+  walletFollowLabel,
+  walletFollowOptions,
+} from "@/lib/wallet-follow";
 
 interface GoalChallengePanelProps {
   wallet: WalletOverview | null;
@@ -80,9 +87,13 @@ export function GoalChallengePanel({
   onGoalUsdtChange,
 }: GoalChallengePanelProps) {
   const [ultimateOpen, setUltimateOpen] = useState(false);
+  const [fxLoading, setFxLoading] = useState(false);
+  const [fxHint, setFxHint] = useState("업비트 USDT 시세");
 
   const fx = prefs.fxRate > 0 ? prefs.fxRate : 1350;
-  const liveUsdt = wallet?.totalEquity ?? 0;
+  const followId = normalizeWalletFollow(prefs.walletFollow);
+  const liveUsdt = followedEquity(wallet, followId);
+  const followChoices = walletFollowOptions(wallet);
   const today = kstToday();
   const monthKey = kstMonthKey(today);
 
@@ -90,16 +101,39 @@ export function GoalChallengePanel({
     onPrefsChange((p) => ({ ...p, ...patch }));
   }
 
+  const pullFx = useCallback(async () => {
+    setFxLoading(true);
+    const quote = await fetchFxRate();
+    setFxLoading(false);
+    if (!quote) {
+      setFxHint("불러오지 못해 직전 환율을 유지합니다");
+      return;
+    }
+    setFxHint(quote.source === "upbit" ? "업비트 USDT 시세" : "달러/원으로 대체");
+    onPrefsChange((p) => (p.fxRate === quote.rate ? p : { ...p, fxRate: quote.rate }));
+  }, [onPrefsChange]);
+
+  useEffect(() => {
+    if (variant !== "monthly") return;
+    void pullFx();
+  }, [variant, pullFx]);
+
   // 월이 바뀌면 월초 자산 스냅샷
   useEffect(() => {
     if (variant !== "monthly") return;
     if (!wallet || walletLoading) return;
     onPrefsChange((p) => {
-      if (p.monthKey === monthKey && p.monthStartEquity != null) return p;
+      const follow = normalizeWalletFollow(p.walletFollow);
+      const amount = followedEquity(wallet, follow);
+      if (!(amount > 0)) return p;
+      const sameMonth = p.monthKey === monthKey && p.monthStartEquity != null;
+      if (sameMonth && p.monthStartFollow === follow) return p;
       return {
         ...p,
         monthKey,
-        monthStartEquity: wallet.totalEquity,
+        walletFollow: follow,
+        monthStartEquity: amount,
+        monthStartFollow: follow,
       };
     });
   }, [variant, wallet, walletLoading, monthKey, onPrefsChange]);
@@ -254,7 +288,7 @@ export function GoalChallengePanel({
                 />
               </label>
               <p className="self-end pb-2 text-[11px] text-zinc-600">
-                환율 {fx.toLocaleString("ko-KR")}원/USDT (월간 목표)
+                환율 {fx.toLocaleString("ko-KR")}원/USDT ({fxHint})
               </p>
             </div>
             <div className="grid grid-cols-3 gap-3">
@@ -322,6 +356,36 @@ export function GoalChallengePanel({
 
       <div className="flex flex-wrap items-end gap-3">
         <label className="text-xs text-zinc-500">
+          따라갈 지갑
+          <select
+            value={followId}
+            onChange={(e) => {
+              const next = normalizeWalletFollow(e.target.value);
+              const amount = followedEquity(wallet, next);
+              update({
+                walletFollow: next,
+                ...(amount > 0
+                  ? { monthKey, monthStartEquity: amount, monthStartFollow: next }
+                  : {}),
+              });
+            }}
+            className="mt-1 block rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-100"
+          >
+            {followChoices.map((choice) => (
+              <option key={choice.id} value={choice.id}>
+                {choice.label}
+                {choice.amount > 0 ? ` · $${choice.amount.toFixed(2)}` : ""}
+              </option>
+            ))}
+            {!followChoices.some((choice) => choice.id === followId) && (
+              <option value={followId}>{walletFollowLabel(followId)}</option>
+            )}
+          </select>
+          <span className="mt-0.5 block text-[11px] text-zinc-600">
+            일일 목표·현재 자산은 {walletFollowLabel(followId)}만 봅니다
+          </span>
+        </label>
+        <label className="text-xs text-zinc-500">
           이번 달 목표 수익 (USDT)
           <input
             type="number"
@@ -339,23 +403,32 @@ export function GoalChallengePanel({
             ≈ {won(monthlyTarget * fx)} · 일 {dim}일
           </span>
         </label>
-        <label className="text-xs text-zinc-500">
+        <div className="text-xs text-zinc-500">
           환율 (원/USDT)
-          <input
-            type="number"
-            step={10}
-            value={prefs.fxRate}
-            onChange={(e) =>
-              update({ fxRate: Math.max(1, Number(e.target.value) || 1350) })
-            }
-            className="mt-1 block w-28 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200"
-          />
-        </label>
+          <div className="mt-1 flex items-center gap-2">
+            <span className="rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm tabular-nums text-zinc-100">
+              {fx.toLocaleString("ko-KR")}원
+            </span>
+            <button
+              type="button"
+              onClick={() => void pullFx()}
+              disabled={fxLoading}
+              className="rounded-md border border-zinc-700 px-2.5 py-2 text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
+            >
+              {fxLoading ? "…" : "새로고침"}
+            </button>
+          </div>
+          <span className="mt-0.5 block text-[11px] text-zinc-600">{fxHint}</span>
+        </div>
         <button
           type="button"
           onClick={() => {
             if (!wallet) return;
-            update({ monthKey, monthStartEquity: wallet.totalEquity });
+            update({
+              monthKey,
+              monthStartEquity: followedEquity(wallet, followId),
+              monthStartFollow: followId,
+            });
           }}
           className="rounded-md border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-200"
           title="현재 자산을 이번 달 시작 자산으로 다시 잡기"

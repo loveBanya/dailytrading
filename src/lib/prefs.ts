@@ -177,6 +177,10 @@ export interface GoalChallengePrefs {
   monthlyPaceMode: "flat" | "rate";
   /** 기한 목표 배분: flat=균등 금액, rate=복리 수익률 */
   horizonPaceMode: "flat" | "rate";
+  /** 따라갈 지갑. all 또는 binance:USDC */
+  walletFollow: string;
+  /** 월초 스냅샷을 잡은 지갑. 바꾸면 월초 자산을 다시 잡는다 */
+  monthStartFollow: string;
 }
 
 const GOAL_KEY = "dailytrading.goal.challenge.v1";
@@ -196,6 +200,8 @@ export const DEFAULT_GOAL_CHALLENGE: GoalChallengePrefs = {
   horizonCurrency: "krw",
   monthlyPaceMode: "flat",
   horizonPaceMode: "rate",
+  walletFollow: "binance:USDC",
+  monthStartFollow: "",
 };
 
 export function loadGoalChallenge(): GoalChallengePrefs {
@@ -245,6 +251,12 @@ export function loadGoalChallenge(): GoalChallengePrefs {
         saved.horizonPaceMode === "rate" || saved.horizonPaceMode === "flat"
           ? saved.horizonPaceMode
           : DEFAULT_GOAL_CHALLENGE.horizonPaceMode,
+      walletFollow:
+        typeof saved.walletFollow === "string" && saved.walletFollow
+          ? saved.walletFollow
+          : DEFAULT_GOAL_CHALLENGE.walletFollow,
+      monthStartFollow:
+        typeof saved.monthStartFollow === "string" ? saved.monthStartFollow : "",
     };
   } catch {
     return { ...DEFAULT_GOAL_CHALLENGE, dailyHits: {} };

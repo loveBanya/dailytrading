@@ -51,7 +51,10 @@ async function openPip(host: PipHost): Promise<boolean> {
     return true;
   }
   try {
-    const pip = await host.requestWindow(calcWindowSize(calcFolded()));
+    const pip = await host.requestWindow({
+      ...calcWindowSize(calcFolded()),
+      preferInitialWindowPlacement: true,
+    });
     copyStyles(pip);
     mountCalc(pip);
     return true;

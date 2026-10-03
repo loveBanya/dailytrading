@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
+import { followedEquity, walletFollowLabel } from "@/lib/wallet-follow";
 import { CalcCoinList } from "./CalcCoinList";
 import { useRiskCalc } from "./useRiskCalc";
 import {
@@ -20,15 +21,20 @@ export function RiskCalculatorPanel({
   wallet,
   walletLoading,
   fxRate,
+  walletFollow,
   embedded = false,
 }: {
   wallet: WalletOverview | null;
   walletLoading?: boolean;
   fxRate?: number;
+  /** 월간 목표와 같은 지갑. 예: binance:USDC */
+  walletFollow?: string;
   /** 작은 계산 창. 좁으면 한 줄, 넓으면 입력과 결과를 나란히 둔다 */
   embedded?: boolean;
 }) {
   const fx = fxRate && fxRate > 0 ? fxRate : 1350;
+  const followAmount = followedEquity(wallet, walletFollow);
+  const followLabel = walletFollowLabel(walletFollow);
   const {
     equity,
     setEquity,
@@ -57,10 +63,9 @@ export function RiskCalculatorPanel({
     setTp,
     convertStopToTp,
     revertTpToStop,
-    flipSide,
     result,
     restoreCustom,
-  } = useRiskCalc(wallet);
+  } = useRiskCalc(wallet, walletFollow);
 
   const pricesOk =
     !!result && !result.wrongSide && !result.tpInvalid && !result.belowMin;
@@ -96,10 +101,10 @@ export function RiskCalculatorPanel({
               />
               <button
                 type="button"
-                disabled={!wallet || walletLoading || !(wallet.totalEquity > 0)}
+                disabled={!wallet || walletLoading || !(followAmount > 0)}
                 onClick={() => {
-                  if (!wallet || !(wallet.totalEquity > 0)) return;
-                  setEquity(wallet.totalEquity.toFixed(2));
+                  if (!wallet || !(followAmount > 0)) return;
+                  setEquity(followAmount.toFixed(2));
                   setLinkWallet(true);
                 }}
                 className={`mt-1.5 rounded-md border px-2.5 py-1 text-[11px] transition disabled:opacity-40 ${
@@ -111,8 +116,8 @@ export function RiskCalculatorPanel({
                 {walletLoading
                   ? "지갑 불러오는 중…"
                   : linkWallet
-                    ? "지갑 연동 중"
-                    : "현재 지갑 연동"}
+                    ? `${followLabel} 연동 중`
+                    : `${followLabel} 연동`}
               </button>
             </div>
             <div className="min-w-0">
@@ -328,10 +333,8 @@ export function RiskCalculatorPanel({
                           : `${qtyFmt(result.qty, result.qtyStep)}개`}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={flipSide}
-                    title={side === "long" ? "숏으로 바꾸기" : "롱으로 바꾸기"}
+                  <span
+                    title="손절이 현재가보다 낮으면 롱, 높으면 숏입니다. 익절가는 그 반대입니다."
                     className={`rounded-lg px-3 py-2 text-2xl font-bold leading-none ${
                       side === "long"
                         ? "bg-emerald-500 text-zinc-950"
@@ -339,7 +342,7 @@ export function RiskCalculatorPanel({
                     }`}
                   >
                     {side === "long" ? "롱" : "숏"}
-                  </button>
+                  </span>
                 </div>
                 <p className="mt-1 text-xs text-zinc-500">
                   {result.wrongSide

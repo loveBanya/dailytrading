@@ -57,6 +57,7 @@ function defaultCoins(): CalcCoin[] {
 }
 
 const DEFAULT_SYMBOLS = new Set(defaultCoins().map((coin) => coin.symbol));
+const DROPPED_SYMBOLS = new Set(["SOXLUSDT", "KORUUSDT"]);
 
 export function isPinnedCalcCoin(symbol: string): boolean {
   return DEFAULT_SYMBOLS.has(symbol.toUpperCase());
@@ -65,7 +66,9 @@ export function isPinnedCalcCoin(symbol: string): boolean {
 function withDefaults(coins: CalcCoin[]): CalcCoin[] {
   const bySymbol = new Map(coins.map((coin) => [coin.symbol, coin]));
   const base = defaultCoins().map((coin) => bySymbol.get(coin.symbol) ?? coin);
-  const extras = coins.filter((coin) => !DEFAULT_SYMBOLS.has(coin.symbol));
+  const extras = coins.filter(
+    (coin) => !DEFAULT_SYMBOLS.has(coin.symbol) && !DROPPED_SYMBOLS.has(coin.symbol)
+  );
   return [...base, ...extras].slice(0, MAX_COINS);
 }
 
@@ -78,7 +81,7 @@ function parseCoins(raw: string): CalcCoin[] {
     const item = row as Partial<CalcCoin>;
     const symbol = String(item.symbol ?? "").toUpperCase();
     const unit = String(item.unit ?? "").replace(/USDT$/i, "");
-    if (!symbol.endsWith("USDT") || !unit) continue;
+    if (!symbol.endsWith("USDT") || !unit || DROPPED_SYMBOLS.has(symbol)) continue;
     coins.push({
       symbol,
       label: String(item.label || LABELS[unit] || unit),

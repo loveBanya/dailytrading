@@ -27,6 +27,7 @@ import { ScreenerPerfPanel } from "./screener/ScreenerPerfPanel";
 import { WatchEvaluatePanel } from "./screener/WatchEvaluatePanel";
 import { DemandSupplyPanel } from "./screener/DemandSupplyPanel";
 import { EquityCurvePanel } from "./EquityCurvePanel";
+import { fetchFxRate } from "@/lib/fx/client";
 import { ReviewCommentsFeed } from "./ReviewCommentsFeed";
 import { GoalChallengePanel } from "./GoalChallengePanel";
 import { HorizonGoalPanel } from "./HorizonGoalPanel";
@@ -298,6 +299,20 @@ export function TradeJournal() {
     if (!tabReady) return;
     saveGoalChallenge(goalPrefs);
   }, [goalPrefs, tabReady]);
+
+  useEffect(() => {
+    if (!tabReady) return;
+    let cancel = false;
+    void fetchFxRate().then((quote) => {
+      if (cancel || !quote) return;
+      setGoalPrefs((p) =>
+        p.fxRate === quote.rate ? p : { ...p, fxRate: quote.rate }
+      );
+    });
+    return () => {
+      cancel = true;
+    };
+  }, [tabReady]);
 
   const patchGoalPrefs = useCallback(
     (
@@ -689,6 +704,7 @@ export function TradeJournal() {
           loading={walletLoading}
           error={walletError}
           defaultOpen={false}
+          walletFollow={goalPrefs.walletFollow}
         />
       </div>
 
@@ -971,6 +987,7 @@ export function TradeJournal() {
             loading={walletLoading}
             error={walletError}
             defaultOpen
+            walletFollow={goalPrefs.walletFollow}
           />
           <p className="text-xs text-zinc-600">60초마다 자동 갱신됩니다.</p>
         </div>
@@ -1076,6 +1093,8 @@ export function TradeJournal() {
                     wallet={walletOverview}
                     walletLoading={walletLoading}
                     goalUsdt={goalUsdt}
+                    fxRate={goalPrefs.fxRate}
+                    walletFollow={goalPrefs.walletFollow}
                   />
                 </Section>
               );
@@ -1113,6 +1132,7 @@ export function TradeJournal() {
                     wallet={walletOverview}
                     walletLoading={walletLoading}
                     fxRate={goalPrefs.fxRate}
+                    walletFollow={goalPrefs.walletFollow}
                   />
                 </Section>
               );

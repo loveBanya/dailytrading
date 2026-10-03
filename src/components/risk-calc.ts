@@ -50,8 +50,6 @@ export const COIN_STEP: Record<string, string> = {
   BTC: "0.001",
   ETH: "0.01",
   XRP: "0.1",
-  SOXL: "0.01",
-  KORU: "0.01",
 };
 
 export const QTY_UNIT_PRESETS = ["0.001", "0.01", "0.1", "1"] as const;
@@ -60,8 +58,6 @@ export const COIN_SHORTCUTS = [
   ["BTCUSDT", "비트", "BTC"],
   ["ETHUSDT", "이더", "ETH"],
   ["XRPUSDT", "리플", "XRP"],
-  ["SOXLUSDT", "SOXL", "SOXL"],
-  ["KORUUSDT", "KORU", "KORU"],
 ] as const;
 
 export function qtyFmt(n: number, step?: number): string {
@@ -135,12 +131,6 @@ export function linkedStop(entry: number, tp: number, rewardR: number): number |
   const dist = Math.abs(tp - entry) / rewardR;
   const stop = tp > entry ? entry - dist : entry + dist;
   return stop > 0 ? stop : null;
-}
-
-export function mirrorPrice(entry: number, price: number): number | null {
-  if (!(entry > 0) || !(price > 0) || price === entry) return null;
-  const next = 2 * entry - price;
-  return next > 0 ? next : null;
 }
 
 export function won(usdtAmt: number, fx: number): string {

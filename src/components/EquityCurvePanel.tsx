@@ -11,7 +11,7 @@ import type { DailyPnl } from "@/lib/stats/compute";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
 import { formatPnl } from "@/lib/utils/format";
 import type { AssetFlow } from "@/app/api/asset-flows/route";
-import { loadGoalChallenge } from "@/lib/prefs";
+import { followedEquity, walletFollowLabel } from "@/lib/wallet-follow";
 
 interface EquityCurvePanelProps {
   daily: DailyPnl[];
@@ -22,6 +22,10 @@ interface EquityCurvePanelProps {
   goalUsdt?: number | null;
   /** 외부에서 flows 갱신 트리거 */
   flowsRefreshKey?: number;
+  /** 원/USDT. 월간 목표와 같은 값 */
+  fxRate?: number;
+  /** 월간 목표와 같은 지갑 */
+  walletFollow?: string;
 }
 
 function won(n: number): string {
@@ -56,14 +60,12 @@ export function EquityCurvePanel({
   walletLoading,
   goalUsdt,
   flowsRefreshKey = 0,
+  fxRate: fxRateProp,
+  walletFollow,
 }: EquityCurvePanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [flows, setFlows] = useState<AssetFlow[]>([]);
-  const [fxRate, setFxRate] = useState(1350);
-
-  useEffect(() => {
-    setFxRate(loadGoalChallenge().fxRate || 1350);
-  }, [goalUsdt, flowsRefreshKey]);
+  const fxRate = fxRateProp && fxRateProp > 0 ? fxRateProp : 1350;
 
   useEffect(() => {
     let cancelled = false;
@@ -89,7 +91,7 @@ export function EquityCurvePanel({
     };
   }, [flowsRefreshKey]);
 
-  const liveEquity = wallet?.totalEquity ?? null;
+  const liveEquity = wallet ? followedEquity(wallet, walletFollow) : null;
   const liveUpl = wallet?.totalPerpUPL ?? 0;
 
   const netExternalAll = useMemo(
@@ -271,7 +273,7 @@ export function EquityCurvePanel({
   return (
     <div className="space-y-4">
       <p className="text-sm text-zinc-500">
-        단위는 USDT($)입니다. 한화는 챌린지 환율로 환산한 참고값입니다. 파란
+        단위는 USDT($)입니다. 한화는 업비트 USDT 환율로 환산한 참고값입니다. 파란
         점선=현재
         {goalUsdt != null ? " · 노란 점선=이번 달 월말 목표 자산" : ""}.
       </p>
@@ -315,7 +317,9 @@ export function EquityCurvePanel({
           </p>
         </div>
         <div>
-          <p className="text-[11px] text-zinc-500">실시간 자산 (USDT)</p>
+          <p className="text-[11px] text-zinc-500">
+            실시간 자산 · {walletFollowLabel(walletFollow)}
+          </p>
           <p className="font-semibold tabular-nums text-sky-300">
             {walletLoading
               ? "…"

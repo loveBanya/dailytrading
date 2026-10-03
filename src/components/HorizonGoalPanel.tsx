@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
 import type { GoalChallengePrefs } from "@/lib/prefs";
+import { followedEquity, walletFollowLabel } from "@/lib/wallet-follow";
 
 interface HorizonGoalPanelProps {
   wallet: WalletOverview | null;
@@ -267,7 +268,8 @@ export function HorizonGoalPanel({
   const paceMode: PaceMode =
     prefs.horizonPaceMode === "flat" ? "flat" : "rate";
   const today = kstToday();
-  const liveUsdt = wallet?.totalEquity ?? 0;
+  const liveUsdt = followedEquity(wallet, prefs.walletFollow);
+  const followLabel = walletFollowLabel(prefs.walletFollow);
   const usingWallet = prefs.horizonCurrentUsdt == null;
   const current = usingWallet ? liveUsdt : Number(prefs.horizonCurrentUsdt) || 0;
   const target = Math.max(0, prefs.horizonTargetUsdt);
@@ -372,7 +374,7 @@ export function HorizonGoalPanel({
         목표·지금·기한으로 오늘 필요량을 계산합니다.{" "}
         <span className="text-zinc-300">균등 금액</span> 또는{" "}
         <span className="text-zinc-300">복리 수익률</span>을 고를 수 있습니다.
-        환율은 월간 목표 설정값({fx.toLocaleString("ko-KR")}원/USDT)을 씁니다.
+        환율은 업비트 USDT 시세({fx.toLocaleString("ko-KR")}원)를 씁니다.
       </p>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -457,7 +459,7 @@ export function HorizonGoalPanel({
             {usingWallet
               ? walletLoading
                 ? "지갑 불러오는 중…"
-                : "지갑 자산 사용 중"
+                : `${followLabel} 사용 중`
               : "수동 입력"}{" "}
             · ≈ {currency === "krw" ? usdt(current) : won(current * fx)}
           </span>
@@ -477,7 +479,7 @@ export function HorizonGoalPanel({
           type="button"
           onClick={() => {
             if (!wallet) return;
-            update({ horizonCurrentUsdt: wallet.totalEquity });
+            update({ horizonCurrentUsdt: followedEquity(wallet, prefs.walletFollow) });
           }}
           disabled={!wallet || walletLoading}
           className="rounded-md border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-40"

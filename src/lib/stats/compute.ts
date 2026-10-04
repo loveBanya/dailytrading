@@ -43,6 +43,15 @@ export interface OverallStats {
   winningDays: number;
   losingDays: number;
   breakevenDays: number;
+  long: SideStats;
+  short: SideStats;
+}
+
+export interface SideStats {
+  trades: number;
+  /** 전체 거래 수 대비 비율 */
+  share: number;
+  winRate: number;
 }
 
 function monthKey(iso: string): string {
@@ -129,6 +138,16 @@ function dayBreakdown(trades: Trade[]) {
   return { winningDays, losingDays, breakevenDays };
 }
 
+function sideStats(trades: Trade[], side: Trade["side"]): SideStats {
+  const list = trades.filter((trade) => trade.side === side);
+  const wins = list.filter((trade) => Number(trade.pnl) > 0).length;
+  return {
+    trades: list.length,
+    share: trades.length ? (list.length / trades.length) * 100 : 0,
+    winRate: list.length ? (wins / list.length) * 100 : 0,
+  };
+}
+
 export function computeOverallStats(trades: Trade[]): OverallStats {
   const base = computeFromList(trades);
   const days = dayBreakdown(trades);
@@ -136,6 +155,8 @@ export function computeOverallStats(trades: Trade[]): OverallStats {
     ...base,
     profitFactor: base.profitFactor === Infinity ? null : base.profitFactor,
     ...days,
+    long: sideStats(trades, "LONG"),
+    short: sideStats(trades, "SHORT"),
   };
 }
 

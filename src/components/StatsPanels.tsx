@@ -142,6 +142,7 @@ export function StatsPanels({
           거래 {overall.trades}회 · 기대값 {formatPnl(overall.expectancy)} · 평균
           보유 {formatDuration(Math.round(overall.avgHoldMinutes))}
         </p>
+        <SideSplit long={overall.long} short={overall.short} />
       </div>
 
       <DailyPnlCalendar daily={daily} trades={trades} />
@@ -203,6 +204,50 @@ type StatRow = {
   tone?: "pos" | "neg";
   emphasize?: boolean;
 };
+
+function SideSplit({
+  long,
+  short,
+}: {
+  long: OverallStats["long"];
+  short: OverallStats["short"];
+}) {
+  return (
+    <div className="mt-4">
+      <p className="text-sm text-zinc-300">롱·숏</p>
+      <div className="mt-2 flex h-2 overflow-hidden rounded-full bg-zinc-800">
+        <div className="bg-emerald-500" style={{ width: `${long.share}%` }} />
+        <div className="bg-rose-500" style={{ width: `${short.share}%` }} />
+      </div>
+      <div className="mt-2 space-y-1">
+        <SideLine name="롱" stats={long} tone="pos" />
+        <SideLine name="숏" stats={short} tone="neg" />
+      </div>
+      <p className="mt-1 text-[11px] text-zinc-600">비율은 거래 수 기준입니다.</p>
+    </div>
+  );
+}
+
+function SideLine({
+  name,
+  stats,
+  tone,
+}: {
+  name: string;
+  stats: OverallStats["long"];
+  tone: "pos" | "neg";
+}) {
+  return (
+    <p className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+      <span className={tone === "pos" ? "text-emerald-400" : "text-rose-400"}>
+        {name} {stats.share.toFixed(0)}%
+      </span>
+      <span className="tabular-nums text-zinc-400">
+        {stats.trades}회 · 승률 {stats.trades ? `${stats.winRate.toFixed(1)}%` : "—"}
+      </span>
+    </p>
+  );
+}
 
 function StatColumn({ rows }: { rows: StatRow[] }) {
   return (

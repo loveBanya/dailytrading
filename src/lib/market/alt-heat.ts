@@ -1,10 +1,28 @@
-/** 알트 시총 / 비트 시총이 150일 평균에서 얼마나 벗어났는지. */
+/** 주요 알트를 같은 비중으로 모아 비트코인 대비 150일 평균에서 얼마나 벗어났는지. */
 
-const CMC =
-  "https://api.coinmarketcap.com/data-api/v3/global-metrics/quotes/historical";
-const DAY = 86_400;
+const BINANCE = "https://api.binance.com/api/v3/klines";
+const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
 const SMA = 150;
-const YEAR = 365;
+const YEAR_MS = 365 * DAY_MS;
+
+/** 시총 상위권에서 스테이블·래핑을 뺀 주요 알트 */
+const ALTS = [
+  "ETH",
+  "SOL",
+  "XRP",
+  "BNB",
+  "DOGE",
+  "ADA",
+  "AVAX",
+  "LINK",
+  "TRX",
+  "LTC",
+  "BCH",
+  "DOT",
+  "UNI",
+  "XLM",
+] as const;
 
 export interface HeatPoint {
   t: number;
@@ -14,6 +32,7 @@ export interface HeatPoint {
 export interface AltHeat {
   updatedAt: string;
   divergence: number;
+  yesterday: number | null;
   zone: HeatZoneId;
   median: number;
   actual1y: number | null;
@@ -39,21 +58,6 @@ export const HEAT_ZONES: Array<{
   { id: "very-hot", label: "매우 과열", max: Number.POSITIVE_INFINITY },
 ];
 
-interface CapPoint {
-  t: number;
-  alt: number;
-  btc: number;
-}
-
-interface CmcQuote {
-  timestamp?: string;
-  btcDominance?: number;
-  quote?: Array<{
-    totalMarketCap?: number;
-    altcoinMarketCap?: number;
-  }>;
-}
-
 export function heatZone(value: number): HeatZoneId {
   for (const zone of HEAT_ZONES) {
     if (value <= zone.max) return zone.id;
@@ -62,126 +66,227 @@ export function heatZone(value: number): HeatZoneId {
 }
 
 export async function loadAltHeat(): Promise<AltHeat> {
-  const end = Math.floor(Date.now() / 1000);
-  const start = Math.floor(Date.UTC(2018, 0, 1) / 1000);
-  const [dailyRaw, hourlyRaw] = await Promise.all([
-    fetchDaily(start, end),
-    fetchQuotes(end - 36 * 3600, end, "1h"),
+  const dailyStart = Date.UTC(2019, 0, 1);
+  const hourStart = Date.now() - 40 * HOUR_MS;
+  const [btcDaily, altDaily, btcHourly, altHourly] = await Promise.all([
+    fetchCloses("BTCUSDT", "1d", dailyStart),
+    mapPool(ALTS, 6, (coin) => fetchCloses(`${coin}USDT`, "1d", dailyStart)),
+    fetchCloses("BTCUSDT", "1h", hourStart),
+    mapPool(ALTS, 6, (coin) => fetchCloses(`${coin}USDT`, "1h", hourStart)),
   ]);
-  const dailyCaps = dedupe(dailyRaw.map(parseQuote).filter(isCap));
-  const hourlyCaps = dedupe(hourlyRaw.map(parseQuote).filter(isCap));
-  if (dailyCaps.length < SMA + 5) {
-    throw new Error("알트 시총 기록이 부족합니다");
-  }
 
-  const ratios = dailyCaps.map((row) => row.alt / row.btc);
-  const averages = rollingMean(ratios, SMA);
-  const daily: HeatPoint[] = [];
-  for (let i = 0; i < dailyCaps.length; i++) {
+  const daily = buildIndex(btcDaily, altDaily);
+  if (daily.levels.length < SMA + 5) {
+    throw new Error("알트 가격 기록이 부족합니다");
+  }
+  const averages = rollingMean(daily.levels, SMA);
+  const points: HeatPoint[] = [];
+  for (let i = 0; i < daily.levels.length; i++) {
     const avg = averages[i];
     if (avg == null || !(avg > 0)) continue;
-    daily.push({
-      t: dailyCaps[i].t,
-      v: (ratios[i] / avg - 1) * 100,
+    points.push({
+      t: daily.times[i],
+      v: (daily.levels[i] / avg - 1) * 100,
     });
   }
-  const lastAvg = averages[averages.length - 1];
-  if (lastAvg == null || !(lastAvg > 0) || daily.length === 0) {
+  const last = daily.levels.length - 1;
+  const lastAvg = averages[last];
+  if (lastAvg == null || !(lastAvg > 0) || points.length === 0) {
     throw new Error("150일 평균을 계산하지 못했습니다");
   }
 
-  const latestCap = hourlyCaps[hourlyCaps.length - 1] ?? dailyCaps[dailyCaps.length - 1];
-  const divergence = (latestCap.alt / latestCap.btc / lastAvg - 1) * 100;
-  const hourly = hourlyCaps.map((row) => ({
-    t: row.t,
-    v: (row.alt / row.btc / lastAvg - 1) * 100,
-  }));
+  const divergence = (daily.levels[last] / lastAvg - 1) * 100;
+  const prevAvg = averages[last - 1];
+  const yesterday =
+    prevAvg != null && prevAvg > 0
+      ? (daily.levels[last - 1] / prevAvg - 1) * 100
+      : null;
 
-  const yearAgo = latestCap.t - YEAR * DAY * 1000;
-  const nowRatio = latestCap.alt / latestCap.btc;
-  const past = nearest(dailyCaps, yearAgo);
-  const pastAvg = past ? averages[dailyCaps.indexOf(past)] : null;
+  const yearAt = daily.times[last] - YEAR_MS;
+  const year = nearestIndex(daily.times, yearAt);
   const actual1y =
-    past && past.btc > 0 ? (nowRatio / (past.alt / past.btc) - 1) * 100 : null;
+    year != null && daily.levels[year] > 0
+      ? (daily.levels[last] / daily.levels[year] - 1) * 100
+      : null;
+  const yearAvg = year != null ? averages[year] : null;
   const baseline1y =
-    pastAvg != null && pastAvg > 0 ? (lastAvg / pastAvg - 1) * 100 : null;
+    yearAvg != null && yearAvg > 0 ? (lastAvg / yearAvg - 1) * 100 : null;
 
-  const dayAgo = latestCap.t - DAY * 1000;
-  const altThen = nearest(hourlyCaps.length > 2 ? hourlyCaps : dailyCaps, dayAgo);
-  const altChange24h =
-    altThen && altThen.alt > 0 ? (latestCap.alt / altThen.alt - 1) * 100 : null;
-  const btcChange24h =
-    altThen && altThen.btc > 0 ? (latestCap.btc / altThen.btc - 1) * 100 : null;
+  const hourly = hourlyDivergence(
+    btcHourly,
+    altHourly,
+    daily.levels[last - 1] ?? daily.levels[last],
+    daily.times[last - 1] ?? daily.times[last],
+    lastAvg
+  );
 
   return {
-    updatedAt: new Date(latestCap.t).toISOString(),
+    updatedAt: new Date(daily.times[last]).toISOString(),
     divergence,
+    yesterday,
     zone: heatZone(divergence),
-    median: median(daily.map((point) => point.v)),
+    median: median(points.map((point) => point.v)),
     actual1y,
     baseline1y,
-    altChange24h,
-    btcChange24h,
+    altChange24h: basketChange(altHourly),
+    btcChange24h: seriesChange(btcHourly),
     hourly,
-    daily,
+    daily: points,
   };
 }
 
-async function fetchDaily(start: number, end: number): Promise<CmcQuote[]> {
-  const span = 1900 * DAY;
-  const rows: CmcQuote[] = [];
-  for (let from = start; from < end; from += span) {
-    const to = Math.min(end, from + span);
-    const part = await fetchQuotes(from, to, "1d");
-    rows.push(...part);
+function hourlyDivergence(
+  btc: Array<[number, number]>,
+  alts: Array<Array<[number, number]>>,
+  yesterdayLevel: number,
+  yesterdayTime: number,
+  sma: number
+): HeatPoint[] {
+  const btcMap = new Map(btc);
+  const altMaps = alts.map((rows) => new Map(rows));
+  const times = [...btcMap.keys()].filter((t) => t >= yesterdayTime).sort((a, b) => a - b);
+  const basePrices = pricesAt(btcMap, altMaps, yesterdayTime);
+  if (!basePrices) return [];
+  const out: HeatPoint[] = [];
+  for (const t of times) {
+    const nowPrices = pricesAt(btcMap, altMaps, t);
+    if (!nowPrices) continue;
+    const ret = equalReturn(basePrices, nowPrices);
+    if (ret == null) continue;
+    out.push({ t, v: ((yesterdayLevel * (1 + ret)) / sma - 1) * 100 });
   }
-  return rows;
+  return out;
 }
 
-async function fetchQuotes(
-  start: number,
-  end: number,
-  interval: "1d" | "1h"
-): Promise<CmcQuote[]> {
-  const url = new URL(CMC);
-  url.searchParams.set("convertId", "2781");
-  url.searchParams.set("format", "chart");
-  url.searchParams.set("interval", interval);
-  url.searchParams.set("timeStart", String(start));
-  url.searchParams.set("timeEnd", String(end));
-  const res = await fetch(url, {
-    cache: "no-store",
-    headers: { accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(`시총 기록 요청 실패 (${res.status})`);
-  const json = (await res.json()) as {
-    data?: { quotes?: CmcQuote[] };
-    status?: { error_code?: string; error_message?: string };
-  };
-  if (json.status?.error_code && json.status.error_code !== "0") {
-    throw new Error(json.status.error_message || "시총 기록을 가져오지 못했습니다");
+function buildIndex(btc: Array<[number, number]>, alts: Array<Array<[number, number]>>) {
+  const btcMap = new Map(btc);
+  const altMaps = alts.map((rows) => new Map(rows));
+  const times = [...btcMap.keys()].sort((a, b) => a - b);
+  const levels: number[] = [];
+  const kept: number[] = [];
+  let index = 1;
+  let prev: number | null = null;
+  for (const t of times) {
+    if (prev != null) {
+      const before = pricesAt(btcMap, altMaps, prev);
+      const now = pricesAt(btcMap, altMaps, t);
+      const ret = before && now ? equalReturn(before, now) : null;
+      if (ret != null) index *= 1 + ret;
+    }
+    levels.push(index);
+    kept.push(t);
+    prev = t;
   }
-  return json.data?.quotes ?? [];
+  return { times: kept, levels };
 }
 
-function parseQuote(row: CmcQuote): CapPoint | null {
-  const quote = row.quote?.[0];
-  const total = Number(quote?.totalMarketCap);
-  const alt = Number(quote?.altcoinMarketCap);
-  const btc = total - alt;
-  const t = Date.parse(row.timestamp ?? "");
-  if (!Number.isFinite(t) || !(alt > 0) || !(btc > 0)) return null;
-  return { t, alt, btc };
+function pricesAt(
+  btc: Map<number, number>,
+  alts: Array<Map<number, number>>,
+  t: number
+): number[] | null {
+  const btcPx = btc.get(t);
+  if (!(btcPx && btcPx > 0)) return null;
+  const row = [btcPx];
+  for (const map of alts) row.push(map.get(t) ?? 0);
+  return row;
 }
 
-function isCap(row: CapPoint | null): row is CapPoint {
-  return row != null;
+/** ratios[0]은 BTC USDT, 나머지는 알트 USDT. 알트/BTC 수익률의 평균. */
+function equalReturn(before: number[], after: number[]): number | null {
+  const btcRet = after[0] / before[0];
+  if (!(btcRet > 0)) return null;
+  let sum = 0;
+  let n = 0;
+  const count = Math.min(before.length, after.length);
+  for (let i = 1; i < count; i++) {
+    if (!(before[i] > 0) || !(after[i] > 0)) continue;
+    sum += after[i] / before[i] / btcRet - 1;
+    n += 1;
+  }
+  if (n < 4) return null;
+  return sum / n;
 }
 
-function dedupe(rows: CapPoint[]): CapPoint[] {
-  const map = new Map<number, CapPoint>();
-  for (const row of rows) map.set(row.t, row);
-  return [...map.values()].sort((a, b) => a.t - b.t);
+function basketChange(alts: Array<Array<[number, number]>>): number | null {
+  const changes = alts
+    .map((rows) => seriesChange(rows))
+    .filter((value): value is number => value != null);
+  if (changes.length < 4) return null;
+  return changes.reduce((sum, value) => sum + value, 0) / changes.length;
+}
+
+function seriesChange(rows: Array<[number, number]>): number | null {
+  if (rows.length < 2) return null;
+  const last = rows[rows.length - 1];
+  const target = last[0] - 24 * HOUR_MS;
+  let prev: [number, number] | null = null;
+  for (const row of rows) {
+    if (row[0] <= target) prev = row;
+  }
+  if (!prev || !(prev[1] > 0)) return null;
+  return (last[1] / prev[1] - 1) * 100;
+}
+
+async function fetchCloses(
+  symbol: string,
+  interval: "1d" | "1h",
+  startMs: number
+): Promise<Array<[number, number]>> {
+  const out: Array<[number, number]> = [];
+  let from = startMs;
+  const step = interval === "1d" ? DAY_MS : HOUR_MS;
+  while (from < Date.now()) {
+    const url = new URL(BINANCE);
+    url.searchParams.set("symbol", symbol);
+    url.searchParams.set("interval", interval);
+    url.searchParams.set("limit", "1000");
+    url.searchParams.set("startTime", String(from));
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return out;
+    const batch = (await res.json()) as number[][];
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    for (const row of batch) out.push([Number(row[0]), Number(row[4])]);
+    const next = Number(batch[batch.length - 1][0]) + step;
+    if (next <= from) break;
+    from = next;
+    if (batch.length < 1000) break;
+  }
+  return out;
+}
+
+async function mapPool<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      out[index] = await fn(items[index]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker())
+  );
+  return out;
+}
+
+function nearestIndex(times: number[], target: number): number | null {
+  let best = -1;
+  let bestDist = Infinity;
+  for (let i = 0; i < times.length; i++) {
+    const dist = Math.abs(times[i] - target);
+    if (dist < bestDist) {
+      best = i;
+      bestDist = dist;
+    }
+  }
+  if (best < 0 || bestDist > 5 * DAY_MS) return null;
+  return best;
 }
 
 function rollingMean(values: number[], window: number): Array<number | null> {
@@ -195,22 +300,8 @@ function rollingMean(values: number[], window: number): Array<number | null> {
   return out;
 }
 
-function nearest(rows: CapPoint[], target: number): CapPoint | null {
-  let best: CapPoint | null = null;
-  let bestDist = Infinity;
-  for (const row of rows) {
-    const dist = Math.abs(row.t - target);
-    if (dist < bestDist) {
-      best = row;
-      bestDist = dist;
-    }
-  }
-  if (!best || bestDist > 5 * DAY * 1000) return null;
-  return best;
-}
-
 function median(values: number[]): number {
-  if (values.length === 0) return -7;
+  if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   if (sorted.length % 2 === 1) return sorted[mid];

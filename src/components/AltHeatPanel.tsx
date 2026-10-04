@@ -91,7 +91,7 @@ export function AltHeatPanel({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-sm font-medium text-zinc-200">알트/BTC 150일선 괴리율</p>
-          <p className="mt-0.5 text-[11px] text-zinc-500">전체 알트 시총 ÷ 비트코인 시총</p>
+          <p className="mt-0.5 text-[11px] text-zinc-500">주요 알트 14개, 같은 비중 ÷ 비트코인</p>
           <p className={`mt-2 text-3xl font-semibold tabular-nums ${ZONE_TEXT[heat.zone]}`}>
             {zone.label}{" "}
             <span className="tabular-nums">{signed(heat.divergence, 2)}</span>
@@ -103,7 +103,12 @@ export function AltHeatPanel({
         </p>
       </div>
 
-      <Gauge value={heat.divergence} active={heat.zone} median={heat.median} />
+      <Gauge
+        value={heat.divergence}
+        yesterday={heat.yesterday}
+        active={heat.zone}
+        median={heat.median}
+      />
 
       <div className="space-y-1.5 rounded-lg bg-zinc-900/60 px-3 py-2.5 text-[12px] leading-relaxed text-zinc-400">
         <p className="text-[11px] font-medium text-zinc-300">읽는 법</p>
@@ -113,8 +118,8 @@ export function AltHeatPanel({
           어디로 움직였는지입니다.
         </p>
         <p>
-          차트는 그날의 괴리율이고, 점선은 지금까지의 중간값입니다. BTC 오늘은 비트코인 가격, 알트
-          오늘은 알트 시총의 하루 변화입니다.
+          차트는 그날의 괴리율입니다. 오늘 화면의 점선은 어제 값이고, 더 긴 기간의 점선은 지금까지의
+          중간값입니다. BTC 오늘은 비트코인 가격, 알트 오늘은 그 14개 알트의 하루 변화입니다.
         </p>
       </div>
 
@@ -157,7 +162,11 @@ export function AltHeatPanel({
               {item.label}
             </span>
           ))}
-          <span>··· 중간값 {signed(heat.median, 0)}</span>
+          <span>
+            {range === "1d"
+              ? `··· 어제 ${signed(heat.yesterday, 1)}`
+              : `··· 중간값 ${signed(heat.median, 0)}`}
+          </span>
         </div>
       </div>
 
@@ -172,17 +181,20 @@ export function AltHeatPanel({
 
 function Gauge({
   value,
+  yesterday,
   active,
   median,
 }: {
   value: number;
+  yesterday: number | null;
   active: HeatZoneId;
   median: number;
 }) {
   const left = markerLeft(value);
+  const yLeft = yesterday == null ? null : markerLeft(yesterday);
   return (
     <div>
-      <div className="relative pt-4">
+      <div className="relative pt-8">
         <span
           className="absolute top-0 -translate-x-1/2 text-zinc-200"
           style={{ left: `${left}%` }}
@@ -190,6 +202,14 @@ function Gauge({
         >
           ▼
         </span>
+        {yLeft != null && (
+          <span
+            className="absolute top-4 -translate-x-1/2 whitespace-nowrap text-[10px] text-zinc-500"
+            style={{ left: `${yLeft}%` }}
+          >
+            어제 {signed(yesterday, 1)}
+          </span>
+        )}
         <div className="grid grid-cols-5 gap-1">
           {HEAT_ZONES.map((zone) => (
             <div
@@ -222,9 +242,10 @@ function HeatChart({ heat, range }: { heat: AltHeat; range: RangeId }) {
   const width = 640;
   const height = 220;
   const pad = { l: 36, r: 10, t: 18, b: 24 };
+  const guide = range === "1d" && heat.yesterday != null ? heat.yesterday : heat.median;
   const values = points.map((point) => point.v);
-  let min = Math.min(...values, heat.median);
-  let max = Math.max(...values, heat.median);
+  let min = Math.min(...values, guide);
+  let max = Math.max(...values, guide);
   const padY = Math.max(1, (max - min) * 0.12);
   min -= padY;
   max += padY;
@@ -284,8 +305,8 @@ function HeatChart({ heat, range }: { heat: AltHeat; range: RangeId }) {
       <line
         x1={pad.l}
         x2={width - pad.r}
-        y1={yOf(heat.median)}
-        y2={yOf(heat.median)}
+        y1={yOf(guide)}
+        y2={yOf(guide)}
         stroke="#a1a1aa"
         strokeDasharray="3 4"
       />
@@ -424,7 +445,7 @@ function readingNow(heat: AltHeat, zoneLabel: string): string {
       : heat.divergence < -0.05
         ? `150일 평균보다 ${abs}% 아래`
         : "150일 평균과 거의 같은 자리";
-  return `알트 시총을 비트코인 시총으로 나눈 값이 ${place}라 지금은 ${zoneLabel}입니다. 플러스가 커질수록 알트가 평소보다 달아오른 것이고, 마이너스가 깊을수록 알트 비중이 평소보다 줄어든 것입니다.`;
+  return `이더리움·솔라나처럼 큰 알트 14개를 같은 비중으로 모아 비트코인 가격과 비교한 값이 ${place}라 지금은 ${zoneLabel}입니다. 플러스가 커질수록 알트가 평소보다 달아오른 것이고, 마이너스가 깊을수록 알트가 비트코인보다 처진 것입니다.`;
 }
 
 function signed(value: number | null, digits: number): string {

@@ -5,7 +5,7 @@ import { withCache } from "@/lib/screener/cache";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const CACHE_KEY = "market:alt-heat:v1";
+const CACHE_KEY = "market:alt-heat:v2";
 const CACHE_MS = 15 * 60 * 1000;
 
 /** GET /api/market/alt-heat — 알트/BTC 150일 괴리율 */

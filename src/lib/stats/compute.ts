@@ -20,6 +20,15 @@ export interface DailyPnl {
   trades: number;
 }
 
+export interface HourStat {
+  /** 0–23, 한국시간 */
+  hour: number;
+  trades: number;
+  wins: number;
+  winRate: number;
+  pnl: number;
+}
+
 export interface OverallStats {
   trades: number;
   wins: number;
@@ -187,6 +196,39 @@ export function computeMonthlyStats(trades: Trade[]): MonthlyStat[] {
         rrRatio: s.rrRatio,
       };
     });
+}
+
+/** 진입 시각(KST)별 승률. 0시부터 23시까지 항상 24칸. */
+export function computeHourlyStats(trades: Trade[]): HourStat[] {
+  const buckets: HourStat[] = Array.from({ length: 24 }, (_, hour) => ({
+    hour,
+    trades: 0,
+    wins: 0,
+    winRate: 0,
+    pnl: 0,
+  }));
+  for (const trade of trades) {
+    const bucket = buckets[hourKst(trade.entry_time)];
+    bucket.trades += 1;
+    if (Number(trade.pnl) > 0) bucket.wins += 1;
+    bucket.pnl += Number(trade.pnl);
+  }
+  for (const bucket of buckets) {
+    bucket.winRate = bucket.trades ? (bucket.wins / bucket.trades) * 100 : 0;
+  }
+  return buckets;
+}
+
+function hourKst(iso: string): number {
+  const part = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    hourCycle: "h23",
+  })
+    .formatToParts(new Date(iso))
+    .find((item) => item.type === "hour");
+  const hour = Number(part?.value ?? "0");
+  return hour === 24 ? 0 : hour;
 }
 
 /** 일별 손익 (KST 청산일 기준) */

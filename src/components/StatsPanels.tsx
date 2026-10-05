@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Trade } from "@/lib/exchanges/types";
 import type {
   DailyPnl,
+  HourStat,
   MonthlyStat,
   OverallStats,
 } from "@/lib/stats/compute";
@@ -42,6 +43,7 @@ interface StatsPanelsProps {
   overall: OverallStats | null;
   monthly: MonthlyStat[];
   daily?: DailyPnl[];
+  hourly?: HourStat[];
   trades?: Trade[];
   loading?: boolean;
   error?: string | null;
@@ -51,6 +53,7 @@ export function StatsPanels({
   overall,
   monthly,
   daily = [],
+  hourly = [],
   trades = [],
   loading,
   error,
@@ -145,6 +148,8 @@ export function StatsPanels({
         <SideSplit long={overall.long} short={overall.short} />
       </div>
 
+      <HourlyWinRate hours={hourly} overallRate={overall.winRate} />
+
       <DailyPnlCalendar daily={daily} trades={trades} />
 
       <div>
@@ -204,6 +209,95 @@ type StatRow = {
   tone?: "pos" | "neg";
   emphasize?: boolean;
 };
+
+const HOUR_MIN_SAMPLE = 8;
+
+function HourlyWinRate({
+  hours,
+  overallRate,
+}: {
+  hours: HourStat[];
+  overallRate: number;
+}) {
+  const ranked = hours.filter((hour) => hour.trades >= HOUR_MIN_SAMPLE);
+  const worst = ranked.reduce<HourStat | null>(
+    (best, hour) => (best == null || hour.winRate < best.winRate ? hour : best),
+    null
+  );
+  const best = ranked.reduce<HourStat | null>(
+    (top, hour) => (top == null || hour.winRate > top.winRate ? hour : top),
+    null
+  );
+
+  if (hours.length === 0) return null;
+
+  return (
+    <div>
+      <h3 className="text-sm font-medium text-zinc-300">시간대별 승률</h3>
+      <p className="mt-1 text-[11px] text-zinc-600">
+        포지션을 연 시각(한국시간)입니다. 점선은 전체 승률 {overallRate.toFixed(0)}%이고,
+        5회 미만은 옅게 표시합니다.
+      </p>
+      <div className="relative mt-3 flex h-28 items-end gap-0.5">
+        <div
+          className="pointer-events-none absolute inset-x-0 border-t border-dashed border-zinc-500"
+          style={{ bottom: `${Math.min(100, Math.max(0, overallRate))}%` }}
+        />
+        {hours.map((hour) => {
+          const thin = hour.trades < 5;
+          const below = hour.winRate + 0.05 < overallRate;
+          const height = hour.trades === 0 ? 2 : Math.max(6, hour.winRate);
+          return (
+            <div
+              key={hour.hour}
+              className="flex h-full min-w-0 flex-1 items-end"
+              title={`${hour.hour}시 · ${hour.trades}회 · 승률 ${hour.winRate.toFixed(0)}% · ${formatPnl(hour.pnl)}`}
+            >
+              <div
+                className={`w-full rounded-sm ${
+                  hour.trades === 0
+                    ? "bg-zinc-800"
+                    : thin
+                      ? "bg-zinc-600"
+                      : below
+                        ? "bg-rose-500"
+                        : "bg-emerald-500"
+                }`}
+                style={{ height: `${height}%` }}
+              />
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-1 flex gap-0.5 text-[10px] tabular-nums text-zinc-500">
+        {hours.map((hour) => (
+          <span key={hour.hour} className="min-w-0 flex-1">
+            {hour.hour % 3 === 0 ? hour.hour : ""}
+          </span>
+        ))}
+      </div>
+      {worst && best && worst.hour !== best.hour ? (
+        <p className="mt-2 text-[12px] leading-relaxed text-zinc-400">
+          8회 이상인 시간 중 {worst.hour}시 승률이 {worst.winRate.toFixed(0)}%
+          ({worst.trades}회)로 가장 낮고, {best.hour}시는 {best.winRate.toFixed(0)}%
+          ({best.trades}회)로 가장 높습니다.
+          {worst.winRate + 5 < overallRate
+            ? ` ${worst.hour}시는 전체보다 ${(overallRate - worst.winRate).toFixed(0)}%p 낮습니다.`
+            : ""}
+        </p>
+      ) : worst ? (
+        <p className="mt-2 text-[12px] leading-relaxed text-zinc-400">
+          8회 이상 들어간 시간은 {worst.hour}시뿐입니다. 승률 {worst.winRate.toFixed(0)}%
+          ({worst.trades}회)입니다.
+        </p>
+      ) : (
+        <p className="mt-2 text-[12px] text-zinc-500">
+          한 시간에 8회 이상 들어간 기록이 아직 없어서, 시간대 비교는 이 차트로만 보세요.
+        </p>
+      )}
+    </div>
+  );
+}
 
 function SideSplit({
   long,

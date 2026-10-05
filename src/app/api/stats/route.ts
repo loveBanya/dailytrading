@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createSupabaseAdmin } from "@/lib/supabase/client";
 import {
   computeDailyPnl,
+  computeHourlyStats,
   computeMonthlyStats,
   computeOverallStats,
 } from "@/lib/stats/compute";
@@ -32,6 +33,7 @@ export async function GET() {
       overall: computeOverallStats(trades),
       monthly: computeMonthlyStats(trades),
       daily: computeDailyPnl(trades),
+      hourly: computeHourlyStats(trades),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

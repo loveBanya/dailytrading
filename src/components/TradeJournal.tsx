@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Trade } from "@/lib/exchanges/types";
 import type {
   DailyPnl,
+  HourStat,
   MonthlyStat,
   OverallStats,
 } from "@/lib/stats/compute";
@@ -380,6 +381,7 @@ export function TradeJournal() {
   const [overall, setOverall] = useState<OverallStats | null>(null);
   const [monthly, setMonthly] = useState<MonthlyStat[]>([]);
   const [daily, setDaily] = useState<DailyPnl[]>([]);
+  const [hourly, setHourly] = useState<HourStat[]>([]);
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsError, setStatsError] = useState<string | null>(null);
 
@@ -442,12 +444,14 @@ export function TradeJournal() {
         overall?: OverallStats;
         monthly?: MonthlyStat[];
         daily?: DailyPnl[];
+        hourly?: HourStat[];
         error?: string;
       };
       if (data.error) throw new Error(data.error);
       setOverall(data.overall ?? null);
       setMonthly(data.monthly ?? []);
       setDaily(data.daily ?? []);
+      setHourly(data.hourly ?? []);
     } catch (err) {
       setStatsError(err instanceof Error ? err.message : "통계 불러오기 실패");
     } finally {
@@ -1121,6 +1125,7 @@ export function TradeJournal() {
                     overall={overall}
                     monthly={monthly}
                     daily={daily}
+                    hourly={hourly}
                     trades={trades}
                     loading={statsLoading}
                     error={statsError}

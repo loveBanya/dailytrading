@@ -10,6 +10,12 @@ import type {
 } from "@/lib/stats/compute";
 import { dayKeyKst } from "@/lib/stats/compute";
 import {
+  filterByEntryDay,
+  SCENARIO_ENTRY_FROM,
+  seoulToday,
+  shiftIsoDate,
+} from "@/lib/stats/range";
+import {
   formatDuration,
   formatKst,
   formatPnl,
@@ -47,6 +53,59 @@ interface StatsPanelsProps {
   trades?: Trade[];
   loading?: boolean;
   error?: string | null;
+  /** 전체 통계가 다시 불러와질 때마다 올라간다. 기간 보기도 같이 갱신한다. */
+  statsRevision?: number;
+}
+
+type StatsPeriod = "all" | "since" | "before" | "d7" | "d30" | "custom";
+
+const PERIODS: { id: StatsPeriod; label: string }[] = [
+  { id: "all", label: "전체" },
+  { id: "since", label: "10/1 이후" },
+  { id: "before", label: "10/1 이전" },
+  { id: "d7", label: "최근 7일" },
+  { id: "d30", label: "최근 30일" },
+  { id: "custom", label: "직접" },
+];
+
+interface StatsPayload {
+  overall: OverallStats | null;
+  monthly: MonthlyStat[];
+  daily: DailyPnl[];
+  hourly: HourStat[];
+}
+
+function resolveStatsRange(
+  period: StatsPeriod,
+  customFrom: string,
+  customTo: string,
+  today: string
+): { from?: string; to?: string; label: string; ready: boolean } {
+  if (period === "all") return { label: "전체", ready: true };
+  if (period === "since") {
+    return {
+      from: SCENARIO_ENTRY_FROM,
+      to: today,
+      label: `${SCENARIO_ENTRY_FROM} ~ ${today}`,
+      ready: true,
+    };
+  }
+  if (period === "before") {
+    const to = shiftIsoDate(SCENARIO_ENTRY_FROM, -1);
+    return { to, label: `~ ${to}`, ready: true };
+  }
+  if (period === "d7") {
+    const from = shiftIsoDate(today, -6);
+    return { from, to: today, label: `${from} ~ ${today}`, ready: true };
+  }
+  if (period === "d30") {
+    const from = shiftIsoDate(today, -29);
+    return { from, to: today, label: `${from} ~ ${today}`, ready: true };
+  }
+  if (!customFrom || !customTo) return { label: "직접", ready: false };
+  const [from, to] =
+    customFrom <= customTo ? [customFrom, customTo] : [customTo, customFrom];
+  return { from, to, label: `${from} ~ ${to}`, ready: true };
 }
 
 export function StatsPanels({
@@ -57,7 +116,146 @@ export function StatsPanels({
   trades = [],
   loading,
   error,
+  statsRevision = 0,
 }: StatsPanelsProps) {
+  const [period, setPeriod] = useState<StatsPeriod>("all");
+  const [customFrom, setCustomFrom] = useState(SCENARIO_ENTRY_FROM);
+  const [customTo, setCustomTo] = useState("");
+  const [remote, setRemote] = useState<StatsPayload | null>(null);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
+
+  const today = seoulToday();
+  const range = resolveStatsRange(period, customFrom, customTo, today);
+  const ranged = period !== "all";
+
+  useEffect(() => {
+    if (!ranged || !range.ready) {
+      setRemote(null);
+      setRemoteLoading(false);
+      setRemoteError(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    const q = new URLSearchParams();
+    if (range.from) q.set("from", range.from);
+    if (range.to) q.set("to", range.to);
+    setRemote(null);
+    setRemoteLoading(true);
+    setRemoteError(null);
+    fetch(`/api/stats?${q}`, { signal: ctrl.signal })
+      .then(async (res) => {
+        const data = (await res.json()) as StatsPayload & { error?: string };
+        if (ctrl.signal.aborted) return;
+        if (!res.ok || data.error) throw new Error(data.error || "통계 불러오기 실패");
+        setRemote({
+          overall: data.overall ?? null,
+          monthly: data.monthly ?? [],
+          daily: data.daily ?? [],
+          hourly: data.hourly ?? [],
+        });
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        setRemote(null);
+        setRemoteError(err instanceof Error ? err.message : "통계 불러오기 실패");
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setRemoteLoading(false);
+      });
+    return () => ctrl.abort();
+  }, [ranged, range.ready, range.from, range.to, statsRevision]);
+
+  const calendarTrades = useMemo(
+    () => filterByEntryDay(trades, range.from, range.to),
+    [trades, range.from, range.to]
+  );
+
+  const view: StatsPayload & { loading?: boolean; error?: string | null } = ranged
+    ? {
+        overall: remote?.overall ?? null,
+        monthly: remote?.monthly ?? [],
+        daily: remote?.daily ?? [],
+        hourly: remote?.hourly ?? [],
+        loading: remoteLoading,
+        error: remoteError,
+      }
+    : { overall, monthly, daily, hourly, loading, error };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <div className="flex flex-wrap gap-1.5">
+          {PERIODS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => {
+                setPeriod(item.id);
+                if (item.id === "custom" && !customTo) setCustomTo(today);
+              }}
+              className={`rounded-full border px-3 py-1 text-xs ${
+                period === item.id
+                  ? "border-zinc-100 bg-zinc-100 text-zinc-900"
+                  : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        {period === "custom" && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-200 outline-none focus:border-emerald-500/50"
+            />
+            <span className="text-xs text-zinc-600">~</span>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-200 outline-none focus:border-emerald-500/50"
+            />
+          </div>
+        )}
+        <p className="mt-2 text-[11px] text-zinc-600">
+          {ranged && range.ready ? `${range.label} · ` : ""}
+          기간은 포지션을 연 날(한국시간)입니다. 10/1 이후가 시나리오 매매입니다.
+        </p>
+      </div>
+      {period === "custom" && !range.ready ? (
+        <p className="text-sm text-zinc-500">시작일과 종료일을 고르세요.</p>
+      ) : (
+        <StatsBody
+          overall={view.overall}
+          monthly={view.monthly}
+          daily={view.daily}
+          hourly={view.hourly}
+          trades={calendarTrades}
+          loading={view.loading}
+          error={view.error}
+          emptyHint={
+            ranged ? "이 기간에 연 포지션이 없습니다." : undefined
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+function StatsBody({
+  overall,
+  monthly,
+  daily = [],
+  hourly = [],
+  trades = [],
+  loading,
+  error,
+  emptyHint,
+}: StatsPanelsProps & { emptyHint?: string }) {
   if (loading) {
     return <p className="text-sm text-zinc-500">통계를 불러오는 중…</p>;
   }
@@ -67,7 +265,7 @@ export function StatsPanels({
   if (!overall || overall.trades === 0) {
     return (
       <p className="text-sm text-zinc-500">
-        거래소 동기화 후 All-time PNL이 여기에 표시됩니다.
+        {emptyHint ?? "거래소 동기화 후 All-time PNL이 여기에 표시됩니다."}
       </p>
     );
   }
@@ -235,7 +433,7 @@ function HourlyWinRate({
     <div>
       <h3 className="text-sm font-medium text-zinc-300">시간대별 승률</h3>
       <p className="mt-1 text-[11px] text-zinc-600">
-        포지션을 연 시각(한국시간)입니다. 점선은 전체 승률 {overallRate.toFixed(0)}%이고,
+        포지션을 연 시각(한국시간)입니다. 점선은 이 기간 승률 {overallRate.toFixed(0)}%이고,
         5회 미만은 옅게 표시합니다.
       </p>
       <div className="relative mt-3 flex h-28 items-end gap-0.5">
@@ -282,7 +480,7 @@ function HourlyWinRate({
           ({worst.trades}회)로 가장 낮고, {best.hour}시는 {best.winRate.toFixed(0)}%
           ({best.trades}회)로 가장 높습니다.
           {worst.winRate + 5 < overallRate
-            ? ` ${worst.hour}시는 전체보다 ${(overallRate - worst.winRate).toFixed(0)}%p 낮습니다.`
+            ? ` ${worst.hour}시는 이 기간 승률보다 ${(overallRate - worst.winRate).toFixed(0)}%p 낮습니다.`
             : ""}
         </p>
       ) : worst ? (

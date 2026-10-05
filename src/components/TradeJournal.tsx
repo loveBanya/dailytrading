@@ -384,6 +384,7 @@ export function TradeJournal() {
   const [hourly, setHourly] = useState<HourStat[]>([]);
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsError, setStatsError] = useState<string | null>(null);
+  const [statsRevision, setStatsRevision] = useState(0);
 
   const [walletOverview, setWalletOverview] = useState<WalletOverview | null>(
     null
@@ -456,6 +457,7 @@ export function TradeJournal() {
       setStatsError(err instanceof Error ? err.message : "통계 불러오기 실패");
     } finally {
       setStatsLoading(false);
+      setStatsRevision((n) => n + 1);
     }
   }, []);
 
@@ -1129,6 +1131,7 @@ export function TradeJournal() {
                     trades={trades}
                     loading={statsLoading}
                     error={statsError}
+                    statsRevision={statsRevision}
                   />
                 </Section>
               );

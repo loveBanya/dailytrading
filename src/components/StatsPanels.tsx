@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { AssetFlow } from "@/app/api/asset-flows/route";
 import type { Trade } from "@/lib/exchanges/types";
+import type { WalletOverview } from "@/lib/exchanges/wallet";
+import { buildDayAccounts, type DayAccount } from "@/lib/stats/equity";
+import { followedEquity } from "@/lib/wallet-follow";
 import type {
   DailyPnl,
   HourStat,
@@ -55,6 +59,11 @@ interface StatsPanelsProps {
   error?: string | null;
   /** 전체 통계가 다시 불러와질 때마다 올라간다. 기간 보기도 같이 갱신한다. */
   statsRevision?: number;
+  /** 기간을 좁혀도 시드 되돌림은 전체 일별 손익으로 한다. */
+  equityDaily?: DailyPnl[];
+  equityTotalPnl?: number;
+  wallet?: WalletOverview | null;
+  walletFollow?: string;
 }
 
 type StatsPeriod = "all" | "since" | "before" | "d7" | "d30" | "custom";
@@ -117,6 +126,10 @@ export function StatsPanels({
   loading,
   error,
   statsRevision = 0,
+  equityDaily,
+  equityTotalPnl,
+  wallet,
+  walletFollow,
 }: StatsPanelsProps) {
   const [period, setPeriod] = useState<StatsPeriod>("all");
   const [customFrom, setCustomFrom] = useState(SCENARIO_ENTRY_FROM);
@@ -240,6 +253,10 @@ export function StatsPanels({
           emptyHint={
             ranged ? "이 기간에 연 포지션이 없습니다." : undefined
           }
+          equityDaily={equityDaily ?? daily}
+          equityTotalPnl={equityTotalPnl}
+          wallet={wallet}
+          walletFollow={walletFollow}
         />
       )}
     </div>
@@ -255,6 +272,10 @@ function StatsBody({
   loading,
   error,
   emptyHint,
+  equityDaily,
+  equityTotalPnl,
+  wallet,
+  walletFollow,
 }: StatsPanelsProps & { emptyHint?: string }) {
   if (loading) {
     return <p className="text-sm text-zinc-500">통계를 불러오는 중…</p>;
@@ -348,7 +369,14 @@ function StatsBody({
 
       <HourlyWinRate hours={hourly} overallRate={overall.winRate} />
 
-      <DailyPnlCalendar daily={daily} trades={trades} />
+      <DailyPnlCalendar
+        daily={daily}
+        trades={trades}
+        equityDaily={equityDaily ?? daily}
+        equityTotalPnl={equityTotalPnl}
+        wallet={wallet}
+        walletFollow={walletFollow}
+      />
 
       <div>
         <h3 className="mb-3 text-sm font-medium text-zinc-300">월별 매매</h3>
@@ -571,12 +599,34 @@ function StatColumn({ rows }: { rows: StatRow[] }) {
 
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 
+function formatUsd(n: number): string {
+  return `$${n.toFixed(2)}`;
+}
+
+function formatPct(n: number): string {
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(2)}%`;
+}
+
+function seedPct(pnl: number, equityStart: number): number | null {
+  if (!(equityStart > 1)) return null;
+  return (pnl / equityStart) * 100;
+}
+
 function DailyPnlCalendar({
   daily,
   trades,
+  equityDaily,
+  equityTotalPnl = 0,
+  wallet,
+  walletFollow,
 }: {
   daily: DailyPnl[];
   trades: Trade[];
+  equityDaily: DailyPnl[];
+  equityTotalPnl?: number;
+  wallet?: WalletOverview | null;
+  walletFollow?: string;
 }) {
   const months = useMemo(() => {
     const set = new Set(daily.map((d) => d.date.slice(0, 7)));
@@ -592,6 +642,24 @@ function DailyPnlCalendar({
 
   const [month, setMonth] = useState(months[0] ?? "");
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [flows, setFlows] = useState<AssetFlow[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/asset-flows");
+        const data = (await res.json()) as { flows?: AssetFlow[]; error?: string };
+        if (cancelled || data.error) return;
+        setFlows(data.flows ?? []);
+      } catch {
+        if (!cancelled) setFlows([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!months.includes(month) && months[0]) setMonth(months[0]);
@@ -623,6 +691,29 @@ function DailyPnlCalendar({
     }
     return map;
   }, [trades]);
+
+  const accounts = useMemo(() => {
+    const flowByDay = new Map<string, number>();
+    for (const flow of flows) {
+      const day = flow.entry_date.slice(0, 10);
+      const amt = Number(flow.amount_usdt) || 0;
+      const net = flow.direction === "out" ? -amt : amt;
+      flowByDay.set(day, (flowByDay.get(day) ?? 0) + net);
+    }
+    const liveEquity = wallet ? followedEquity(wallet, walletFollow) : null;
+    const { rows, anchored } = buildDayAccounts({
+      daily: equityDaily,
+      flowByDay,
+      liveEquity,
+      liveUpl: wallet?.totalPerpUPL ?? 0,
+      totalPnl: equityTotalPnl,
+    });
+    const map = new Map<string, DayAccount>();
+    for (const row of rows) map.set(row.date, row);
+    const today = seoulToday();
+    const last = rows[rows.length - 1];
+    return { map, anchored, today, lastDate: last?.date ?? null };
+  }, [equityDaily, equityTotalPnl, flows, wallet, walletFollow]);
 
   const monthSummary = useMemo(() => {
     let total = 0;
@@ -688,9 +779,9 @@ function DailyPnlCalendar({
         />
       </div>
       <p className="mb-3 text-[11px] text-zinc-600">
-        선택 월 거래 {monthSummary.tradeCount}회 · 날짜를{" "}
-        <span className="text-zinc-400">클릭</span>하면 그날 매매 기록이
-        아래에 고정됩니다
+        선택 월 거래 {monthSummary.tradeCount}회 · 칸의 %는 시작 시드 대비입니다.
+        날짜를 <span className="text-zinc-400">클릭</span>하면 계좌 변화와
+        최고 수익·손실, 그날 매매가 나옵니다.
       </p>
 
       <div className="overflow-x-auto">
@@ -729,6 +820,11 @@ function DailyPnlCalendar({
               }
               const win = row.pnl >= 0;
               const isSelected = selectedDate === cell;
+              const account = accounts.map.get(cell);
+              const pct =
+                accounts.anchored && account
+                  ? seedPct(row.pnl, account.equityStart)
+                  : null;
               return (
                 <button
                   key={cell}
@@ -736,7 +832,7 @@ function DailyPnlCalendar({
                   onClick={() =>
                     setSelectedDate((prev) => (prev === cell ? null : cell))
                   }
-                  className={`flex min-h-[64px] flex-col rounded-md border p-1.5 text-left outline-none transition ${
+                  className={`flex min-h-[76px] flex-col rounded-md border p-1.5 text-left outline-none transition ${
                     win
                       ? "border-emerald-500/20 bg-emerald-950/50"
                       : "border-rose-500/20 bg-rose-950/50"
@@ -763,6 +859,15 @@ function DailyPnlCalendar({
                   >
                     {formatDayPnl(row.pnl)}
                   </span>
+                  {pct != null && (
+                    <span
+                      className={`text-[10px] tabular-nums ${
+                        pct >= 0 ? "text-emerald-500/80" : "text-rose-500/80"
+                      }`}
+                    >
+                      {formatPct(pct)}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -792,12 +897,28 @@ function DailyPnlCalendar({
               닫기
             </button>
           </div>
-          <DayTradeList trades={selectedTrades} />
+          <DayAccountSummary
+            row={selectedRow}
+            account={accounts.map.get(selectedDate) ?? null}
+            anchored={accounts.anchored}
+            includeUpl={
+              accounts.anchored &&
+              selectedDate === accounts.today &&
+              selectedDate === accounts.lastDate
+            }
+            liveUpl={wallet?.totalPerpUPL ?? 0}
+          />
+          <DayTradeList
+            trades={selectedTrades}
+            bestPnl={selectedRow.bestPnl}
+            worstPnl={selectedRow.worstPnl}
+          />
         </div>
       )}
 
       <p className="mt-2 text-[11px] text-zinc-600">
-        청산일 기준 · 한국시간(KST)
+        청산일 기준 · 한국시간(KST). 시드는 지금 따라가는 지갑에서 이후
+        실현손익, 입출금, 미실현을 되돌려 그날 시작 잔고를 구한 값입니다.
       </p>
     </div>
   );
@@ -830,12 +951,87 @@ function SummaryChip({
   );
 }
 
+function DayAccountSummary({
+  row,
+  account,
+  anchored,
+  includeUpl,
+  liveUpl,
+}: {
+  row: DailyPnl;
+  account: DayAccount | null;
+  anchored: boolean;
+  includeUpl: boolean;
+  liveUpl: number;
+}) {
+  const best = row.bestPnl ?? null;
+  const worst = row.worstPnl ?? null;
+  const end = account
+    ? account.equityEnd + (includeUpl ? liveUpl : 0)
+    : null;
+  const pct =
+    anchored && account ? seedPct(row.pnl, account.equityStart) : null;
+  const partial =
+    account != null && Math.abs(row.pnl - account.pnl) > 0.009;
+
+  return (
+    <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+      <SummaryChip
+        label="시작 시드"
+        value={anchored && account ? formatUsd(account.equityStart) : "지갑 확인 중"}
+        tone="neutral"
+      />
+      <SummaryChip
+        label="시드 대비"
+        value={pct != null ? formatPct(pct) : "—"}
+        tone={pct == null ? "neutral" : pct >= 0 ? "pos" : "neg"}
+      />
+      <SummaryChip
+        label={includeUpl ? "마감 계좌 · 미실현 포함" : "마감 계좌"}
+        value={end != null ? formatUsd(end) : "—"}
+        tone="neutral"
+      />
+      <SummaryChip
+        label="최고 수익"
+        value={best != null ? formatPnl(best) : "없음"}
+        tone={best != null ? "pos" : "neutral"}
+      />
+      <SummaryChip
+        label="최고 손실"
+        value={worst != null ? formatPnl(worst) : "없음"}
+        tone={worst != null ? "neg" : "neutral"}
+      />
+      {account && Math.abs(account.flow) > 0.009 && (
+        <SummaryChip
+          label="입출금"
+          value={formatPnl(account.flow)}
+          tone={account.flow >= 0 ? "pos" : "neg"}
+        />
+      )}
+      {partial && (
+        <p className="col-span-2 text-[11px] text-zinc-500 sm:col-span-3">
+          이 칸의 손익은 고른 기간의 거래만 더한 값입니다. 계좌 변화는 그날
+          전체 실현손익과 입출금입니다.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function samePnl(a: number, b: number | null | undefined): boolean {
+  return b != null && Math.abs(a - b) < 0.0005;
+}
+
 function DayTradeList({
   trades,
   compact,
+  bestPnl,
+  worstPnl,
 }: {
   trades: Trade[];
   compact?: boolean;
+  bestPnl?: number | null;
+  worstPnl?: number | null;
 }) {
   if (trades.length === 0) {
     return <p className="text-xs text-zinc-600">매매 기록 없음</p>;
@@ -844,7 +1040,13 @@ function DayTradeList({
     <ul className={`space-y-1.5 ${compact ? "max-h-40 overflow-y-auto" : ""}`}>
       {trades.map((t) => {
         const asset = t.base_asset ?? t.symbol.replace(/USDT$/i, "");
-        const win = Number(t.pnl) >= 0;
+        const pnl = Number(t.pnl);
+        const win = pnl >= 0;
+        const tag = samePnl(pnl, bestPnl)
+          ? "최고 수익"
+          : samePnl(pnl, worstPnl)
+            ? "최고 손실"
+            : null;
         return (
           <li
             key={t.id}
@@ -863,6 +1065,9 @@ function DayTradeList({
                 <span className="ml-1 text-zinc-600">
                   {exchangeLabel(t.exchange)}
                 </span>
+                {tag && (
+                  <span className="ml-1 text-[10px] text-zinc-400">{tag}</span>
+                )}
               </p>
               {!compact && (
                 <p className="text-[10px] text-zinc-600">

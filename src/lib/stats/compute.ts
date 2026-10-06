@@ -18,6 +18,10 @@ export interface DailyPnl {
   date: string; // YYYY-MM-DD (KST)
   pnl: number;
   trades: number;
+  /** 그날 이익 거래 중 가장 큰 금액. 이익이 없으면 null */
+  bestPnl: number | null;
+  /** 그날 손실 거래 중 가장 큰 손실(음수). 손실이 없으면 null */
+  worstPnl: number | null;
 }
 
 export interface HourStat {
@@ -233,15 +237,32 @@ function hourKst(iso: string): number {
 
 /** 일별 손익 (KST 청산일 기준) */
 export function computeDailyPnl(trades: Trade[]): DailyPnl[] {
-  const groups = new Map<string, { pnl: number; trades: number }>();
+  const groups = new Map<
+    string,
+    { pnl: number; trades: number; bestPnl: number | null; worstPnl: number | null }
+  >();
   for (const t of trades) {
     const key = dayKeyKst(t.exit_time);
-    const cur = groups.get(key) ?? { pnl: 0, trades: 0 };
-    cur.pnl += Number(t.pnl);
+    const cur = groups.get(key) ?? {
+      pnl: 0,
+      trades: 0,
+      bestPnl: null,
+      worstPnl: null,
+    };
+    const pnl = Number(t.pnl);
+    cur.pnl += pnl;
     cur.trades += 1;
+    if (pnl > 0 && (cur.bestPnl == null || pnl > cur.bestPnl)) cur.bestPnl = pnl;
+    if (pnl < 0 && (cur.worstPnl == null || pnl < cur.worstPnl)) cur.worstPnl = pnl;
     groups.set(key, cur);
   }
   return [...groups.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, v]) => ({ date, pnl: v.pnl, trades: v.trades }));
+    .map(([date, v]) => ({
+      date,
+      pnl: v.pnl,
+      trades: v.trades,
+      bestPnl: v.bestPnl,
+      worstPnl: v.worstPnl,
+    }));
 }

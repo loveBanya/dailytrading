@@ -8,6 +8,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { DailyPnl } from "@/lib/stats/compute";
+import { buildDayAccounts } from "@/lib/stats/equity";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
 import { formatPnl } from "@/lib/utils/format";
 import type { AssetFlow } from "@/app/api/asset-flows/route";
@@ -133,44 +134,34 @@ export function EquityCurvePanel({
   );
 
   const series = useMemo(() => {
-    const pnlByDay = new Map(daily.map((d) => [d.date, d.pnl]));
-    const days = Array.from(
-      new Set([...pnlByDay.keys(), ...flowByDay.keys()])
-    ).sort();
+    const { rows } = buildDayAccounts({
+      daily,
+      flowByDay,
+      liveEquity,
+      liveUpl,
+      totalPnl,
+    });
 
-    if (days.length === 0 && liveEquity == null) {
+    if (rows.length === 0 && liveEquity == null) {
       return [] as { time: number; value: number }[];
     }
 
-    // live = start + netExternal + totalPnl + upl
-    // start = live − totalPnl − upl − netExternal
-    const start =
-      liveEquity != null && Number.isFinite(liveEquity)
-        ? liveEquity - totalPnl - liveUpl - netExternalAll
-        : 0;
-
-    let equity = start;
-    const points: { time: number; value: number }[] = [];
-
-    if (days.length === 0 && liveEquity != null) {
+    if (rows.length === 0 && liveEquity != null) {
       const today = new Date().toLocaleDateString("en-CA", {
         timeZone: "Asia/Seoul",
       });
-      points.push({
-        time: dayToUtcSec(today),
-        value: Number(liveEquity.toFixed(2)),
-      });
-      return points;
+      return [
+        {
+          time: dayToUtcSec(today),
+          value: Number(liveEquity.toFixed(2)),
+        },
+      ];
     }
 
-    for (const day of days) {
-      equity += pnlByDay.get(day) ?? 0;
-      equity += flowByDay.get(day) ?? 0;
-      points.push({
-        time: dayToUtcSec(day),
-        value: Number(equity.toFixed(2)),
-      });
-    }
+    const points = rows.map((row) => ({
+      time: dayToUtcSec(row.date),
+      value: Number(row.equityEnd.toFixed(2)),
+    }));
 
     if (liveEquity != null && points.length > 0) {
       points[points.length - 1] = {
@@ -180,14 +171,7 @@ export function EquityCurvePanel({
     }
 
     return points;
-  }, [
-    daily,
-    flowByDay,
-    liveEquity,
-    liveUpl,
-    netExternalAll,
-    totalPnl,
-  ]);
+  }, [daily, flowByDay, liveEquity, liveUpl, totalPnl]);
 
   useEffect(() => {
     const el = containerRef.current;

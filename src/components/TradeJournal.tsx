@@ -1132,6 +1132,10 @@ export function TradeJournal() {
                     loading={statsLoading}
                     error={statsError}
                     statsRevision={statsRevision}
+                    equityDaily={daily}
+                    equityTotalPnl={overall?.totalPnl ?? 0}
+                    wallet={walletOverview}
+                    walletFollow={goalPrefs.walletFollow}
                   />
                 </Section>
               );

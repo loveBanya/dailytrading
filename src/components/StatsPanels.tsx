@@ -710,9 +710,7 @@ function DailyPnlCalendar({
     });
     const map = new Map<string, DayAccount>();
     for (const row of rows) map.set(row.date, row);
-    const today = seoulToday();
-    const last = rows[rows.length - 1];
-    return { map, anchored, today, lastDate: last?.date ?? null };
+    return { map, anchored };
   }, [equityDaily, equityTotalPnl, flows, wallet, walletFollow]);
 
   const monthSummary = useMemo(() => {
@@ -779,9 +777,10 @@ function DailyPnlCalendar({
         />
       </div>
       <p className="mb-3 text-[11px] text-zinc-600">
-        선택 월 거래 {monthSummary.tradeCount}회 · 칸의 %는 시작 시드 대비입니다.
-        날짜를 <span className="text-zinc-400">클릭</span>하면 계좌 변화와
-        최고 수익·손실, 그날 매매가 나옵니다.
+        선택 월 거래 {monthSummary.tradeCount}회 · 금액과 %는 청산된 매매
+        손익입니다. 입출금은 수익에 넣지 않습니다. 날짜를{" "}
+        <span className="text-zinc-400">클릭</span>하면 계좌 잔고와 최고
+        수익·손실이 나옵니다.
       </p>
 
       <div className="overflow-x-auto">
@@ -901,12 +900,6 @@ function DailyPnlCalendar({
             row={selectedRow}
             account={accounts.map.get(selectedDate) ?? null}
             anchored={accounts.anchored}
-            includeUpl={
-              accounts.anchored &&
-              selectedDate === accounts.today &&
-              selectedDate === accounts.lastDate
-            }
-            liveUpl={wallet?.totalPerpUPL ?? 0}
           />
           <DayTradeList
             trades={selectedTrades}
@@ -917,8 +910,9 @@ function DailyPnlCalendar({
       )}
 
       <p className="mt-2 text-[11px] text-zinc-600">
-        청산일 기준 · 한국시간(KST). 시드는 지금 따라가는 지갑에서 이후
-        실현손익, 입출금, 미실현을 되돌려 그날 시작 잔고를 구한 값입니다.
+        청산일 기준 · 한국시간(KST). 수익은 그날 청산 손익의 합이고, 시작
+        시드 대비 %도 그 금액으로 계산합니다. 마감 계좌는 시작 시드에 매매
+        손익과 입출금을 더한 잔고입니다.
       </p>
     </div>
   );
@@ -955,39 +949,41 @@ function DayAccountSummary({
   row,
   account,
   anchored,
-  includeUpl,
-  liveUpl,
 }: {
   row: DailyPnl;
   account: DayAccount | null;
   anchored: boolean;
-  includeUpl: boolean;
-  liveUpl: number;
 }) {
   const best = row.bestPnl ?? null;
   const worst = row.worstPnl ?? null;
-  const end = account
-    ? account.equityEnd + (includeUpl ? liveUpl : 0)
-    : null;
+  const trading = row.pnl;
+  const flow = account?.flow ?? 0;
+  const end =
+    anchored && account ? account.equityStart + trading + flow : null;
   const pct =
-    anchored && account ? seedPct(row.pnl, account.equityStart) : null;
+    anchored && account ? seedPct(trading, account.equityStart) : null;
   const partial =
-    account != null && Math.abs(row.pnl - account.pnl) > 0.009;
+    account != null && Math.abs(trading - account.pnl) > 0.009;
 
   return (
     <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+      <SummaryChip
+        label="매매 손익"
+        value={formatPnl(trading)}
+        tone={trading >= 0 ? "pos" : "neg"}
+      />
+      <SummaryChip
+        label="매매 수익률"
+        value={pct != null ? formatPct(pct) : "—"}
+        tone={pct == null ? "neutral" : pct >= 0 ? "pos" : "neg"}
+      />
       <SummaryChip
         label="시작 시드"
         value={anchored && account ? formatUsd(account.equityStart) : "지갑 확인 중"}
         tone="neutral"
       />
       <SummaryChip
-        label="시드 대비"
-        value={pct != null ? formatPct(pct) : "—"}
-        tone={pct == null ? "neutral" : pct >= 0 ? "pos" : "neg"}
-      />
-      <SummaryChip
-        label={includeUpl ? "마감 계좌 · 미실현 포함" : "마감 계좌"}
+        label="마감 계좌"
         value={end != null ? formatUsd(end) : "—"}
         tone="neutral"
       />
@@ -1001,19 +997,20 @@ function DayAccountSummary({
         value={worst != null ? formatPnl(worst) : "없음"}
         tone={worst != null ? "neg" : "neutral"}
       />
-      {account && Math.abs(account.flow) > 0.009 && (
+      {account && Math.abs(flow) > 0.009 && (
         <SummaryChip
           label="입출금"
-          value={formatPnl(account.flow)}
-          tone={account.flow >= 0 ? "pos" : "neg"}
+          value={formatPnl(flow)}
+          tone={flow >= 0 ? "pos" : "neg"}
         />
       )}
-      {partial && (
-        <p className="col-span-2 text-[11px] text-zinc-500 sm:col-span-3">
-          이 칸의 손익은 고른 기간의 거래만 더한 값입니다. 계좌 변화는 그날
-          전체 실현손익과 입출금입니다.
-        </p>
-      )}
+      <p className="col-span-2 text-[11px] leading-relaxed text-zinc-500 sm:col-span-3">
+        매매 수익률은 청산 손익 ÷ 시작 시드입니다. 마감 계좌는 시작 시드 +
+        매매 손익{Math.abs(flow) > 0.009 ? " + 입출금" : ""}입니다.
+        {partial
+          ? " 이 칸의 손익은 고른 기간의 거래만 더한 값입니다."
+          : ""}
+      </p>
     </div>
   );
 }

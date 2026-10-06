@@ -5,6 +5,7 @@ import { fetchOkxClosedPositions } from "./okx";
 import { durationMinutes } from "@/lib/utils/format";
 import { errorMessage } from "@/lib/utils/labels";
 import { createSupabaseAdmin } from "@/lib/supabase/client";
+import { collapseBinanceFillTrades } from "./binance-merge";
 
 export async function fetchClosedPositions(
   exchange: Exchange,
@@ -33,6 +34,10 @@ export async function syncExchangeTrades(
   const supabase = createSupabaseAdmin();
 
   try {
+    let mergedFills = 0;
+    if (exchange === "binance") {
+      mergedFills = (await collapseBinanceFillTrades()).removed;
+    }
     const positions = await fetchClosedPositions(exchange, options);
 
     if (positions.length === 0) {
@@ -41,7 +46,10 @@ export async function syncExchangeTrades(
         status: "success",
         fetched_count: 0,
         inserted_count: 0,
-        message: "새 청산 포지션 없음",
+        message:
+          mergedFills > 0
+            ? `새 청산 포지션 없음, 갈라진 체결 ${mergedFills}건 합침`
+            : "새 청산 포지션 없음",
       });
       return { exchange, fetched: 0, inserted: 0, skipped: 0 };
     }
@@ -70,7 +78,9 @@ export async function syncExchangeTrades(
       .from("trades")
       .upsert(rows, {
         onConflict: "exchange,external_id",
-        ignoreDuplicates: true,
+        // 바이낸스는 같은 주문의 체결이 더 모이면 수량·손익을 갱신한다.
+        // 메모·리뷰·스크린샷 컬럼은 페이로드에 없어서 유지된다.
+        ignoreDuplicates: exchange !== "binance",
       })
       .select("id");
 
@@ -92,7 +102,10 @@ export async function syncExchangeTrades(
       status: "success",
       fetched_count: positions.length,
       inserted_count: inserted,
-      message: `${inserted}건 저장, ${skipped}건 건너뜀`,
+      message:
+        mergedFills > 0
+          ? `${inserted}건 저장, ${skipped}건 건너뜀, 갈라진 체결 ${mergedFills}건 합침`
+          : `${inserted}건 저장, ${skipped}건 건너뜀`,
     });
 
     return { exchange, fetched: positions.length, inserted, skipped };

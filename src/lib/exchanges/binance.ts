@@ -77,9 +77,17 @@ export async function binanceGet<T>(
   return (await res.json()) as T;
 }
 
+/** 같은 주문의 체결을 한 줄로 묶을 때 쓰는 저장 키 */
+export function binanceOrderExternalId(
+  symbol: string,
+  orderId: number | string
+): string {
+  return `${symbol}-order-${orderId}`;
+}
+
 /**
- * Binance Futures 체결 내역에서 실현손익이 있는 청산 체결을 포지션으로 변환
- * (부분 청산은 체결 단위로 기록)
+ * Binance Futures 청산 주문. 한 주문이 여러 체결로 나뉘어도 한 포지션으로 합친다.
+ * 주문이 다르면, 같은 초에 청산했어도 따로 둔다.
  */
 export async function fetchBinanceClosedPositions(options?: {
   symbol?: string;
@@ -104,9 +112,7 @@ export async function fetchBinanceClosedPositions(options?: {
     params
   );
 
-  return trades
-    .filter((t) => Number(t.realizedPnl) !== 0)
-    .map((t) => mapTrade(t));
+  return groupClosingOrders(trades);
 }
 
 async function fetchFromIncomeAndTrades(options?: {
@@ -149,10 +155,7 @@ async function fetchFromIncomeAndTrades(options?: {
       }
     );
 
-    for (const t of trades) {
-      if (Number(t.realizedPnl) === 0) continue;
-      results.push(mapTrade(t));
-    }
+    results.push(...groupClosingOrders(trades));
   }
 
   // 동일 trade id 중복 제거
@@ -164,39 +167,55 @@ async function fetchFromIncomeAndTrades(options?: {
   });
 }
 
-function mapTrade(t: BinanceUserTrade): ClosedPosition {
-  let side: "LONG" | "SHORT";
-  if (t.positionSide === "LONG" || t.positionSide === "SHORT") {
-    side = t.positionSide;
-  } else {
-    // one-way: 실현손익 있는 체결의 반대가 원래 포지션
-    // BUY로 청산 → 숏, SELL로 청산 → 롱
-    side = t.side === "SELL" ? "LONG" : "SHORT";
+function groupClosingOrders(trades: BinanceUserTrade[]): ClosedPosition[] {
+  const groups = new Map<string, BinanceUserTrade[]>();
+  for (const trade of trades) {
+    if (Number(trade.realizedPnl) === 0) continue;
+    const key = binanceOrderExternalId(trade.symbol, trade.orderId);
+    const list = groups.get(key) ?? [];
+    list.push(trade);
+    groups.set(key, list);
   }
+  return [...groups.values()].map(mapOrder);
+}
 
-  const exitPrice = Number(t.price);
-  const qty = Number(t.qty);
-  const pnl = Number(t.realizedPnl);
-  const fee = Number(t.commission);
-  const exitTime = new Date(t.time);
+function closingSide(trade: BinanceUserTrade): "LONG" | "SHORT" {
+  if (trade.positionSide === "LONG" || trade.positionSide === "SHORT") {
+    return trade.positionSide;
+  }
+  // one-way: 실현손익 있는 체결의 반대가 원래 포지션
+  // BUY로 청산 → 숏, SELL로 청산 → 롱
+  return trade.side === "SELL" ? "LONG" : "SHORT";
+}
 
-  // 진입가는 체결가에 포함되지 않음 → 대략 추정 (PnL 역산)
-  // PnL ≈ (exit - entry) * qty * direction
-  // LONG: pnl = (exit - entry) * qty → entry = exit - pnl/qty
-  // SHORT: pnl = (entry - exit) * qty → entry = exit + pnl/qty
+function mapOrder(fills: BinanceUserTrade[]): ClosedPosition {
+  const first = fills[0]!;
+  const side = closingSide(first);
+  const qty = fills.reduce((sum, fill) => sum + Number(fill.qty), 0);
+  const pnl = fills.reduce((sum, fill) => sum + Number(fill.realizedPnl), 0);
+  const fee = fills.reduce((sum, fill) => sum + Number(fill.commission), 0);
+  const exitNotional = fills.reduce(
+    (sum, fill) => sum + Number(fill.price) * Number(fill.qty),
+    0
+  );
+  const exitPrice = qty > 0 ? exitNotional / qty : Number(first.price);
+  // 진입가는 체결가에 없음. 합산 손익으로 평균 진입을 되돌린다.
+  // LONG: pnl = (exit - entry) * qty
   const entryPrice =
-    side === "LONG"
-      ? exitPrice - pnl / qty
-      : exitPrice + pnl / qty;
-
+    qty > 0
+      ? side === "LONG"
+        ? exitPrice - pnl / qty
+        : exitPrice + pnl / qty
+      : exitPrice;
+  const exitTime = new Date(Math.max(...fills.map((fill) => fill.time)));
   const notional = Math.abs(entryPrice * qty);
   const pnlPercent = notional > 0 ? (pnl / notional) * 100 : undefined;
 
   return {
-    externalId: `${t.symbol}-${t.id}`,
+    externalId: binanceOrderExternalId(first.symbol, first.orderId),
     exchange: "binance",
-    symbol: t.symbol,
-    baseAsset: baseAssetFromSymbol(t.symbol),
+    symbol: first.symbol,
+    baseAsset: baseAssetFromSymbol(first.symbol),
     side,
     qty,
     entryPrice,
@@ -205,8 +224,12 @@ function mapTrade(t: BinanceUserTrade): ClosedPosition {
     pnlPercent,
     fee,
     status: inferStatus(side, entryPrice, exitPrice, pnl),
-    entryTime: exitTime, // 정확한 진입시각은 userTrades만으로 알기 어려움
+    entryTime: exitTime,
     exitTime,
-    raw: t,
+    raw: {
+      orderId: first.orderId,
+      fillCount: fills.length,
+      tradeIds: fills.map((fill) => fill.id),
+    },
   };
 }

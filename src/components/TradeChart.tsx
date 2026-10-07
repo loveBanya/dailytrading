@@ -29,6 +29,23 @@ interface TradeChartProps {
   height?: number;
 }
 
+/** 같은 시각이 두 개면 lightweight-charts 가 페이지 전체를 죽인다. */
+function uniqueCandles(candles: Candle[]): Candle[] {
+  const sorted = [...candles].sort((a, b) => a.time - b.time);
+  const out: Candle[] = [];
+  for (const candle of sorted) {
+    const prev = out[out.length - 1];
+    if (prev && prev.time === candle.time) {
+      prev.high = Math.max(prev.high, candle.high);
+      prev.low = Math.min(prev.low, candle.low);
+      prev.close = candle.close;
+      continue;
+    }
+    out.push({ ...candle });
+  }
+  return out;
+}
+
 function snapTime(candles: Candle[], t: number): number {
   let best = candles[0].time;
   let bestDiff = Math.abs(best - t);
@@ -105,8 +122,9 @@ export function TradeChart({ candles, levels, height = 440 }: TradeChartProps) {
       wickDownColor: "#3b82f6",
     });
 
+    const bars = uniqueCandles(candles);
     candleSeries.setData(
-      candles.map((c) => ({
+      bars.map((c) => ({
         time: c.time as UTCTimestamp,
         open: c.open,
         high: c.high,
@@ -196,18 +214,20 @@ export function TradeChart({ candles, levels, height = 440 }: TradeChartProps) {
       exitIdx = findIndex(candles, exitT);
       if (exitIdx <= entryIdx) exitIdx = Math.min(entryIdx + 1, candles.length - 1);
 
-      const lineSeries = chart.addSeries(LineSeries, {
-        color: pathColor,
-        lineWidth: 2,
-        lineStyle: LineStyle.Dashed,
-        lastValueVisible: false,
-        priceLineVisible: false,
-        crosshairMarkerVisible: false,
-      });
-      lineSeries.setData([
-        { time: entryT as UTCTimestamp, value: levels.entry },
-        { time: exitT as UTCTimestamp, value: levels.exit },
-      ]);
+      if (entryT !== exitT) {
+        const lineSeries = chart.addSeries(LineSeries, {
+          color: pathColor,
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          lastValueVisible: false,
+          priceLineVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        lineSeries.setData([
+          { time: entryT as UTCTimestamp, value: levels.entry },
+          { time: exitT as UTCTimestamp, value: levels.exit },
+        ]);
+      }
 
       createSeriesMarkers(candleSeries, [
         {

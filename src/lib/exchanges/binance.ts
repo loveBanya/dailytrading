@@ -95,42 +95,135 @@ export async function fetchBinanceClosedPositions(options?: {
   endTime?: number;
   limit?: number;
 }): Promise<ClosedPosition[]> {
-  const limit = options?.limit ?? 100;
-  const params: Record<string, string | number> = { limit };
-
-  if (options?.symbol) params.symbol = options.symbol;
-  if (options?.startTime) params.startTime = options.startTime;
-  if (options?.endTime) params.endTime = options.endTime;
-
-  // symbol이 없으면 최근 REALIZED_PNL income으로 심볼 목록을 추정
+  // symbol이 없으면 실현손익으로 심볼을 고른 뒤 그 구간의 체결만 받는다.
   if (!options?.symbol) {
     return fetchFromIncomeAndTrades(options);
   }
 
-  const trades = await binanceGet<BinanceUserTrade[]>(
-    "/fapi/v1/userTrades",
-    params
+  const trades = await fetchSymbolTrades(
+    options.symbol,
+    options.startTime,
+    options.endTime,
+    options.limit ?? 100
   );
 
   return groupClosingOrders(trades);
 }
+
+/**
+ * startTime 이 있으면 그 시각부터 끝까지 페이지를 넘긴다.
+ * 바이낸스는 이 경우 오래된 것부터 limit 개만 주고, 최근 청산은 뒤에 남는다.
+ * startTime 이 없으면 최근 한 페이지만 받는다.
+ */
+async function fetchRealizedIncomes(options?: {
+  startTime?: number;
+  endTime?: number;
+}): Promise<BinanceIncome[]> {
+  const endTime = options?.endTime ?? Date.now();
+  if (options?.startTime == null) {
+    return binanceGet<BinanceIncome[]>("/fapi/v1/income", {
+      incomeType: "REALIZED_PNL",
+      limit: INCOME_PAGE,
+    });
+  }
+
+  const seen = new Set<number>();
+  const all: BinanceIncome[] = [];
+  let cursor = options.startTime;
+  let stuckAt = -1;
+
+  for (let page = 0; page < 20 && cursor <= endTime; page++) {
+    const rows = await binanceGet<BinanceIncome[]>("/fapi/v1/income", {
+      incomeType: "REALIZED_PNL",
+      startTime: cursor,
+      endTime,
+      limit: INCOME_PAGE,
+    });
+    if (rows.length === 0) break;
+
+    for (const row of rows) {
+      if (seen.has(row.tranId)) continue;
+      seen.add(row.tranId);
+      all.push(row);
+    }
+
+    const lastTime = rows[rows.length - 1]!.time;
+    if (rows.length < INCOME_PAGE || lastTime >= endTime) break;
+    const next = lastTime === stuckAt ? lastTime + 1 : lastTime;
+    if (next <= cursor) break;
+    stuckAt = lastTime;
+    cursor = next;
+  }
+
+  return all;
+}
+
+async function fetchSymbolTrades(
+  symbol: string,
+  startTime?: number,
+  endTime?: number,
+  limit = TRADE_PAGE
+): Promise<BinanceUserTrade[]> {
+  if (startTime == null || endTime == null) {
+    const params: Record<string, string | number> = {
+      symbol,
+      limit: Math.min(limit, TRADE_PAGE),
+    };
+    if (startTime != null) params.startTime = startTime;
+    if (endTime != null) params.endTime = endTime;
+    return binanceGet<BinanceUserTrade[]>("/fapi/v1/userTrades", params);
+  }
+
+  const seen = new Set<number>();
+  const all: BinanceUserTrade[] = [];
+
+  for (
+    let windowStart = startTime;
+    windowStart <= endTime;
+    windowStart += TRADE_WINDOW_MS + 1
+  ) {
+    const windowEnd = Math.min(endTime, windowStart + TRADE_WINDOW_MS);
+    let cursor = windowStart;
+    let stuckAt = -1;
+
+    for (let page = 0; page < 20 && cursor <= windowEnd; page++) {
+      const rows = await binanceGet<BinanceUserTrade[]>("/fapi/v1/userTrades", {
+        symbol,
+        startTime: cursor,
+        endTime: windowEnd,
+        limit: TRADE_PAGE,
+      });
+      if (rows.length === 0) break;
+
+      for (const row of rows) {
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+        all.push(row);
+      }
+
+      const lastTime = rows[rows.length - 1]!.time;
+      if (rows.length < TRADE_PAGE || lastTime >= windowEnd) break;
+      const next = lastTime === stuckAt ? lastTime + 1 : lastTime;
+      if (next <= cursor) break;
+      stuckAt = lastTime;
+      cursor = next;
+    }
+  }
+
+  return all;
+}
+
+const INCOME_PAGE = 1000;
+const TRADE_PAGE = 1000;
+/** userTrades 한 번에 조회할 수 있는 최대 구간 */
+const TRADE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000 - 60_000;
 
 async function fetchFromIncomeAndTrades(options?: {
   startTime?: number;
   endTime?: number;
   limit?: number;
 }): Promise<ClosedPosition[]> {
-  const params: Record<string, string | number> = {
-    incomeType: "REALIZED_PNL",
-    limit: options?.limit ?? 100,
-  };
-  if (options?.startTime) params.startTime = options.startTime;
-  if (options?.endTime) params.endTime = options.endTime;
-
-  const incomes = await binanceGet<BinanceIncome[]>(
-    "/fapi/v1/income",
-    params
-  );
+  const incomes = await fetchRealizedIncomes(options);
 
   const bySymbol = new Map<string, number[]>();
   for (const inc of incomes) {
@@ -145,16 +238,7 @@ async function fetchFromIncomeAndTrades(options?: {
   for (const [symbol, times] of bySymbol) {
     const start = Math.min(...times) - 60_000;
     const end = Math.max(...times) + 60_000;
-    const trades = await binanceGet<BinanceUserTrade[]>(
-      "/fapi/v1/userTrades",
-      {
-        symbol,
-        startTime: start,
-        endTime: end,
-        limit: 100,
-      }
-    );
-
+    const trades = await fetchSymbolTrades(symbol, start, end);
     results.push(...groupClosingOrders(trades));
   }
 

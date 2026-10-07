@@ -21,6 +21,23 @@ export async function fetchClosedPositions(
   return fetchBinanceClosedPositions(options);
 }
 
+/** 이미 저장된 바이낸스 청산 중 가장 최근 시각. 그 이전은 다시 받지 않는다. */
+async function latestBinanceExit(
+  supabase: ReturnType<typeof createSupabaseAdmin>
+): Promise<number | null> {
+  const { data, error } = await supabase
+    .from("trades")
+    .select("exit_time")
+    .eq("exchange", "binance")
+    .order("exit_time", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error || !data?.exit_time) return null;
+  const ms = new Date(data.exit_time).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
 /** 청산 포지션을 Supabase trades에 upsert (중복 스킵) */
 export async function syncExchangeTrades(
   exchange: Exchange,
@@ -35,10 +52,20 @@ export async function syncExchangeTrades(
 
   try {
     let mergedFills = 0;
+    let fetchOptions = options;
     if (exchange === "binance") {
       mergedFills = (await collapseBinanceFillTrades()).removed;
+      const since = await latestBinanceExit(supabase);
+      if (since != null) {
+        const overlap = since - 2 * 60 * 1000;
+        const startTime =
+          options?.startTime == null
+            ? overlap
+            : Math.max(options.startTime, overlap);
+        fetchOptions = { ...options, startTime };
+      }
     }
-    const positions = await fetchClosedPositions(exchange, options);
+    const positions = await fetchClosedPositions(exchange, fetchOptions);
 
     if (positions.length === 0) {
       await supabase.from("sync_logs").insert({

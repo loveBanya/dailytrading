@@ -2,6 +2,7 @@
 
 import type { ExchangeAccount, WalletOverview } from "@/lib/exchanges/wallet";
 import { exchangeLabel } from "@/lib/utils/labels";
+import { coinShownUsd } from "@/lib/wallet-follow";
 import { formatPnl, formatPrice } from "@/lib/utils/format";
 
 interface WalletPanelProps {
@@ -82,7 +83,7 @@ function AccountSection({ account }: { account: ExchangeAccount }) {
             >
               <span className="font-medium text-zinc-200">{c.coin}</span>
               <span className="ml-2 tabular-nums text-zinc-500">
-                ${c.usdValue.toFixed(2)}
+                ${coinShownUsd(c).toFixed(2)}
               </span>
             </div>
           ))}

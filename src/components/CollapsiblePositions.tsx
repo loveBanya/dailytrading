@@ -7,7 +7,12 @@ import type {
   WalletOverview,
 } from "@/lib/exchanges/wallet";
 import { exchangeLabel } from "@/lib/utils/labels";
-import { followedEquity, walletFollowLabel } from "@/lib/wallet-follow";
+import {
+  coinShownUsd,
+  followedBalance,
+  followedUpl,
+  walletFollowLabel,
+} from "@/lib/wallet-follow";
 import { formatPnl, formatPrice } from "@/lib/utils/format";
 import { LivePositionCard } from "./LivePositionCard";
 
@@ -38,10 +43,12 @@ export function CollapsiblePositions({
   const accounts = overview?.accounts ?? [];
   const allPositions = overview?.positions ?? positions ?? [];
   const equity = overview
-    ? followedEquity(overview, walletFollow)
-    : (wallet?.totalEquity ?? 0);
+    ? followedBalance(overview, walletFollow)
+    : (wallet?.totalWalletBalance ?? 0);
   const equityLabel = walletFollowLabel(walletFollow);
-  const upl = overview?.totalPerpUPL ?? wallet?.totalPerpUPL ?? 0;
+  const upl = overview
+    ? followedUpl(overview, walletFollow)
+    : (wallet?.totalPerpUPL ?? 0);
 
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/40">
@@ -151,7 +158,7 @@ function ExchangeBlock({ account }: { account: ExchangeAccount }) {
               className="rounded border border-zinc-800 px-2 py-0.5 text-[11px] text-zinc-400"
             >
               <span className="text-zinc-200">{c.coin}</span> $
-              {c.usdValue.toFixed(2)}
+              {coinShownUsd(c).toFixed(2)}
             </span>
           ))}
         </div>

@@ -182,10 +182,12 @@ export async function fetchBybitWallet(): Promise<WalletSummary> {
   };
 }
 
-export async function fetchBybitOpenPositions(): Promise<OpenPosition[]> {
+async function fetchBybitLinearPositions(
+  settleCoin: string
+): Promise<OpenPosition[]> {
   const result = await bybitPrivateGet<BybitPositionListResult>(
     "/v5/position/list",
-    { category: "linear", settleCoin: "USDT" }
+    { category: "linear", settleCoin }
   );
 
   return (result.list ?? [])
@@ -207,6 +209,81 @@ export async function fetchBybitOpenPositions(): Promise<OpenPosition[]> {
       stopLoss:
         p.stopLoss && Number(p.stopLoss) > 0 ? Number(p.stopLoss) : null,
     }));
+}
+
+export async function fetchBybitOpenPositions(): Promise<OpenPosition[]> {
+  const usdt = await fetchBybitLinearPositions("USDT");
+  try {
+    const usdc = await fetchBybitLinearPositions("USDC");
+    return [...usdt, ...usdc];
+  } catch {
+    return usdt;
+  }
+}
+
+const MARGIN_ASSETS = [
+  "USDT",
+  "USDC",
+  "FDUSD",
+  "BFUSD",
+  "BUSD",
+  "TUSD",
+  "USDP",
+  "DAI",
+];
+
+function marginAssetOf(symbol: string): string {
+  const upper = symbol.toUpperCase();
+  for (const asset of MARGIN_ASSETS) {
+    if (upper.endsWith(asset)) return asset;
+  }
+  return "USDT";
+}
+
+/**
+ * 계정 합계의 미실현에는 포지션이 빠지고, 그 금액이 지갑 잔고에 남아 있는 경우가 있다.
+ * 포지션 미실현이 더 크면 그 차이만 잔고에서 빼서 미실현으로 올린다.
+ * 총자산(잔고+미실현)은 그대로 둔다.
+ */
+export function separateUnrealizedFromWallet(
+  wallet: WalletSummary,
+  positions: OpenPosition[]
+): WalletSummary {
+  const positionUpl = positions.reduce(
+    (sum, position) => sum + position.unrealisedPnl,
+    0
+  );
+  const reported = wallet.totalPerpUPL;
+  if (!(positionUpl > reported + 0.009)) return wallet;
+
+  const missing = positionUpl - reported;
+  const uplByCoin = new Map<string, number>();
+  for (const position of positions) {
+    const coin = marginAssetOf(position.symbol);
+    uplByCoin.set(coin, (uplByCoin.get(coin) ?? 0) + position.unrealisedPnl);
+  }
+
+  const coins = wallet.coins.map((coin) => {
+    const name = coin.coin.toUpperCase();
+    const posUpl = uplByCoin.get(name) ?? 0;
+    const coinMissing = posUpl - coin.unrealisedPnl;
+    if (!(coinMissing > 0.009)) return coin;
+    const walletBalance = coin.walletBalance - coinMissing;
+    return {
+      ...coin,
+      walletBalance,
+      unrealisedPnl: posUpl,
+      equity: Math.max(coin.equity, walletBalance + posUpl),
+    };
+  });
+
+  return {
+    ...wallet,
+    coins,
+    totalWalletBalance: wallet.totalWalletBalance - missing,
+    totalPerpUPL: positionUpl,
+    totalEquity: wallet.totalEquity,
+  };
 }
 
 /** 단일 자산 모드 합계에 빠지는 달러 연동 담보. USDT는 공식 합계에 이미 들어 있다. */
@@ -263,7 +340,10 @@ export async function fetchBinanceWallet(): Promise<WalletSummary> {
 
   const usdt = assets.find((a) => a.asset === "USDT");
   const walletBalance = binanceNum(account.totalWalletBalance);
-  const upl = binanceNum(account.totalUnrealizedProfit);
+  const accountUpl = binanceNum(account.totalUnrealizedProfit);
+  const assetUpl = coins.reduce((sum, coin) => sum + coin.unrealisedPnl, 0);
+  // 단일 자산 모드 합계는 USDT 미실현만 담는다. 자산별 값이 더 크면 그 값을 쓴다.
+  const upl = Math.abs(assetUpl) > Math.abs(accountUpl) ? assetUpl : accountUpl;
   const reportedEquity = binanceNum(
     account.totalMarginBalance ?? String(walletBalance + upl)
   );
@@ -392,6 +472,18 @@ export async function fetchOkxOpenPositions(): Promise<OpenPosition[]> {
     });
 }
 
+function accountWithPositions(
+  exchange: Exchange,
+  wallet: WalletSummary | null,
+  positions: OpenPosition[]
+): ExchangeAccount {
+  return {
+    exchange,
+    wallet: wallet ? separateUnrealizedFromWallet(wallet, positions) : null,
+    positions,
+  };
+}
+
 async function loadExchangeAccount(
   exchange: Exchange
 ): Promise<ExchangeAccount> {
@@ -401,20 +493,20 @@ async function loadExchangeAccount(
         fetchBybitWallet(),
         fetchBybitOpenPositions(),
       ]);
-      return { exchange, wallet, positions };
+      return accountWithPositions(exchange, wallet, positions);
     }
     if (exchange === "binance") {
       const [wallet, positions] = await Promise.all([
         fetchBinanceWallet(),
         fetchBinanceOpenPositions(),
       ]);
-      return { exchange, wallet, positions };
+      return accountWithPositions(exchange, wallet, positions);
     }
     const [wallet, positions] = await Promise.all([
       fetchOkxWallet(),
       fetchOkxOpenPositions(),
     ]);
-    return { exchange, wallet, positions };
+    return accountWithPositions(exchange, wallet, positions);
   } catch (err) {
     return {
       exchange,

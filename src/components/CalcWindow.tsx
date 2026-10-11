@@ -170,7 +170,11 @@ export function CalcWindow() {
       ? Math.ceil(result.notional / Number(calc.equity))
       : null;
   const pricesOk =
-    !!result && !result.wrongSide && !result.tpInvalid && !result.belowMin;
+    !!result &&
+    !result.wrongSide &&
+    !result.tpInvalid &&
+    !result.belowMin &&
+    !result.feeExceedsRisk;
 
   const designW = calcWindowSize(folded).width;
 
@@ -219,17 +223,35 @@ export function CalcWindow() {
             </label>
             <div className="flex items-center gap-1 text-[10px] text-zinc-500">
               <span className="w-9 shrink-0">
-                {calc.useTp === "1" ? "익절가" : "손절가"}
+                {calc.calcMode === "qty"
+                  ? "개수"
+                  : calc.useTp === "1"
+                    ? "익절가"
+                    : "손절가"}
               </span>
               <input
                 type="number"
                 inputMode="decimal"
-                aria-label={calc.useTp === "1" ? "익절가" : "손절가"}
-                value={calc.useTp === "1" ? calc.tp : calc.stop}
+                aria-label={
+                  calc.calcMode === "qty"
+                    ? "개수"
+                    : calc.useTp === "1"
+                      ? "익절가"
+                      : "손절가"
+                }
+                value={
+                  calc.calcMode === "qty"
+                    ? calc.targetQty
+                    : calc.useTp === "1"
+                      ? calc.tp
+                      : calc.stop
+                }
                 onChange={(e) =>
-                  calc.useTp === "1"
-                    ? calc.setTp(e.target.value)
-                    : calc.setStop(e.target.value)
+                  calc.calcMode === "qty"
+                    ? calc.setTargetQty(e.target.value)
+                    : calc.useTp === "1"
+                      ? calc.setTp(e.target.value)
+                      : calc.setStop(e.target.value)
                 }
                 className={`min-w-0 flex-1 rounded-md border bg-zinc-900 px-2 py-1 text-sm tabular-nums text-zinc-50 outline-none ${
                   calc.useTp === "1"

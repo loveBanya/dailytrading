@@ -3,11 +3,13 @@
 import { useMemo, useState } from "react";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
 import type { GoalChallengePrefs } from "@/lib/prefs";
+import type { DailyPnl } from "@/lib/stats/compute";
 import { followedEquity, walletFollowLabel } from "@/lib/wallet-follow";
 
 interface HorizonGoalPanelProps {
   wallet: WalletOverview | null;
   walletLoading?: boolean;
+  daily: DailyPnl[];
   prefs: GoalChallengePrefs;
   onPrefsChange: (
     prefs: GoalChallengePrefs | ((p: GoalChallengePrefs) => GoalChallengePrefs)
@@ -140,19 +142,20 @@ function pushMilestone(
 }
 
 function buildDayMilestones(
-  today: string,
+  start: string,
   deadline: string,
+  today: string,
   current: number,
   mode: PaceMode,
   dailyRate: number,
   flatDaily: number
 ): Milestone[] {
   const out: Milestone[] = [];
-  let cursor = today;
+  let cursor = start;
   let prev = current;
   let guard = 0;
   while (cmpDate(cursor, deadline) <= 0 && guard < 400) {
-    const days = daysLeftInclusive(today, cursor);
+    const days = daysLeftInclusive(start, cursor);
     const expected = expectedAtDay(
       mode,
       current,
@@ -163,11 +166,7 @@ function buildDayMilestones(
     prev = pushMilestone(
       out,
       cursor,
-      cursor === today
-        ? `${shortDate(cursor)} 오늘`
-        : cursor === deadline
-          ? `${shortDate(cursor)} 기한`
-          : shortDate(cursor),
+      milestoneLabel(cursor, start, deadline, today),
       expected,
       prev
     );
@@ -178,25 +177,45 @@ function buildDayMilestones(
   return out;
 }
 
-function buildWeekMilestones(
-  today: string,
+function milestoneLabel(
+  cursor: string,
+  start: string,
   deadline: string,
+  today: string
+): string {
+  const mark =
+    cursor === today
+      ? "오늘"
+      : cursor === deadline
+        ? "기한"
+        : cursor === start
+          ? "시작"
+          : "";
+  return mark ? `${shortDate(cursor)} ${mark}` : shortDate(cursor);
+}
+
+function buildWeekMilestones(
+  start: string,
+  deadline: string,
+  today: string,
   current: number,
   mode: PaceMode,
   dailyRate: number,
   flatDaily: number
 ): Milestone[] {
   const out: Milestone[] = [];
-  let cursor = weekEndSunday(today);
-  if (cmpDate(cursor, today) < 0) cursor = addDaysKst(cursor, 7);
+  let cursor = weekEndSunday(start);
+  if (cmpDate(cursor, start) < 0) cursor = addDaysKst(cursor, 7);
   let prev = current;
   let guard = 0;
   while (cmpDate(cursor, deadline) <= 0 && guard < 80) {
-    const days = daysLeftInclusive(today, cursor);
+    const days = daysLeftInclusive(start, cursor);
     prev = pushMilestone(
       out,
       cursor,
-      `${shortDate(cursor)} 주말`,
+      cursor === deadline
+        ? milestoneLabel(cursor, start, deadline, today)
+        : `${shortDate(cursor)} 주말`,
       expectedAtDay(mode, current, days, dailyRate, flatDaily),
       prev
     );
@@ -204,12 +223,12 @@ function buildWeekMilestones(
     guard += 1;
   }
   if (!out.length || out[out.length - 1].date !== deadline) {
-    const days = daysLeftInclusive(today, deadline);
+    const days = daysLeftInclusive(start, deadline);
     const lastPrev = out.length ? out[out.length - 1].expectedUsdt : current;
     pushMilestone(
       out,
       deadline,
-      `${shortDate(deadline)} 기한`,
+      milestoneLabel(deadline, start, deadline, today),
       expectedAtDay(mode, current, days, dailyRate, flatDaily),
       lastPrev
     );
@@ -218,22 +237,23 @@ function buildWeekMilestones(
 }
 
 function buildMonthMilestones(
-  today: string,
+  start: string,
   deadline: string,
+  today: string,
   current: number,
   mode: PaceMode,
   dailyRate: number,
   flatDaily: number
 ): Milestone[] {
   const out: Milestone[] = [];
-  let cursor = monthEnd(today);
-  if (cmpDate(cursor, today) < 0) {
-    cursor = monthEnd(nextMonthStart(today));
+  let cursor = monthEnd(start);
+  if (cmpDate(cursor, start) < 0) {
+    cursor = monthEnd(nextMonthStart(start));
   }
   let prev = current;
   let guard = 0;
   while (cmpDate(cursor, deadline) < 0 && guard < 36) {
-    const days = daysLeftInclusive(today, cursor);
+    const days = daysLeftInclusive(start, cursor);
     prev = pushMilestone(
       out,
       cursor,
@@ -244,43 +264,69 @@ function buildMonthMilestones(
     cursor = monthEnd(nextMonthStart(addDaysKst(cursor, 1)));
     guard += 1;
   }
-  const days = daysLeftInclusive(today, deadline);
+  const days = daysLeftInclusive(start, deadline);
   pushMilestone(
     out,
     deadline,
-    `${shortDate(deadline)} 기한`,
+    milestoneLabel(deadline, start, deadline, today),
     expectedAtDay(mode, current, days, dailyRate, flatDaily),
     prev
   );
   return out;
 }
 
+function measurePace(
+  daily: DailyPnl[],
+  from: string,
+  to: string,
+  current: number
+): { rate: number; days: number } | null {
+  if (!(current > 0) || cmpDate(from, to) > 0) return null;
+  const pnl = daily
+    .filter((row) => row.date >= from && row.date <= to)
+    .reduce((sum, row) => sum + row.pnl, 0);
+  const days = daysLeftInclusive(from, to);
+  if (days <= 0) return null;
+  const seed = current - pnl;
+  if (!(seed > 0)) return null;
+  const rate = Math.pow(current / seed, 1 / days) - 1;
+  return Number.isFinite(rate) ? { rate, days } : null;
+}
+
 export function HorizonGoalPanel({
   wallet,
   walletLoading,
+  daily,
   prefs,
   onPrefsChange,
 }: HorizonGoalPanelProps) {
   const [paceTab, setPaceTab] = useState<PaceTab>("day");
+  const [paceInput, setPaceInput] = useState("");
   const fx = prefs.fxRate > 0 ? prefs.fxRate : 1350;
   const currency: Currency =
     prefs.horizonCurrency === "usdt" ? "usdt" : "krw";
   const paceMode: PaceMode =
     prefs.horizonPaceMode === "flat" ? "flat" : "rate";
   const today = kstToday();
+  const start =
+    /^\d{4}-\d{2}-\d{2}$/.test(prefs.horizonStart) && prefs.horizonStart
+      ? prefs.horizonStart
+      : today;
   const liveUsdt = followedEquity(wallet, prefs.walletFollow);
   const followLabel = walletFollowLabel(prefs.walletFollow);
   const usingWallet = prefs.horizonCurrentUsdt == null;
   const current = usingWallet ? liveUsdt : Number(prefs.horizonCurrentUsdt) || 0;
   const target = Math.max(0, prefs.horizonTargetUsdt);
   const deadline = prefs.horizonDeadline || "2026-12-31";
+  const spanOk = cmpDate(start, deadline) <= 0;
+  const spanDays = spanOk ? daysLeftInclusive(start, deadline) : 0;
   const daysLeft = daysLeftInclusive(today, deadline);
   const gap = Math.max(0, target - current);
   const done = gap <= 0;
-  const canRate = current > 0 && target > current && daysLeft > 0;
-  const flatDaily = daysLeft > 0 ? gap / daysLeft : gap;
+  const canRate = current > 0 && target > current && spanDays > 0;
+  const flatDaily = spanDays > 0 ? gap / spanDays : gap;
   const dailyRate = canRate
-    ? compoundDailyRate(current, target, daysLeft)
+    ? compoundDailyRate(current, target, spanDays)
     : 0;
   const dailyNeedAmt =
     paceMode === "rate" ? current * dailyRate : flatDaily;
@@ -295,50 +341,75 @@ export function HorizonGoalPanel({
   const progress =
     target > 0 ? Math.min(100, (current / target) * 100) : current > 0 ? 100 : 0;
   const showMilestones =
-    !done && (paceMode === "flat" ? daysLeft > 0 : canRate);
+    spanOk && !done && (paceMode === "flat" ? spanDays > 0 : canRate);
 
   const dayMs = useMemo(
     () =>
       showMilestones
         ? buildDayMilestones(
-            today,
+            start,
             deadline,
+            today,
             current,
             paceMode,
             dailyRate,
             flatDaily
           )
         : [],
-    [showMilestones, today, deadline, current, paceMode, dailyRate, flatDaily]
+    [showMilestones, start, deadline, today, current, paceMode, dailyRate, flatDaily]
   );
   const weekMs = useMemo(
     () =>
       showMilestones
         ? buildWeekMilestones(
-            today,
+            start,
             deadline,
+            today,
             current,
             paceMode,
             dailyRate,
             flatDaily
           )
         : [],
-    [showMilestones, today, deadline, current, paceMode, dailyRate, flatDaily]
+    [showMilestones, start, deadline, today, current, paceMode, dailyRate, flatDaily]
   );
   const monthMs = useMemo(
     () =>
       showMilestones
         ? buildMonthMilestones(
-            today,
+            start,
             deadline,
+            today,
             current,
             paceMode,
             dailyRate,
             flatDaily
           )
         : [],
-    [showMilestones, today, deadline, current, paceMode, dailyRate, flatDaily]
+    [showMilestones, start, deadline, today, current, paceMode, dailyRate, flatDaily]
   );
+
+  const measuredFrom = cmpDate(start, today) < 0 ? start : addDaysKst(today, -13);
+  const measured = useMemo(
+    () => measurePace(daily, measuredFrom, today, current),
+    [daily, measuredFrom, today, current]
+  );
+  const typedPace = paceInput.trim() === "" ? null : Number(paceInput);
+  const typedOk = typedPace != null && Number.isFinite(typedPace);
+  const paceRate = typedOk ? typedPace / 100 : (measured?.rate ?? null);
+  const ahead =
+    cmpDate(today, deadline) >= 0
+      ? 0
+      : daysLeftInclusive(addDaysKst(today, 1), deadline);
+  const projected =
+    paceRate != null && current > 0
+      ? current * Math.pow(1 + paceRate, ahead)
+      : null;
+  const paceSource = typedOk
+    ? "직접 입력"
+    : cmpDate(start, today) < 0
+      ? "시작 이후 매매"
+      : "최근 14일 매매";
 
   function update(patch: Partial<GoalChallengePrefs>) {
     onPrefsChange((p) => ({ ...p, ...patch }));
@@ -371,7 +442,7 @@ export function HorizonGoalPanel({
   return (
     <div className="space-y-4">
       <p className="text-sm text-zinc-500">
-        목표·지금·기한으로 오늘 필요량을 계산합니다.{" "}
+        시작·지금·목표·기한으로 하루 필요량을 계산합니다.{" "}
         <span className="text-zinc-300">균등 금액</span> 또는{" "}
         <span className="text-zinc-300">복리 수익률</span>을 고를 수 있습니다.
         환율은 업비트 USDT 시세({fx.toLocaleString("ko-KR")}원)를 씁니다.
@@ -466,6 +537,17 @@ export function HorizonGoalPanel({
         </label>
 
         <label className="text-xs text-zinc-500">
+          시작
+          <input
+            type="date"
+            value={start}
+            max={deadline}
+            onChange={(e) => update({ horizonStart: e.target.value })}
+            className="mt-1 block rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200"
+          />
+        </label>
+
+        <label className="text-xs text-zinc-500">
           기한
           <input
             type="date"
@@ -474,6 +556,16 @@ export function HorizonGoalPanel({
             className="mt-1 block rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200"
           />
         </label>
+
+        {prefs.horizonStart ? (
+          <button
+            type="button"
+            onClick={() => update({ horizonStart: "" })}
+            className="rounded-md border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:text-zinc-200"
+          >
+            오늘부터
+          </button>
+        ) : null}
 
         <button
           type="button"
@@ -497,6 +589,11 @@ export function HorizonGoalPanel({
         )}
       </div>
 
+      {!spanOk && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-100/90">
+          시작일이 기한보다 늦습니다. 시작을 기한과 같거나 이르게 맞추세요.
+        </div>
+      )}
       {!done && paceMode === "rate" && current <= 0 && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-100/90">
           수익률 모드는 지금 금액이 0이면 계산할 수 없습니다. 현재 자산을
@@ -512,7 +609,7 @@ export function HorizonGoalPanel({
         }`}
       >
         <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-          {paceMode === "rate" ? "필요 일일 수익률" : "오늘 벌어야 할 금액"}
+          {paceMode === "rate" ? "필요 일일 수익률" : "하루 필요 금액"}
         </p>
         <p className="mt-1 text-3xl font-semibold tabular-nums text-zinc-50">
           {done
@@ -530,9 +627,9 @@ export function HorizonGoalPanel({
             ? "목표 달성"
             : paceMode === "rate"
               ? !canRate
-                ? "현재·목표·기한을 확인하세요"
-                : `오늘 필요 ≈ ${fmt(dailyNeedAmt)} · 주 ${pct(weeklyRate)} (${fmt(weeklyNeedAmt)}) · 월≈ ${pct(monthlyRateApprox)} (${fmt(monthlyNeedAmtApprox)})`
-              : `남은 ${fmt(gap)} ÷ ${daysLeft}일 · 주 ${fmt(weeklyNeedAmt)} · 월≈ ${fmt(monthlyNeedAmtApprox)}`}
+                ? "시작·현재·목표·기한을 확인하세요"
+                : `${shortDate(start)}→${shortDate(deadline)} ${spanDays}일 · 오늘 필요 ≈ ${fmt(dailyNeedAmt)} · 주 ${pct(weeklyRate)} (${fmt(weeklyNeedAmt)}) · 월≈ ${pct(monthlyRateApprox)} (${fmt(monthlyNeedAmtApprox)})`
+              : `남은 ${fmt(gap)} ÷ ${spanDays}일 (${shortDate(start)}→${shortDate(deadline)}) · 주 ${fmt(weeklyNeedAmt)} · 월≈ ${fmt(monthlyNeedAmtApprox)}`}
         </p>
       </div>
 
@@ -557,11 +654,53 @@ export function HorizonGoalPanel({
           }
         />
         <Stat
-          label="남은 일수"
-          value={`${daysLeft}일`}
-          sub={deadline}
-          accent={daysLeft <= 30 ? "amber" : undefined}
+          label="기간"
+          value={spanOk ? `${spanDays}일` : "—"}
+          sub={
+            spanOk
+              ? `${shortDate(start)} → ${shortDate(deadline)}${
+                  cmpDate(today, start) >= 0 && cmpDate(today, deadline) <= 0
+                    ? ` · 남은 ${daysLeft}일`
+                    : cmpDate(today, start) < 0
+                      ? " · 시작 전"
+                      : ""
+                }`
+              : "시작이 기한보다 늦습니다"
+          }
+          accent={!spanOk || daysLeft <= 30 ? "amber" : undefined}
         />
+      </div>
+
+      <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium text-zinc-400">
+              지금 페이스로 쌓으면
+            </p>
+            <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-50">
+              {projected == null ? "—" : fmt(projected)}
+            </p>
+            <p className="mt-1 text-xs text-zinc-500">
+              {projected == null
+                ? "매매가 쌓인 날이 부족합니다. 하루 수익률을 직접 넣을 수 있습니다."
+                : `${paceSource} 하루 ${pct(paceRate ?? 0)}를 ${ahead}일 쌓으면 ${shortDate(deadline)}에 이 금액입니다.`}
+            </p>
+          </div>
+          <label className="text-xs text-zinc-500">
+            하루 수익률 %
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              value={paceInput}
+              placeholder={
+                measured ? (measured.rate * 100).toFixed(2) : "직접"
+              }
+              onChange={(e) => setPaceInput(e.target.value)}
+              className="mt-1 block w-28 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm tabular-nums text-zinc-200 outline-none focus:border-zinc-500"
+            />
+          </label>
+        </div>
       </div>
 
       <div className="space-y-1">

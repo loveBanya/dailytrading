@@ -22,6 +22,14 @@ export interface DailyPnl {
   bestPnl: number | null;
   /** 그날 손실 거래 중 가장 큰 손실(음수). 손실이 없으면 null */
   worstPnl: number | null;
+  /** 청산 시각(KST) 순으로 쌓은 누적이 가장 높았던 구간. 이익 누적이 없으면 null */
+  bestHourFrom: number | null;
+  bestHourTo: number | null;
+  bestHourPnl: number | null;
+  /** 청산 시각(KST) 순으로 쌓은 누적이 가장 낮았던 구간. 손실 누적이 없으면 null */
+  worstHourFrom: number | null;
+  worstHourTo: number | null;
+  worstHourPnl: number | null;
 }
 
 export interface HourStat {
@@ -237,32 +245,105 @@ function hourKst(iso: string): number {
 
 /** 일별 손익 (KST 청산일 기준) */
 export function computeDailyPnl(trades: Trade[]): DailyPnl[] {
-  const groups = new Map<
-    string,
-    { pnl: number; trades: number; bestPnl: number | null; worstPnl: number | null }
-  >();
+  const groups = new Map<string, DayGroup>();
   for (const t of trades) {
     const key = dayKeyKst(t.exit_time);
-    const cur = groups.get(key) ?? {
-      pnl: 0,
-      trades: 0,
-      bestPnl: null,
-      worstPnl: null,
-    };
+    const cur = groups.get(key) ?? emptyDayGroup();
     const pnl = Number(t.pnl);
+    const hour = hourKst(t.exit_time);
     cur.pnl += pnl;
     cur.trades += 1;
     if (pnl > 0 && (cur.bestPnl == null || pnl > cur.bestPnl)) cur.bestPnl = pnl;
     if (pnl < 0 && (cur.worstPnl == null || pnl < cur.worstPnl)) cur.worstPnl = pnl;
+    cur.hourPnl[hour] = (cur.hourPnl[hour] ?? 0) + pnl;
     groups.set(key, cur);
   }
   return [...groups.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, v]) => ({
-      date,
-      pnl: v.pnl,
-      trades: v.trades,
-      bestPnl: v.bestPnl,
-      worstPnl: v.worstPnl,
-    }));
+    .map(([date, v]) => {
+      const hours = hourExtremes(v.hourPnl);
+      return {
+        date,
+        pnl: v.pnl,
+        trades: v.trades,
+        bestPnl: v.bestPnl,
+        worstPnl: v.worstPnl,
+        bestHourFrom: hours.best?.from ?? null,
+        bestHourTo: hours.best?.to ?? null,
+        bestHourPnl: hours.best?.pnl ?? null,
+        worstHourFrom: hours.worst?.from ?? null,
+        worstHourTo: hours.worst?.to ?? null,
+        worstHourPnl: hours.worst?.pnl ?? null,
+      };
+    });
+}
+
+interface DayGroup {
+  pnl: number;
+  trades: number;
+  bestPnl: number | null;
+  worstPnl: number | null;
+  hourPnl: Array<number | null>;
+}
+
+function emptyDayGroup(): DayGroup {
+  return {
+    pnl: 0,
+    trades: 0,
+    bestPnl: null,
+    worstPnl: null,
+    hourPnl: Array.from({ length: 24 }, () => null),
+  };
+}
+
+interface HourSpan {
+  from: number;
+  to: number;
+  pnl: number;
+}
+
+function hourExtremes(hourPnl: Array<number | null>): {
+  best: HourSpan | null;
+  worst: HourSpan | null;
+} {
+  return {
+    best: extremeSpan(hourPnl, "best"),
+    worst: extremeSpan(hourPnl, "worst"),
+  };
+}
+
+/**
+ * 시간 순으로 손익을 쌓는다. 거래가 없는 시는 건너뛰고 누적을 끊지 않는다.
+ * 누적이 0 이하로 내려가면 수익 구간을 새로 시작하고, 0 이상으로 올라가면 손실 구간을 새로 시작한다.
+ * 기록하는 값은 그 구간의 최대(또는 최소) 누적 금액이다.
+ */
+function extremeSpan(
+  hourPnl: Array<number | null>,
+  mode: "best" | "worst"
+): HourSpan | null {
+  let best: HourSpan | null = null;
+  let sum = 0;
+  let from = 0;
+  let active = false;
+  const restart = (ending: number) =>
+    mode === "best" ? ending <= 0 : ending >= 0;
+
+  for (let hour = 0; hour < hourPnl.length; hour++) {
+    const pnl = hourPnl[hour];
+    if (pnl == null) continue;
+    if (!active || restart(sum)) {
+      sum = pnl;
+      from = hour;
+      active = true;
+    } else {
+      sum += pnl;
+    }
+    const qualifies = mode === "best" ? sum > 0 : sum < 0;
+    const better =
+      best == null || (mode === "best" ? sum > best.pnl : sum < best.pnl);
+    if (qualifies && better) {
+      best = { from, to: hour, pnl: sum };
+    }
+  }
+  return best;
 }

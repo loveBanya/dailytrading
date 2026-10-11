@@ -21,6 +21,14 @@ export interface SavedInputs {
   tp: string;
   /** 손익비를 바꿀 때 고정하는 쪽 */
   priceAnchor: "stop" | "tp";
+  /** 리스크를 자산 비율로 둘지, USDT 금액으로 둘지 */
+  riskUnit: "pct" | "usdt";
+  /** riskUnit이 usdt일 때의 손실 한도 */
+  riskUsdt: string;
+  /** risk=가격으로 수량, qty=개수로 손절·익절 */
+  calcMode: "risk" | "qty";
+  /** calcMode가 qty일 때 잡고 싶은 개수 */
+  targetQty: string;
 }
 
 export const RISK_STORAGE_KEY = "dailytrading.riskcalc.v1";
@@ -42,6 +50,10 @@ export const RISK_DEFAULTS: SavedInputs = {
   useTp: "0",
   tp: "",
   priceAnchor: "stop",
+  riskUnit: "pct",
+  riskUsdt: "",
+  calcMode: "risk",
+  targetQty: "",
 };
 
 export type CustomQuote = { entry: string; stop: string; qtyUnit: string };
@@ -169,11 +181,31 @@ export interface RiskResult {
   stopBeyondLiq: boolean;
   tpInvalid: boolean;
   wrongSide: boolean;
+  /** 이 개수면 수수료만으로 리스크를 넘거나 손절가가 0 아래 */
+  feeExceedsRisk: boolean;
+}
+
+export function riskBudget(input: {
+  equity: string;
+  riskPct: string;
+  riskUsdt?: string;
+  riskUnit?: "pct" | "usdt";
+}): number | null {
+  if (input.riskUnit === "usdt") {
+    const amount = Number(input.riskUsdt);
+    return amount > 0 ? amount : null;
+  }
+  const eq = Number(input.equity);
+  const risk = Number(input.riskPct);
+  if (!(eq > 0) || !(risk > 0)) return null;
+  return eq * (risk / 100);
 }
 
 export function computeRisk(input: {
   equity: string;
   riskPct: string;
+  riskUsdt?: string;
+  riskUnit?: "pct" | "usdt";
   entry: string;
   stop: string;
   leverage: string;
@@ -183,16 +215,16 @@ export function computeRisk(input: {
   qtyUnit: string;
 }): RiskResult | null {
   const eq = Number(input.equity);
-  const risk = Number(input.riskPct);
   const px = Number(input.entry);
   const stopPx = Number(input.stop);
   const lev = Number(input.leverage);
   const fee = Number(input.feePct);
   const rr = Number(input.rewardR);
+  const riskAmount = riskBudget(input);
 
   if (
     !(eq > 0) ||
-    !(risk > 0) ||
+    riskAmount == null ||
     !(px > 0) ||
     !(stopPx > 0) ||
     !(lev >= 1) ||
@@ -201,8 +233,6 @@ export function computeRisk(input: {
   ) {
     return null;
   }
-
-  const riskAmount = eq * (risk / 100);
   const distance = Math.abs(px - stopPx);
   const wrongSide = input.side === "long" ? stopPx >= px : stopPx <= px;
   const feeRate = fee / 100;
@@ -255,6 +285,86 @@ export function computeRisk(input: {
     stopBeyondLiq,
     tpInvalid,
     wrongSide,
+    feeExceedsRisk: false,
+  };
+}
+
+/** 잡고 싶은 개수와 리스크로 손절·익절 가격을 거꾸로 잡는다. */
+export function computeFromQty(input: {
+  equity: string;
+  riskPct: string;
+  riskUsdt?: string;
+  riskUnit?: "pct" | "usdt";
+  entry: string;
+  qty: string;
+  leverage: string;
+  feePct: string;
+  rewardR: string;
+  side: Side;
+}): RiskResult | null {
+  const eq = Number(input.equity);
+  const px = Number(input.entry);
+  const qty = Number(input.qty);
+  const lev = Number(input.leverage);
+  const fee = Number(input.feePct);
+  const rr = Number(input.rewardR);
+  const riskAmount = riskBudget(input);
+
+  if (
+    !(eq > 0) ||
+    riskAmount == null ||
+    !(px > 0) ||
+    !(qty > 0) ||
+    !(lev >= 1) ||
+    !(fee >= 0) ||
+    !(rr > 0)
+  ) {
+    return null;
+  }
+
+  const feeRate = fee / 100;
+  const feePerUnit = px * feeRate * 2;
+  const distance = riskAmount / qty - feePerUnit;
+  const stopRaw = input.side === "long" ? px - distance : px + distance;
+  const feeExceedsRisk = !(distance > 0) || !(stopRaw > 0);
+  const stopPx = feeExceedsRisk ? px : stopRaw;
+  const tpDistance = feeExceedsRisk ? 0 : distance * rr;
+  const tpRaw = input.side === "long" ? px + tpDistance : px - tpDistance;
+  const tpPrice = tpRaw > 0 ? tpRaw : 0;
+  const notional = qty * px;
+  const roundTripFee = notional * feeRate * 2;
+  const margin = notional / lev;
+  const netLoss = feeExceedsRisk ? riskAmount : qty * distance + roundTripFee;
+  const netProfit = feeExceedsRisk ? 0 : qty * tpDistance - roundTripFee;
+  const liqPrice =
+    input.side === "long" ? px * (1 - 1 / lev) : px * (1 + 1 / lev);
+
+  return {
+    riskAmount,
+    margin,
+    betPct: (margin / eq) * 100,
+    notional,
+    qty,
+    rawQty: qty,
+    qtyStep: 0,
+    minOrderQty: 0,
+    lotApplied: false,
+    belowMin: false,
+    roundTripFee,
+    stopPrice: stopPx,
+    stopPct: feeExceedsRisk ? 0 : (distance / px) * 100,
+    tpPrice,
+    tpPct: feeExceedsRisk ? 0 : (tpDistance / px) * 100,
+    netLoss,
+    netProfit,
+    netRatio: netLoss > 0 ? netProfit / netLoss : 0,
+    liqPrice,
+    stopBeyondLiq:
+      !feeExceedsRisk &&
+      (input.side === "long" ? stopPx <= liqPrice : stopPx >= liqPrice),
+    tpInvalid: !feeExceedsRisk && input.side === "short" && !(tpPrice > 0),
+    wrongSide: false,
+    feeExceedsRisk,
   };
 }
 

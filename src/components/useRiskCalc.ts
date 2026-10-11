@@ -5,6 +5,7 @@ import type { WalletOverview } from "@/lib/exchanges/wallet";
 import { followedEquity } from "@/lib/wallet-follow";
 import type { MarketTicker } from "@/lib/exchanges/market";
 import {
+  computeFromQty,
   computeRisk,
   COIN_STEP,
   linkedStop,
@@ -41,6 +42,7 @@ function emit() {
 }
 
 function withSide(next: State): State {
+  if (next.calcMode === "qty") return next;
   const px = Number(next.entry);
   const stopPx = Number(next.stop);
   if (!(px > 0) || !(stopPx > 0) || stopPx === px) return next;
@@ -68,6 +70,10 @@ function persist() {
     useTp: state.useTp,
     tp: state.tp,
     priceAnchor: state.priceAnchor,
+    riskUnit: state.riskUnit,
+    riskUsdt: state.riskUsdt,
+    calcMode: state.calcMode,
+    targetQty: state.targetQty,
   };
   try {
     localStorage.setItem(RISK_STORAGE_KEY, JSON.stringify(payload));
@@ -123,6 +129,14 @@ function applySaved(raw: string) {
   if (saved.priceAnchor === "stop" || saved.priceAnchor === "tp") {
     next.priceAnchor = saved.priceAnchor;
   }
+  if (saved.riskUnit === "pct" || saved.riskUnit === "usdt") {
+    next.riskUnit = saved.riskUnit;
+  }
+  if (saved.riskUsdt != null) next.riskUsdt = String(saved.riskUsdt);
+  if (saved.calcMode === "risk" || saved.calcMode === "qty") {
+    next.calcMode = saved.calcMode;
+  }
+  if (saved.targetQty != null) next.targetQty = String(saved.targetQty);
   state = withSide(next);
 }
 
@@ -182,6 +196,11 @@ export function useRiskCalc(
   setLeverage: (v: string) => void;
   setFeePct: (v: string) => void;
   setRewardR: (v: string) => void;
+  setRiskUnit: (v: "pct" | "usdt") => void;
+  setRiskUsdt: (v: string) => void;
+  setCalcMode: (v: "risk" | "qty") => void;
+  setTargetQty: (v: string) => void;
+  setSide: (v: Side) => void;
   setCoin: (v: string) => void;
   setQtyUnit: (v: string) => void;
   setCustomQuote: (v: CustomQuote | null) => void;
@@ -218,27 +237,46 @@ export function useRiskCalc(
     patch({ equity: next });
   }, [snap.linkWallet, wallet, walletFollow]);
 
-  const result = useMemo(
-    () =>
-      computeRisk({
+  const result = useMemo(() => {
+    if (snap.calcMode === "qty") {
+      return computeFromQty({
         equity: snap.equity,
         riskPct: snap.riskPct,
+        riskUsdt: snap.riskUsdt,
+        riskUnit: snap.riskUnit,
         entry: snap.entry,
-        stop: snap.stop,
+        qty: snap.targetQty,
         leverage: snap.leverage,
         feePct: snap.feePct,
         rewardR: snap.rewardR,
         side: snap.side,
-        qtyUnit: snap.qtyUnit,
-      }),
-    [snap]
-  );
+      });
+    }
+    return computeRisk({
+      equity: snap.equity,
+      riskPct: snap.riskPct,
+      riskUsdt: snap.riskUsdt,
+      riskUnit: snap.riskUnit,
+      entry: snap.entry,
+      stop: snap.stop,
+      leverage: snap.leverage,
+      feePct: snap.feePct,
+      rewardR: snap.rewardR,
+      side: snap.side,
+      qtyUnit: snap.qtyUnit,
+    });
+  }, [snap]);
 
   return {
     ...snap,
     result,
     setEquity: (v) => patch({ equity: v, linkWallet: false }),
     setRiskPct: (v) => patch({ riskPct: v }),
+    setRiskUnit: (v) => patch({ riskUnit: v }),
+    setRiskUsdt: (v) => patch({ riskUsdt: v }),
+    setCalcMode: (v) => patch({ calcMode: v }),
+    setTargetQty: (v) => patch({ targetQty: v }),
+    setSide: (v) => patch({ side: v }),
     setEntry: (v) => {
       const cur = getSnapshot();
       const linked = linkedPartial(cur, v);

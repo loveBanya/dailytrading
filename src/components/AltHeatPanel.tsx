@@ -118,8 +118,9 @@ export function AltHeatPanel({
           어디로 움직였는지입니다.
         </p>
         <p>
-          차트는 그날의 괴리율입니다. 오늘 화면의 점선은 어제 값이고, 더 긴 기간의 점선은 지금까지의
-          중간값입니다. BTC 오늘은 비트코인 가격, 알트 오늘은 그 14개 알트의 하루 변화입니다.
+          차트는 그날의 괴리율입니다. 오늘 화면은 0시부터 24시 시간축이 먼저 깔려 있고, 점선은
+          어제 값입니다. 더 긴 기간의 점선은 지금까지의 중간값입니다. BTC 오늘은 비트코인 가격,
+          알트 오늘은 그 14개 알트의 하루 변화입니다.
         </p>
       </div>
 
@@ -236,23 +237,24 @@ function Gauge({
 
 function HeatChart({ heat, range }: { heat: AltHeat; range: RangeId }) {
   const points = useMemo(() => pointsFor(heat, range), [heat, range]);
-  if (points.length < 2) {
+  const dayStart = range === "1d" ? seoulMidnight(seoulDay(points[0]?.t ?? Date.now())) : null;
+  if (range !== "1d" && points.length < 2) {
     return <p className="mt-3 text-sm text-zinc-500">이 기간의 기록이 부족합니다.</p>;
   }
   const width = 640;
   const height = 220;
-  const pad = { l: 36, r: 10, t: 18, b: 24 };
+  const pad = { l: 36, r: 12, t: 18, b: 24 };
   const guide = range === "1d" && heat.yesterday != null ? heat.yesterday : heat.median;
   const values = points.map((point) => point.v);
-  let min = Math.min(...values, guide);
-  let max = Math.max(...values, guide);
+  let min = Math.min(...(values.length ? values : [guide]), guide);
+  let max = Math.max(...(values.length ? values : [guide]), guide);
   const padY = Math.max(1, (max - min) * 0.12);
   min -= padY;
   max += padY;
   const innerW = width - pad.l - pad.r;
   const innerH = height - pad.t - pad.b;
-  const t0 = points[0].t;
-  const t1 = points[points.length - 1].t;
+  const t0 = dayStart ?? points[0].t;
+  const t1 = dayStart != null ? dayStart + 86_400_000 : points[points.length - 1].t;
   const xOf = (t: number) => pad.l + ((t - t0) / Math.max(1, t1 - t0)) * innerW;
   const labelX = (t: number) => Math.min(width - pad.r - 8, Math.max(pad.l + 8, xOf(t)));
   const labelAnchor = (t: number) => {
@@ -266,9 +268,9 @@ function HeatChart({ heat, range }: { heat: AltHeat; range: RangeId }) {
     .map((point, index) => `${index === 0 ? "M" : "L"}${xOf(point.t).toFixed(1)},${yOf(point.v).toFixed(1)}`)
     .join(" ");
   const last = points[points.length - 1];
-  const extreme = range !== "1d" && range !== "7d" && range !== "30d";
-  const hi = points.reduce((a, b) => (a.v > b.v ? a : b));
-  const lo = points.reduce((a, b) => (a.v < b.v ? a : b));
+  const extreme = range !== "1d" && range !== "7d" && range !== "30d" && points.length > 0;
+  const hi = extreme ? points.reduce((a, b) => (a.v > b.v ? a : b)) : last;
+  const lo = extreme ? points.reduce((a, b) => (a.v < b.v ? a : b)) : last;
   const yTicks = [max, (max + min) / 2, min];
 
   return (
@@ -310,8 +312,12 @@ function HeatChart({ heat, range }: { heat: AltHeat; range: RangeId }) {
         stroke="#a1a1aa"
         strokeDasharray="3 4"
       />
-      <path d={path} fill="none" stroke="#f4f4f5" strokeWidth="1.6" />
-      <circle cx={xOf(last.t)} cy={yOf(last.v)} r="4" fill="#fb7185" stroke="#fff" strokeWidth="1" />
+      {points.length > 0 && (
+        <path d={path} fill="none" stroke="#f4f4f5" strokeWidth="1.6" />
+      )}
+      {points.length > 0 && (
+        <circle cx={xOf(last.t)} cy={yOf(last.v)} r="4" fill="#fb7185" stroke="#fff" strokeWidth="1" />
+      )}
       {extreme && (
         <>
           <text
@@ -334,8 +340,21 @@ function HeatChart({ heat, range }: { heat: AltHeat; range: RangeId }) {
           </text>
         </>
       )}
-      {xTicks(points, range).map((tick) => (
-        <text key={tick.t} x={xOf(tick.t)} y={height - 6} fill="#a1a1aa" fontSize="10" textAnchor="middle">
+      {(range === "1d" ? dayTicks(t0) : xTicks(points, range)).map((tick, index, ticks) => (
+        <text
+          key={tick.t}
+          x={range === "1d" && index === 0 ? pad.l : range === "1d" && index === ticks.length - 1 ? width - pad.r : xOf(tick.t)}
+          y={height - 6}
+          fill="#a1a1aa"
+          fontSize="10"
+          textAnchor={
+            range === "1d" && index === 0
+              ? "start"
+              : range === "1d" && index === ticks.length - 1
+                ? "end"
+                : "middle"
+          }
+        >
           {tick.label}
         </text>
       ))}
@@ -388,6 +407,17 @@ function markerLeft(value: number): number {
     }
   }
   return 100;
+}
+
+function seoulMidnight(day: string): number {
+  return new Date(`${day}T00:00:00+09:00`).getTime();
+}
+
+function dayTicks(t0: number): Array<{ t: number; label: string }> {
+  return [0, 6, 12, 18, 24].map((hour) => ({
+    t: t0 + hour * 3_600_000,
+    label: `${hour}시`,
+  }));
 }
 
 function xTicks(points: HeatPoint[], range: RangeId): Array<{ t: number; label: string }> {

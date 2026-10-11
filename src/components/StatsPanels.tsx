@@ -779,8 +779,8 @@ function DailyPnlCalendar({
       <p className="mb-3 text-[11px] text-zinc-600">
         선택 월 거래 {monthSummary.tradeCount}회 · 금액과 %는 청산된 매매
         손익입니다. 입출금은 수익에 넣지 않습니다. 날짜를{" "}
-        <span className="text-zinc-400">클릭</span>하면 계좌 잔고와 최고
-        수익·손실이 나옵니다.
+        <span className="text-zinc-400">클릭</span>하면 계좌 잔고와 시간대별로
+        쌓인 최고 누적 수익·손실이 나옵니다.
       </p>
 
       <div className="overflow-x-auto">
@@ -896,6 +896,7 @@ function DailyPnlCalendar({
               닫기
             </button>
           </div>
+          <DayHourSentence row={selectedRow} />
           <DayAccountSummary
             row={selectedRow}
             account={accounts.map.get(selectedDate) ?? null}
@@ -988,14 +989,24 @@ function DayAccountSummary({
         tone="neutral"
       />
       <SummaryChip
-        label="최고 수익"
+        label="최고 수익 거래"
         value={best != null ? formatPnl(best) : "없음"}
         tone={best != null ? "pos" : "neutral"}
       />
       <SummaryChip
-        label="최고 손실"
+        label="최고 손실 거래"
         value={worst != null ? formatPnl(worst) : "없음"}
         tone={worst != null ? "neg" : "neutral"}
+      />
+      <SummaryChip
+        label="최고 누적 수익"
+        value={hourSpanValue(row.bestHourFrom, row.bestHourTo, row.bestHourPnl)}
+        tone={row.bestHourFrom != null ? "pos" : "neutral"}
+      />
+      <SummaryChip
+        label="최고 누적 손실"
+        value={hourSpanValue(row.worstHourFrom, row.worstHourTo, row.worstHourPnl)}
+        tone={row.worstHourFrom != null ? "neg" : "neutral"}
       />
       {account && Math.abs(flow) > 0.009 && (
         <SummaryChip
@@ -1007,11 +1018,72 @@ function DayAccountSummary({
       <p className="col-span-2 text-[11px] leading-relaxed text-zinc-500 sm:col-span-3">
         매매 수익률은 청산 손익 ÷ 시작 시드입니다. 마감 계좌는 시작 시드 +
         매매 손익{Math.abs(flow) > 0.009 ? " + 입출금" : ""}입니다.
+        최고 누적 수익·손실은 청산 시각 순으로 손익을 쌓은 값입니다. 거래가 없는 시간은 끊지 않습니다.
         {partial
           ? " 이 칸의 손익은 고른 기간의 거래만 더한 값입니다."
           : ""}
       </p>
     </div>
+  );
+}
+
+function hourSpanLabel(from: number, to: number): string {
+  return from === to ? `${from}시` : `${from}–${to}시`;
+}
+
+function signedUsd(n: number): string {
+  const body = `$${Math.abs(n).toFixed(2)}`;
+  return n >= 0 ? `+${body}` : `-${body}`;
+}
+
+function hourSpanValue(
+  from: number | null,
+  to: number | null,
+  pnl: number | null
+): string {
+  if (from == null || to == null || pnl == null) return "없음";
+  return `${hourSpanLabel(from, to)} ${signedUsd(pnl)}`;
+}
+
+function DayHourSentence({ row }: { row: DailyPnl }) {
+  const best =
+    row.bestHourFrom != null &&
+    row.bestHourTo != null &&
+    row.bestHourPnl != null;
+  const worst =
+    row.worstHourFrom != null &&
+    row.worstHourTo != null &&
+    row.worstHourPnl != null;
+  if (!best && !worst) {
+    return (
+      <p className="mb-3 text-sm leading-relaxed text-zinc-400">
+        이날은 쌓인 누적 수익과 누적 손실이 없습니다.
+      </p>
+    );
+  }
+  return (
+    <p className="mb-3 text-sm leading-relaxed text-zinc-200">
+      {best && (
+        <>
+          쌓인 최고 누적 수익은{" "}
+          <span className="font-semibold text-emerald-400">
+            {hourSpanLabel(row.bestHourFrom!, row.bestHourTo!)}{" "}
+            {signedUsd(row.bestHourPnl!)}
+          </span>
+        </>
+      )}
+      {best && worst && "이고, "}
+      {worst && (
+        <>
+          쌓인 최고 누적 손실은{" "}
+          <span className="font-semibold text-rose-400">
+            {hourSpanLabel(row.worstHourFrom!, row.worstHourTo!)}{" "}
+            {signedUsd(row.worstHourPnl!)}
+          </span>
+        </>
+      )}
+      입니다.
+    </p>
   );
 }
 

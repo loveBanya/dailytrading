@@ -169,6 +169,8 @@ export interface GoalChallengePrefs {
   horizonTargetUsdt: number;
   /** 기한 목표용 현재 금액 (USDT). null이면 지갑 자산 사용 */
   horizonCurrentUsdt: number | null;
+  /** 기한 목표 시작 (YYYY-MM-DD). 비어 있으면 오늘 */
+  horizonStart: string;
   /** 기한 (YYYY-MM-DD) */
   horizonDeadline: string;
   /** 기한 목표 입력/표시 통화 */
@@ -196,6 +198,7 @@ export const DEFAULT_GOAL_CHALLENGE: GoalChallengePrefs = {
   dailyHits: {},
   horizonTargetUsdt: 10_000,
   horizonCurrentUsdt: null,
+  horizonStart: "",
   horizonDeadline: "2026-12-31",
   horizonCurrency: "krw",
   monthlyPaceMode: "flat",
@@ -237,6 +240,8 @@ export function loadGoalChallenge(): GoalChallengePrefs {
         saved.horizonCurrentUsdt === undefined
           ? null
           : Number(saved.horizonCurrentUsdt),
+      horizonStart:
+        typeof saved.horizonStart === "string" ? saved.horizonStart : "",
       horizonDeadline:
         saved.horizonDeadline || DEFAULT_GOAL_CHALLENGE.horizonDeadline,
       horizonCurrency:

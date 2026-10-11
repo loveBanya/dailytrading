@@ -1101,6 +1101,7 @@ export function TradeJournal() {
                     onPrefsChange={patchGoalPrefs}
                     wallet={walletOverview}
                     walletLoading={walletLoading}
+                    daily={daily}
                   />
                 </Section>
               );

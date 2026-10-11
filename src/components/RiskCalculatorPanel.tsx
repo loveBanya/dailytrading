@@ -40,6 +40,15 @@ export function RiskCalculatorPanel({
     setEquity,
     riskPct,
     setRiskPct,
+    riskUnit,
+    setRiskUnit,
+    riskUsdt,
+    setRiskUsdt,
+    calcMode,
+    setCalcMode,
+    targetQty,
+    setTargetQty,
+    setSide,
     entry,
     setEntry,
     stop,
@@ -68,7 +77,17 @@ export function RiskCalculatorPanel({
   } = useRiskCalc(wallet, walletFollow);
 
   const pricesOk =
-    !!result && !result.wrongSide && !result.tpInvalid && !result.belowMin;
+    !!result &&
+    !result.wrongSide &&
+    !result.tpInvalid &&
+    !result.belowMin &&
+    !result.feeExceedsRisk;
+  const riskUsdtNow =
+    riskUnit === "usdt"
+      ? Number(riskUsdt)
+      : Number(equity) > 0 && Number(riskPct) > 0
+        ? Number(equity) * (Number(riskPct) / 100)
+        : 0;
 
   return (
     <div className="space-y-4">
@@ -122,22 +141,55 @@ export function RiskCalculatorPanel({
             </div>
             <div className="min-w-0">
               <Field
-                label="리스크 %"
-                value={riskPct}
-                step="0.1"
-                onChange={setRiskPct}
+                label={riskUnit === "usdt" ? "리스크 USDT" : "리스크 %"}
+                value={riskUnit === "usdt" ? riskUsdt : riskPct}
+                step={riskUnit === "usdt" ? "1" : "0.1"}
+                onChange={riskUnit === "usdt" ? setRiskUsdt : setRiskPct}
                 hint={
-                  Number(equity) > 0 && Number(riskPct) > 0
-                    ? `$${money(Number(equity) * (Number(riskPct) / 100))} · ${won(Number(equity) * (Number(riskPct) / 100), fx)}`
+                  riskUsdtNow > 0
+                    ? riskUnit === "usdt"
+                      ? `${Number(equity) > 0 ? `자산의 ${((riskUsdtNow / Number(equity)) * 100).toFixed(2)}% · ` : ""}${won(riskUsdtNow, fx)}`
+                      : `$${money(riskUsdtNow)} · ${won(riskUsdtNow, fx)}`
                     : "\u00a0"
                 }
+                aside={
+                  <span className="inline-flex overflow-hidden rounded border border-zinc-700">
+                    {(
+                      [
+                        ["pct", "%"],
+                        ["usdt", "USDT"],
+                      ] as const
+                    ).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setRiskUnit(id)}
+                        className={`px-1.5 py-0.5 text-[10px] ${
+                          riskUnit === id
+                            ? "bg-zinc-200 text-zinc-900"
+                            : "text-zinc-400 hover:text-zinc-200"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </span>
+                }
               />
-              <Chips
-                values={["1", "2", "3", "4", "5"]}
-                current={riskPct}
-                onPick={setRiskPct}
-                suffix="%"
-              />
+              {riskUnit === "usdt" ? (
+                <Chips
+                  values={["10", "20", "30", "50", "100"]}
+                  current={riskUsdt}
+                  onPick={setRiskUsdt}
+                />
+              ) : (
+                <Chips
+                  values={["1", "2", "3", "4", "5"]}
+                  current={riskPct}
+                  onPick={setRiskPct}
+                  suffix="%"
+                />
+              )}
             </div>
           </div>
           <div>
@@ -156,7 +208,30 @@ export function RiskCalculatorPanel({
             />
           </div>
 
-          <p className="pt-1 text-xs font-medium text-zinc-400">가격</p>
+          <div className="flex flex-wrap gap-1 pt-1">
+            {(
+              [
+                ["risk", "가격으로 수량"],
+                ["qty", "개수로 손절·익절"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setCalcMode(id)}
+                className={`rounded-md border px-2.5 py-1 text-[11px] ${
+                  calcMode === id
+                    ? "border-sky-500/50 bg-sky-500/15 text-sky-100"
+                    : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs font-medium text-zinc-400">
+            {calcMode === "qty" ? "개수" : "가격"}
+          </p>
           <div className="grid grid-cols-2 items-start gap-3">
             <Field
               label="현재가"
@@ -165,33 +240,69 @@ export function RiskCalculatorPanel({
               onChange={setEntry}
               placeholder="진입가"
             />
-            <Field
-              label={useTp === "1" ? "익절가" : "손절가"}
-              value={useTp === "1" ? tp : stop}
-              step="any"
-              onChange={useTp === "1" ? setTp : setStop}
-              placeholder={useTp === "1" ? "목표 가격" : "여기까지"}
-              hint={
-                useTp === "1" && priceReady(Number(entry), Number(stop))
-                  ? `익절대비 손절 ${priceFmt(Number(stop))} · 수량도 이 손절에 맞춥니다`
-                  : undefined
-              }
-              aside={
-                <button
-                  type="button"
-                  disabled={useTp !== "1" && !priceReady(Number(entry), Number(stop))}
-                  onClick={() => (useTp === "1" ? revertTpToStop() : convertStopToTp())}
-                  title={
-                    useTp === "1"
-                      ? "익절가를 다시 손절가로 되돌립니다"
-                      : "이 손절가를 익절가로 바꾸고, 손절은 손익비로 다시 잡습니다"
-                  }
-                  className="rounded border border-emerald-500/40 px-1.5 py-0.5 text-[10px] text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-40"
-                >
-                  {useTp === "1" ? "손절" : "익절"}
-                </button>
-              }
-            />
+            {calcMode === "qty" ? (
+              <Field
+                label="잡고 싶은 개수"
+                value={targetQty}
+                step="any"
+                onChange={setTargetQty}
+                placeholder="몇 개"
+                hint="이 개수를 리스크 안에서 들면 손절·익절 가격이 나옵니다"
+                aside={
+                  <span className="inline-flex overflow-hidden rounded border border-zinc-700">
+                    {(
+                      [
+                        ["long", "롱"],
+                        ["short", "숏"],
+                      ] as const
+                    ).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setSide(id)}
+                        className={`px-1.5 py-0.5 text-[10px] ${
+                          side === id
+                            ? id === "long"
+                              ? "bg-emerald-400 text-zinc-950"
+                              : "bg-rose-500 text-white"
+                            : "text-zinc-400 hover:text-zinc-200"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </span>
+                }
+              />
+            ) : (
+              <Field
+                label={useTp === "1" ? "익절가" : "손절가"}
+                value={useTp === "1" ? tp : stop}
+                step="any"
+                onChange={useTp === "1" ? setTp : setStop}
+                placeholder={useTp === "1" ? "목표 가격" : "여기까지"}
+                hint={
+                  useTp === "1" && priceReady(Number(entry), Number(stop))
+                    ? `익절대비 손절 ${priceFmt(Number(stop))} · 수량도 이 손절에 맞춥니다`
+                    : undefined
+                }
+                aside={
+                  <button
+                    type="button"
+                    disabled={useTp !== "1" && !priceReady(Number(entry), Number(stop))}
+                    onClick={() => (useTp === "1" ? revertTpToStop() : convertStopToTp())}
+                    title={
+                      useTp === "1"
+                        ? "익절가를 다시 손절가로 되돌립니다"
+                        : "이 손절가를 익절가로 바꾸고, 손절은 손익비로 다시 잡습니다"
+                    }
+                    className="rounded border border-emerald-500/40 px-1.5 py-0.5 text-[10px] text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-40"
+                  >
+                    {useTp === "1" ? "손절" : "익절"}
+                  </button>
+                }
+              />
+            )}
           </div>
           <div className="space-y-1.5">
             <p className="text-[11px] text-zinc-500">
@@ -306,8 +417,9 @@ export function RiskCalculatorPanel({
         <div className="space-y-3">
           {!result && (
             <div className="flex h-full min-h-48 items-center justify-center rounded-xl border border-dashed border-zinc-800 px-4 text-center text-sm text-zinc-500">
-              현재가와 손절가를 넣으면, 그 구간에서 리스크만큼만 잃도록 몇 개
-              살지가 나옵니다.
+              {calcMode === "qty"
+                ? "현재가와 개수를 넣으면, 그 리스크 안에서 손절·익절 가격이 나옵니다."
+                : "현재가와 손절가를 넣으면, 그 구간에서 리스크만큼만 잃도록 몇 개 살지가 나옵니다."}
             </div>
           )}
 
@@ -323,14 +435,20 @@ export function RiskCalculatorPanel({
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-[11px] font-medium text-zinc-400">
-                      {coin || "기타"} 살 수량
+                      {calcMode === "qty"
+                        ? `${coin || "기타"} ${qtyFmt(Number(targetQty) || 0)}개 손절`
+                        : `${coin || "기타"} 살 수량`}
                     </p>
                     <p className="mt-1 text-3xl font-semibold tabular-nums text-zinc-50">
-                      {result.wrongSide
-                        ? "—"
-                        : result.belowMin
-                          ? "최소 수량 미달"
-                          : `${qtyFmt(result.qty, result.qtyStep)}개`}
+                      {result.feeExceedsRisk
+                        ? "손절 불가"
+                        : result.wrongSide
+                          ? "—"
+                          : result.belowMin
+                            ? "최소 수량 미달"
+                            : calcMode === "qty"
+                              ? priceFmt(result.stopPrice)
+                              : `${qtyFmt(result.qty, result.qtyStep)}개`}
                     </p>
                   </div>
                   <span
@@ -345,7 +463,11 @@ export function RiskCalculatorPanel({
                   </span>
                 </div>
                 <p className="mt-1 text-xs text-zinc-500">
-                  {result.wrongSide
+                  {result.feeExceedsRisk
+                    ? "이 개수면 수수료만으로 리스크를 넘거나 손절가가 0 아래로 내려갑니다. 개수를 줄이거나 리스크를 키우세요."
+                    : calcMode === "qty" && pricesOk
+                      ? `익절 ${priceFmt(result.tpPrice)} · 손절 시 −$${money(result.netLoss)} · ${won(result.netLoss, fx)}`
+                    : result.wrongSide
                     ? side === "long"
                       ? "롱이면 손절가는 현재가보다 아래여야 합니다."
                       : "숏이면 손절가는 현재가보다 위여야 합니다."
@@ -360,22 +482,35 @@ export function RiskCalculatorPanel({
 
               <div className="grid grid-cols-2 gap-3">
                 <Outcome
-                  tone={result.wrongSide ? "bad" : result.stopBeyondLiq ? "warn" : "stop"}
+                  tone={
+                    result.wrongSide || result.feeExceedsRisk
+                      ? "bad"
+                      : result.stopBeyondLiq
+                        ? "warn"
+                        : "stop"
+                  }
                   kicker={useTp === "1" ? "익절대비 손절" : "손절"}
-                  price={result.wrongSide ? "—" : priceFmt(result.stopPrice)}
+                  price={
+                    result.wrongSide || result.feeExceedsRisk
+                      ? "—"
+                      : priceFmt(result.stopPrice)
+                  }
                   move={pricesOk ? `${result.stopPct.toFixed(2)}%` : undefined}
                   usdt={pricesOk ? `−$${money(result.netLoss)}` : undefined}
                   krw={pricesOk ? won(result.netLoss, fx) : undefined}
                 />
                 <Outcome
                   tone={
-                    result.wrongSide || result.tpInvalid || result.netProfit <= 0
+                    result.wrongSide ||
+                    result.feeExceedsRisk ||
+                    result.tpInvalid ||
+                    result.netProfit <= 0
                       ? "bad"
                       : "tp"
                   }
                   kicker={`익절 ${ratioLabel(Number(rewardR))}`}
                   price={
-                    result.wrongSide || result.tpInvalid
+                    result.wrongSide || result.feeExceedsRisk || result.tpInvalid
                       ? "—"
                       : priceFmt(result.tpPrice)
                   }

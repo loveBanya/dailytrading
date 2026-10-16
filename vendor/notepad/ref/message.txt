@@ -1,0 +1,387 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LuxAlgo
+//@version=6
+strategy("Gold/DXY Reversal Strategy V6", shorttitle="Gold DXY Rev V6", overlay=true, initial_capital=160000, default_qty_type=strategy.cash, default_qty_value=1000, max_boxes_count=500, max_lines_count=500, calc_on_order_fills=true, calc_on_every_tick=true)
+
+// --- Constants ---
+const string GRP_TREND = "Trend Filters"
+const string GRP_CORR  = "Correlation & Sensitivity"
+const string GRP_RISK  = "Risk Management"
+const string GRP_EMA_X = "EMA Mitigation Exit"
+const string GRP_HOLD  = "Extended Hold Exit (Profit)"
+const string GRP_DASH  = "Dashboard & Visuals"
+const string GRP_RR    = "Risk/Reward Visual Tool"
+const string GRP_SESS  = "Session Filter"
+const string GRP_OB    = "Order Block Override"
+const string GRP_TIME  = "Time-Based Exit"
+const string GRP_PL    = "Profit/Loss Exits ($, %)"
+
+color BULL_COLOR = #089981
+color BEAR_COLOR = #f23645
+color NEUT_COLOR = #5b9cf6
+
+// --- Inputs ---
+// Session Filter
+useSession = input.bool(true, "Use Session Filter", group=GRP_SESS)
+sessionTime = input.session("2200-2000", "Trading Session (UTC)", group=GRP_SESS)
+
+// Trend Filters
+useSupertrend = input.bool(false, "Use Supertrend Filter", group=GRP_TREND)
+stMult = input.float(3.0, "Supertrend Multiplier", minval=0.1, group=GRP_TREND)
+stLen  = input.int(10, "Supertrend Period", minval=1, group=GRP_TREND)
+
+useRibbon = input.bool(false, "Use EMA Ribbon Filter", group=GRP_TREND)
+ema1Len = input.int(20, "EMA 1", group=GRP_TREND)
+ema2Len = input.int(50, "EMA 2", group=GRP_TREND)
+
+// Correlation & Overextension
+useDxyFilter = input.bool(true, "Use DXY Correlation Filter", group=GRP_CORR)
+dxySymbol = input.symbol("TVC:DXY", "DXY Symbol", group=GRP_CORR)
+goldSymbol = input.symbol("COMEX_MINI:MGC1!", "Gold Symbol", group=GRP_CORR)
+lookback  = input.int(5, "Overextension Lookback (Bars)", minval=1, group=GRP_CORR)
+overextThreshold = input.float(0.022, "Overextension % Threshold", minval=0.0, step=0.001, group=GRP_CORR)
+
+// NEW: Correlation Sharp Move Options
+enableCorrSame = input.bool(true, "Correlation: Same Direction Follow", group=GRP_CORR, tooltip="If Gold and DXY move sharply same direction, trade in that direction")
+enableCorrOpp  = input.bool(false, "Correlation: Same Direction Reverse", group=GRP_CORR, tooltip="If Gold and DXY move sharply same direction, trade in opposite direction")
+corrLookback   = input.int(5, "Corr Lookback", minval=1, group=GRP_CORR)
+corrThreshold  = input.float(0.041, "Corr Sharp Move %", minval=0.0, step=0.001, group=GRP_CORR)
+
+// NEW: Order Block Override
+obTfInput       = input.timeframe("60", "OB Timeframe", group=GRP_OB)
+obOverrideInput = input.bool(true, "Bypass Filters in OB Zone", group=GRP_OB, tooltip="If true, any buy/sell signal within the HTF OB range will execute regardless of trend filters.")
+
+// NEW: Time Exit
+useTimeExit     = input.bool(true, "Use Close by Time", group=GRP_TIME)
+closeTimeInput  = input.string("1605", "Close Time (HHMM)", group=GRP_TIME, tooltip="Time to close all trades (4:05 PM is 1605)")
+timezoneInput   = input.string("America/New_York", "Timezone", group=GRP_TIME)
+
+// NEW: Profit/Loss Exits
+profitDollar    = input.float(0.0, "Profit Target ($)", group=GRP_PL, tooltip="Close if profit exceeds this amount. 0 to disable.")
+lossDollar      = input.float(0.0, "Stop Loss ($)", group=GRP_PL, tooltip="Close if loss exceeds this amount. 0 to disable.")
+profitPctTarget = input.float(3.4, "Profit Target (%)", group=GRP_PL, tooltip="Close if profit % exceeds this. 0 to disable.")
+lossPctTarget   = input.float(0.3, "Stop Loss (%)", group=GRP_PL, tooltip="Close if loss % exceeds this. 0 to disable.")
+
+// Risk Management
+qtyMode = input.string("Risk %", "Quantity Type", options=["Risk %", "Fixed"], group=GRP_RISK, tooltip="Choose between dynamic risk-based sizing or a fixed contract amount.")
+riskPct = input.float(0.3, "Risk Per Trade (%)", minval=0.1, step=0.1, group=GRP_RISK, tooltip="Strategy will risk 0.3% of total equity per trade if 'Risk %' is selected.")
+fixedQty = input.float(2.0, "Fixed Contract Size", minval=0.01, step=0.1, group=GRP_RISK, tooltip="Specify the number of contracts/lots to trade if 'Fixed' is selected.")
+rrRatio = input.float(1.0, "Risk:Reward Ratio (Final)", minval=0.1, step=0.1, group=GRP_RISK)
+slLookback = input.int(10, "Stop Loss Swing Lookback", minval=2, group=GRP_RISK)
+atrBufferMult = input.float(1.4, "ATR Stop Buffer Multiplier", minval=0.0, step=0.1, group=GRP_RISK)
+
+// Multiple Take Profits
+useMultipleTps = input.bool(false, "Use Multiple Take Profits", group=GRP_RISK)
+tp1Ratio = input.float(0.33, "TP 1 RR Ratio", minval=0.1, step=0.01, group=GRP_RISK, inline="tp1")
+tp1Qty   = input.float(33.0, "TP 1 Qty %", minval=1, maxval=100, step=1, group=GRP_RISK, inline="tp1")
+tp2Ratio = input.float(0.67, "TP 2 RR Ratio", minval=0.1, step=0.01, group=GRP_RISK, inline="tp2")
+tp2Qty   = input.float(33.0, "TP 2 Qty %", minval=1, maxval=100, step=1, group=GRP_RISK, inline="tp2")
+tp3Ratio = input.float(1.0, "TP 3 RR Ratio", minval=0.1, step=0.01, group=GRP_RISK, inline="tp3")
+tp3Qty   = input.float(33.0, "TP 3 Qty %", minval=1, maxval=100, step=1, group=GRP_RISK, inline="tp3")
+
+// EMA Mitigation Exit (Loss Mitigation)
+useEmaExit = input.bool(true, "Use EMA Mitigation Exit", group=GRP_EMA_X, tooltip="Closes the trade if price crosses the EMA while the trade is currently in a loss.")
+exitEmaLen = input.int(25, "Exit EMA Length", minval=1, group=GRP_EMA_X, tooltip="Specific EMA period used for the loss mitigation exit.")
+exitTrendTf = input.timeframe("15", "Trend Timeframe", group=GRP_EMA_X, tooltip="Timeframe used to determine the major trend for mitigation purposes.")
+exitTrendLen = input.int(200, "Trend EMA Length", group=GRP_EMA_X, tooltip="EMA length on the higher timeframe used to identify the trend.")
+ignoreMitAfterWin = input.bool(true, "Ignore Mitigation if Prev. Trade was Same & Won", group=GRP_EMA_X, tooltip="If the previous trade was in the same direction and closed in profit, the EMA mitigation exit will be disabled for the current trade.")
+
+// Extended Hold Exit (Profit Taking)
+useHoldExit = input.bool(false, "Use Extended Hold Exit", group=GRP_HOLD, tooltip="Exits a winning trade if a candle closes opposite the position and beyond the Hold EMA.")
+holdEmaLen = input.int(50, "Hold EMA Length", minval=1, group=GRP_HOLD, tooltip="EMA period used for the profit-taking exit logic.")
+holdTrendTf = input.timeframe("D", "Hold Trend Timeframe", group=GRP_HOLD, tooltip="Timeframe used to determine the major trend for the Extended Hold Exit.")
+holdTrendLen = input.int(200, "Hold Trend EMA Length", group=GRP_HOLD, tooltip="EMA length on the higher timeframe used to identify the trend for holding profits.")
+holdOnlyCounterTrend = input.bool(true, "Only Apply to Counter-Trend Wins", group=GRP_HOLD, tooltip="If enabled, this exit criteria only applies to winning trades that are currently against the specified Hold Trend Timeframe.")
+
+// Visuals
+showDash = input.bool(true, "Show Dashboard", group=GRP_DASH)
+
+// RR Visual Tool
+showRrTool = input.bool(true, "Show RR Visual Tool", group=GRP_RR)
+slColor    = input.color(color.new(#E6D953, 80), "SL Color", group=GRP_RR)
+tpColor    = input.color(color.new(#7FB6C4, 80), "TP Color", group=GRP_RR)
+
+// --- Calculations ---
+
+// 1. Session Logic
+bool inSession = not useSession or not na(time(timeframe.period, sessionTime, "UTC"))
+
+// 2. Trend Filters
+[stValue, stDirection] = ta.supertrend(stMult, stLen)
+ema1 = ta.ema(close, ema1Len)
+ema2 = ta.ema(close, ema2Len)
+exitEma = ta.ema(close, exitEmaLen)
+holdEma = ta.ema(close, holdEmaLen)
+
+bool trendLong = (not useSupertrend or stDirection < 0) and (not useRibbon or (ema1 > ema2))
+bool trendShort = (not useSupertrend or stDirection > 0) and (not useRibbon or (ema1 < ema2))
+
+// Higher Timeframe Trend for Mitigation Exit
+float htfEmaMit = request.security(syminfo.tickerid, exitTrendTf, ta.ema(close, exitTrendLen))
+float htfCloseMit = request.security(syminfo.tickerid, exitTrendTf, close)
+bool htfTrendBullishMit = htfCloseMit > htfEmaMit
+bool htfTrendBearishMit = htfCloseMit < htfEmaMit
+
+// Higher Timeframe Trend for Hold Exit
+float htfEmaHold = request.security(syminfo.tickerid, holdTrendTf, ta.ema(close, holdTrendLen))
+float htfCloseHold = request.security(syminfo.tickerid, holdTrendTf, close)
+bool htfTrendBullishHold = htfCloseHold > htfEmaHold
+bool htfTrendBearishHold = htfCloseHold < htfEmaHold
+
+// 3. Correlation Data
+dxyClose = request.security(dxySymbol, timeframe.period, close, gaps=barmerge.gaps_off)
+goldClose = request.security(goldSymbol, timeframe.period, close, gaps=barmerge.gaps_off)
+dxyOpenRef = dxyClose[lookback]
+goldOpenRef = goldClose[lookback]
+
+// 4. Overextension Logic
+float goldMovePct = math.abs((goldClose - goldOpenRef) / goldOpenRef * 100)
+bool goldOverextended = goldMovePct >= overextThreshold
+bool dxyConfirms = not useDxyFilter or (math.sign(goldClose - goldOpenRef) != math.sign(dxyClose - dxyOpenRef))
+
+// NEW: Sharp Move Correlation Logic
+goldChangeCorr = (goldClose - goldClose[corrLookback]) / goldClose[corrLookback] * 100
+dxyChangeCorr  = (dxyClose - dxyClose[corrLookback]) / dxyClose[corrLookback] * 100
+bothSharpUp    = goldChangeCorr >= corrThreshold and dxyChangeCorr >= corrThreshold
+bothSharpDown  = goldChangeCorr <= -corrThreshold and dxyChangeCorr <= -corrThreshold
+
+bool corrLong  = (enableCorrSame and bothSharpUp) or (enableCorrOpp and bothSharpDown)
+bool corrShort = (enableCorrSame and bothSharpDown) or (enableCorrOpp and bothSharpUp)
+
+// NEW: Order Block Zone (HTF Range)
+[obHigh, obLow] = request.security(syminfo.tickerid, obTfInput, [high, low])
+bool inObZone = close <= obHigh and close >= obLow
+
+// 5. Market Structure Shift (MSS)
+float mssHigh = ta.highest(high, 3)[1]
+float mssLow  = ta.lowest(low, 3)[1]
+
+bool mssBullish = ta.crossover(close, mssHigh)
+bool mssBearish = ta.crossunder(close, mssLow)
+
+// 6. Stop Loss Logic
+float atr = ta.atr(14)
+float longSl  = ta.lowest(low, slLookback)[1] - (atr * atrBufferMult)
+float shortSl = ta.highest(high, slLookback)[1] + (atr * atrBufferMult)
+
+// --- Strategy Execution ---
+
+var float entryPrice = na
+var float slLevel = na
+var float tpLevel = na
+var float tp1Level = na
+var float tp2Level = na
+var float tp3Level = na
+var int entryBar = na
+var bool isLong = false
+var int mitigationExits = 0
+var int holdExits = 0
+
+// RR Visual Objects
+var box slBox = na
+var box tpBox = na
+var line entryLine = na
+
+// Risk Amount
+float riskAmount = strategy.equity * (riskPct / 100)
+
+// Entry Conditions
+baseLong = goldOverextended and dxyConfirms and goldClose < goldOpenRef and mssBullish
+baseShort = goldOverextended and dxyConfirms and goldClose > goldOpenRef and mssBearish
+
+// Apply Trend Filters OR OB Override
+longFilter = obOverrideInput and inObZone ? true : trendLong
+shortFilter = obOverrideInput and inObZone ? true : trendShort
+
+bool longCondition = inSession and ((baseLong and longFilter) or corrLong)
+bool shortCondition = inSession and ((baseShort and shortFilter) or corrShort)
+
+// Long Entry
+if longCondition and strategy.position_size == 0
+    slLevel := longSl
+    float slDist = close - slLevel
+    if slDist > 0
+        float contractQty = qtyMode == "Risk %" ? riskAmount / (slDist * syminfo.pointvalue) : fixedQty
+        tpLevel  := close + (slDist * rrRatio)
+        tp1Level := close + (slDist * tp1Ratio)
+        tp2Level := close + (slDist * tp2Ratio)
+        tp3Level := close + (slDist * tp3Ratio)
+        entryPrice := close
+        entryBar := bar_index
+        isLong := true
+        strategy.entry("Long", strategy.long, qty=contractQty, comment="Buy")
+        
+        if useMultipleTps
+            float q1 = (contractQty * tp1Qty) / 100
+            float q2 = (contractQty * tp2Qty) / 100
+            strategy.exit("TP1", "Long", qty=q1, limit=tp1Level, stop=slLevel, comment_profit="TP1", comment_loss="SL")
+            strategy.exit("TP2", "Long", qty=q2, limit=tp2Level, stop=slLevel, comment_profit="TP2", comment_loss="SL")
+            strategy.exit("TP3", "Long", limit=tp3Level, stop=slLevel, comment_profit="TP3", comment_loss="SL")
+        else
+            strategy.exit("Exit Long", "Long", stop=slLevel, limit=tpLevel, comment_loss="SL", comment_profit="TP")
+        
+        if showRrTool
+            slBox := box.new(entryBar, slLevel, entryBar, entryPrice, bgcolor=slColor, border_style=line.style_solid, border_color=color.new(slColor, 30))
+            tpBox := box.new(entryBar, entryPrice, entryBar, useMultipleTps ? tp3Level : tpLevel, bgcolor=tpColor, border_style=line.style_solid, border_color=color.new(tpColor, 30))
+            entryLine := line.new(entryBar, entryPrice, entryBar, entryPrice, color=chart.fg_color, style=line.style_dashed)
+        
+        alert("Buy Signal Triggered at " + str.tostring(close), alert.freq_once_per_bar)
+
+// Short Entry
+if shortCondition and strategy.position_size == 0
+    slLevel := shortSl
+    float slDist = slLevel - close
+    if slDist > 0
+        float contractQty = qtyMode == "Risk %" ? riskAmount / (slDist * syminfo.pointvalue) : fixedQty
+        tpLevel  := close - (slDist * rrRatio)
+        tp1Level := close - (slDist * tp1Ratio)
+        tp2Level := close - (slDist * tp2Ratio)
+        tp3Level := close - (slDist * tp3Ratio)
+        entryPrice := close
+        entryBar := bar_index
+        isLong := false
+        strategy.entry("Short", strategy.short, qty=contractQty, comment="Sell")
+        
+        if useMultipleTps
+            float q1 = (contractQty * tp1Qty) / 100
+            float q2 = (contractQty * tp2Qty) / 100
+            strategy.exit("TP1", "Short", qty=q1, limit=tp1Level, stop=slLevel, comment_profit="TP1", comment_loss="SL")
+            strategy.exit("TP2", "Short", qty=q2, limit=tp2Level, stop=slLevel, comment_profit="TP2", comment_loss="SL")
+            strategy.exit("TP3", "Short", limit=tp3Level, stop=slLevel, comment_profit="TP3", comment_loss="SL")
+        else
+            strategy.exit("Exit Short", "Short", stop=slLevel, limit=tpLevel, comment_loss="SL", comment_profit="TP")
+            
+        if showRrTool
+            slBox := box.new(entryBar, slLevel, entryBar, entryPrice, bgcolor=slColor, border_style=line.style_solid, border_color=color.new(slColor, 30))
+            tpBox := box.new(entryBar, entryPrice, entryBar, useMultipleTps ? tp3Level : tpLevel, bgcolor=tpColor, border_style=line.style_solid, border_color=color.new(tpColor, 30))
+            entryLine := line.new(entryBar, entryPrice, entryBar, entryPrice, color=chart.fg_color, style=line.style_dashed)
+            
+        alert("Sell Signal Triggered at " + str.tostring(close), alert.freq_once_per_bar)
+
+// Update/Finalize RR Visuals
+if showRrTool and strategy.position_size != 0
+    box.set_right(slBox, bar_index)
+    box.set_right(tpBox, bar_index)
+    line.set_x2(entryLine, bar_index)
+
+// When trade closes, finalize the right edge
+if showRrTool and strategy.position_size == 0 and strategy.position_size[1] != 0
+    box.set_right(slBox, bar_index)
+    box.set_right(tpBox, bar_index)
+    line.set_x2(entryLine, bar_index)
+
+// --- Exit Logic Constants ---
+bool isAgainstMitTrend = (strategy.position_size > 0 and htfTrendBearishMit) or (strategy.position_size < 0 and htfTrendBullishMit)
+bool isAgainstHoldTrend = (strategy.position_size > 0 and htfTrendBearishHold) or (strategy.position_size < 0 and htfTrendBullishHold)
+bool isRedCandle = close < open
+bool isGreenCandle = close > open
+
+
+// --- EMA Mitigation Exit Logic (Loss Mitigation) ---
+bool emaCrossUnderExit = ta.crossunder(close, exitEma)
+bool emaCrossOverExit  = ta.crossover(close, exitEma)
+
+// Determine if last trade was same direction and a win
+bool lastWasWin = strategy.closedtrades > 0 and strategy.closedtrades.profit(strategy.closedtrades - 1) > 0
+bool lastWasLong = strategy.closedtrades > 0 and strategy.closedtrades.size(strategy.closedtrades - 1) > 0
+bool lastWasShort = strategy.closedtrades > 0 and strategy.closedtrades.size(strategy.closedtrades - 1) < 0
+
+bool ignoreMitigation = ignoreMitAfterWin and ((strategy.position_size > 0 and lastWasLong and lastWasWin) or (strategy.position_size < 0 and lastWasShort and lastWasWin))
+
+if useEmaExit and strategy.position_size > 0 and close < strategy.position_avg_price and emaCrossUnderExit and isAgainstMitTrend and not ignoreMitigation
+    strategy.close("Long", comment="EMA Mitigation")
+    alert("EMA Mitigation Exit (Long) at " + str.tostring(close), alert.freq_once_per_bar)
+    mitigationExits += 1
+
+if useEmaExit and strategy.position_size < 0 and close > strategy.position_avg_price and emaCrossOverExit and isAgainstMitTrend and not ignoreMitigation
+    strategy.close("Short", comment="EMA Mitigation")
+    alert("EMA Mitigation Exit (Short) at " + str.tostring(close), alert.freq_once_per_bar)
+    mitigationExits += 1
+
+// --- Extended Hold Exit Logic (Profit Taking) ---
+bool holdExitLong = useHoldExit and strategy.position_size > 0 and close > strategy.position_avg_price and isRedCandle and close < holdEma and (not holdOnlyCounterTrend or isAgainstHoldTrend)
+bool holdExitShort = useHoldExit and strategy.position_size < 0 and close < strategy.position_avg_price and isGreenCandle and close > holdEma and (not holdOnlyCounterTrend or isAgainstHoldTrend)
+
+if holdExitLong
+    strategy.close("Long", comment="Hold Exit (Profit)")
+    alert("Extended Hold Exit (Long) at " + str.tostring(close), alert.freq_once_per_bar)
+    holdExits += 1
+
+if holdExitShort
+    strategy.close("Short", comment="Hold Exit (Profit)")
+    alert("Extended Hold Exit (Short) at " + str.tostring(close), alert.freq_once_per_bar)
+    holdExits += 1
+
+// NEW: Close by Time
+targetHour   = math.floor(str.tonumber(closeTimeInput) / 100)
+targetMinute = str.tonumber(closeTimeInput) % 100
+timeToClose  = useTimeExit and hour(time, timezoneInput) == targetHour and minute(time, timezoneInput) == targetMinute
+
+if timeToClose
+    strategy.close_all(comment = "Close by Time")
+    if strategy.position_size != 0
+        holdExits += 1
+
+// NEW: Profit/Loss Exits ($, %)
+if strategy.position_size != 0
+    pnl = strategy.openprofit
+    pnlPct = (pnl / strategy.equity) * 100
+    
+    // Dollar Target/SL
+    if profitDollar > 0 and pnl >= profitDollar
+        strategy.close_all(comment = "Profit Target $")
+        mitigationExits += 1
+    if lossDollar > 0 and pnl <= -lossDollar
+        strategy.close_all(comment = "Stop Loss $")
+        mitigationExits += 1
+        
+    // Percentage Target/SL
+    if profitPctTarget > 0 and pnlPct >= profitPctTarget
+        strategy.close_all(comment = "Profit Target %")
+        mitigationExits += 1
+    if lossPctTarget > 0 and pnlPct <= -lossPctTarget
+        strategy.close_all(comment = "Stop Loss %")
+        mitigationExits += 1
+
+// --- Visuals ---
+plot(ema1, color=color.new(BULL_COLOR, 80), title="EMA 1")
+plot(ema2, color=color.new(BEAR_COLOR, 80), title="EMA 2")
+plot(useEmaExit ? exitEma : na, color=color.new(NEUT_COLOR, 50), style=plot.style_linebr, title="Exit EMA (Mitigation)")
+plot(useHoldExit ? holdEma : na, color=color.new(color.orange, 50), style=plot.style_linebr, title="Hold EMA (Profit)")
+plotshape(longCondition, "Long Signal", shape.triangleup, location.belowbar, BULL_COLOR, size=size.small, text="BUY", display = display.none)
+plotshape(shortCondition, "Short Signal", shape.triangledown, location.abovebar, BEAR_COLOR, size=size.small, text="SELL", display = display.none)
+
+// OB Zone Highlight
+bgcolor(inObZone ? color.new(color.gray, 90) : na, title = "HTF OB Zone")
+
+// --- Dashboard ---
+var table statsTable = table.new(position.top_right, 2, 12, bgcolor=color.new(chart.bg_color, 10), border_width=1, border_color=chart.fg_color)
+
+if showDash and barstate.islast
+    table.cell(statsTable, 0, 0, "Strategy Stats", bgcolor=color.new(NEUT_COLOR, 50), text_color=chart.fg_color)
+    table.cell(statsTable, 1, 0, "", bgcolor=color.new(NEUT_COLOR, 50))
+    table.cell(statsTable, 0, 1, "Total Trades", text_color=chart.fg_color)
+    table.cell(statsTable, 1, 1, str.tostring(strategy.closedtrades), text_color=chart.fg_color)
+    table.cell(statsTable, 0, 2, "Win Rate", text_color=chart.fg_color)
+    table.cell(statsTable, 1, 2, str.tostring(math.round(strategy.wintrades / math.max(1, strategy.closedtrades) * 100, 2)) + "%", text_color=chart.fg_color)
+    table.cell(statsTable, 0, 3, "Net Profit", text_color=chart.fg_color)
+    table.cell(statsTable, 1, 3, str.tostring(math.round(strategy.netprofit, 2)), text_color=strategy.netprofit >= 0 ? BULL_COLOR : BEAR_COLOR)
+    table.cell(statsTable, 0, 4, "Mitigation Exits", text_color=chart.fg_color)
+    table.cell(statsTable, 1, 4, str.tostring(mitigationExits), text_color=chart.fg_color)
+    table.cell(statsTable, 0, 5, "Hold Exits", text_color=chart.fg_color)
+    table.cell(statsTable, 1, 5, str.tostring(holdExits), text_color=chart.fg_color)
+    table.cell(statsTable, 0, 6, "DXY Move %", text_color=chart.fg_color)
+    table.cell(statsTable, 1, 6, str.tostring(math.round(math.abs((dxyClose - dxyOpenRef)/dxyOpenRef*100), 3)) + "%", text_color=chart.fg_color)
+    table.cell(statsTable, 0, 7, "Gold Move %", text_color=chart.fg_color)
+    table.cell(statsTable, 1, 7, str.tostring(math.round(goldMovePct, 3)) + "%", text_color=chart.fg_color)
+    table.cell(statsTable, 0, 8, "In Session", text_color=chart.fg_color)
+    table.cell(statsTable, 1, 8, inSession ? "Yes" : "No", text_color=inSession ? BULL_COLOR : BEAR_COLOR)
+    table.cell(statsTable, 0, 9, "Equity", text_color=chart.fg_color)
+    table.cell(statsTable, 1, 9, str.tostring(math.round(strategy.equity, 2)), text_color=chart.fg_color)
+    table.cell(statsTable, 0, 10, "Drawdown", text_color=chart.fg_color)
+    table.cell(statsTable, 1, 10, str.tostring(math.round(strategy.max_drawdown, 2)), text_color=BEAR_COLOR)
+    grossProfit = strategy.grossprofit
+    grossLoss   = math.abs(strategy.grossloss)
+    pfVal       = grossLoss == 0 ? na : grossProfit / grossLoss
+    table.cell(statsTable, 0, 11, "Profit Factor", text_color=chart.fg_color)
+    table.cell(statsTable, 1, 11, na(pfVal) ? "N/A" : str.tostring(math.round(pfVal, 2)), text_color=nz(pfVal) >= 1.0 ? BULL_COLOR : BEAR_COLOR)

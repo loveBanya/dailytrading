@@ -1,0 +1,217 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LuxAlgo
+
+//@version=6
+indicator("LuxQuant - Auto Fib Market Structure Entry Suite - micky v1.0", shorttitle="LuxQuant - Auto Fib Market Structure Entry Suite - micky v1.0", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+
+// --- Inputs ---
+grp_swing = "Swing Settings"
+swingLookback = input.int(5, "Pivot Lookback", minval = 2, group = grp_swing, tooltip = "Number of bars on each side to confirm a pivot high/low.")
+
+grp_fib = "Fibonacci Levels"
+showFibs = input.bool(true, "Show Fib Retracements", group = grp_fib)
+entryLevel = input.float(0.786, "Target Entry Fib Level", options = [0.236, 0.382, 0.5, 0.618, 0.786], group = grp_fib)
+useCustomLevel = input.bool(false, "Use Custom Entry Level", group = grp_fib)
+customLevel = input.float(0.705, "Custom Entry Level", group = grp_fib, tooltip = "Enter any custom Fibonacci level (e.g., 0.705 for OTE).")
+fibColorBull = input.color(#089981, "Bullish Fib Color", group = grp_fib)
+fibColorBear = input.color(#f23645, "Bearish Fib Color", group = grp_fib)
+fibOpacity = input.int(20, "Fib Opacity", minval = 0, maxval = 100, group = grp_fib)
+fibLineStyle = input.string("Dotted", "Fib Line Style", options = ["Solid", "Dotted", "Dashed"], group = grp_fib)
+showAnchorLine = input.bool(true, "Show Anchor Line", group = grp_fib)
+showLiveEntry = input.bool(false, "Show Live Entry Level", group = grp_fib, tooltip = "Plots a horizontal line at the target Fibonacci entry price.")
+
+grp_fvg = "Fair Value Gaps"
+showFVG = input.bool(true, "Show FVGs", group = grp_fvg)
+fvgColorBull = input.color(#089981, "Bullish FVG Color", group = grp_fvg)
+fvgColorBear = input.color(#f23645, "Bearish FVG Color", group = grp_fvg)
+fvgOpacity = input.int(80, "FVG Opacity", minval = 0, maxval = 100, group = grp_fvg)
+fvgExtend = input.bool(true, "Extend FVG Until Mitigated", group = grp_fvg)
+fvgHistoryLimit = input.int(20, "FVG History Limit", minval = 1, maxval = 500, group = grp_fvg)
+
+grp_liq = "Liquidity Sweeps"
+showSweeps = input.bool(true, "Show Liquidity Sweeps", group = grp_liq)
+sweepColBull = input.color(#089981, "Bullish Sweep Color", group = grp_liq)
+sweepColBear = input.color(#f23645, "Bearish Sweep Color", group = grp_liq)
+
+// Final Entry Level Calculation
+actualEntryLevel = useCustomLevel ? customLevel : entryLevel
+
+// --- Helper Functions ---
+getLineStyle(styleStr) =>
+    switch styleStr
+        "Solid"  => line.style_solid
+        "Dotted" => line.style_dotted
+        "Dashed" => line.style_dashed
+        => line.style_dotted
+
+// --- Types ---
+type SwingPoint
+    float price
+    int index
+    bool isHigh
+
+type FVGBox
+    box b
+    float top
+    float bottom
+    bool isBull
+    bool mitigated = false
+
+// --- Global Variables ---
+var SwingPoint lastH = SwingPoint.new(na, na, true)
+var SwingPoint lastL = SwingPoint.new(na, na, false)
+var float lastWasHigh = 0.0 // 0.0: Init, 1.0: High, -1.0: Low
+var label lastHLabel = na
+var label lastLLabel = na
+
+var line anchorLine = na
+var line[] fibLines = array.new_line()
+var label[] fibLabels = array.new_label()
+var label[] entryLabels = array.new_label()
+var FVGBox[] fvgArray = array.new<FVGBox>()
+
+// --- Swing Detection & Sequence Enforcement ---
+ph = ta.pivothigh(swingLookback, swingLookback)
+pl = ta.pivotlow(swingLookback, swingLookback)
+
+createLabel(idx, price, isHigh) =>
+    label.new(
+         idx, price, isHigh ? "H" : "L", 
+         color = isHigh ? color.new(#f23645, 0) : color.new(#089981, 0),
+         textcolor = chart.fg_color,
+         style = isHigh ? label.style_label_down : label.style_label_up,
+         size = size.tiny
+         )
+
+// Enforce strict HLHL sequence visually and logically
+if not na(ph)
+    if lastWasHigh != 1.0
+        lastH := SwingPoint.new(ph, bar_index - swingLookback, true)
+        lastHLabel := createLabel(lastH.index, lastH.price, true)
+        lastWasHigh := 1.0
+    else if ph > lastH.price
+        lastH := SwingPoint.new(ph, bar_index - swingLookback, true)
+        label.set_xy(lastHLabel, lastH.index, lastH.price)
+
+if not na(pl)
+    if lastWasHigh != -1.0
+        lastL := SwingPoint.new(pl, bar_index - swingLookback, false)
+        lastLLabel := createLabel(lastL.index, lastL.price, false)
+        lastWasHigh := -1.0
+    else if pl < lastL.price
+        lastL := SwingPoint.new(pl, bar_index - swingLookback, false)
+        label.set_xy(lastLLabel, lastL.index, lastL.price)
+
+// --- Fib Retracement Logic ---
+drawFibs(OriginObj, TipObj, isBullish, entryLevelVal, fibLinesArray, fibLabelsArray, fBullCol, fBearCol, fOpacity, fStyle) =>
+    if showFibs and not na(OriginObj.price) and not na(TipObj.price)
+        if array.size(fibLinesArray) > 0
+            for i = 0 to array.size(fibLinesArray) - 1
+                line.delete(array.get(fibLinesArray, i))
+                label.delete(array.get(fibLabelsArray, i))
+            array.clear(fibLinesArray)
+            array.clear(fibLabelsArray)
+        
+        float tipPrice = TipObj.price
+        float originPrice = OriginObj.price
+        float rangeVal = originPrice - tipPrice
+        
+        levels = array.from(0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0)
+        // Add the custom entry level to the plot if it's not already in the standard set
+        if useCustomLevel and not array.includes(levels, entryLevelVal)
+            array.push(levels, entryLevelVal)
+        
+        color col = color.new(isBullish ? fBullCol : fBearCol, fOpacity)
+        int startIdx = math.min(OriginObj.index, TipObj.index)
+        
+        for level in levels
+            float p = tipPrice + rangeVal * level
+            line l = line.new(startIdx, p, bar_index, p, color = col, width = level == entryLevelVal ? 2 : 1, style = level == entryLevelVal ? line.style_solid : getLineStyle(fStyle))
+            label lbl = label.new(bar_index, p, str.tostring(level, "#.###") + " (" + str.tostring(p, format.mintick) + ")", color = #00000000, style = label.style_label_left, textcolor = color.new(chart.fg_color, fOpacity), size = size.small)
+            
+            array.push(fibLinesArray, l)
+            array.push(fibLabelsArray, lbl)
+
+clearEntryLabels() =>
+    if array.size(entryLabels) > 0
+        for i = 0 to array.size(entryLabels) - 1
+            label.delete(array.get(entryLabels, i))
+        array.clear(entryLabels)
+
+markHistoricalTouches(targetPrice, fromIdx) =>
+    if not na(targetPrice)
+        clearEntryLabels()
+        for i = 0 to (bar_index - fromIdx)
+            if high[i] >= targetPrice and low[i] <= targetPrice
+                array.push(entryLabels, label.new(bar_index - i, targetPrice, "Entry", color = #00000000, textcolor = chart.fg_color, style = label.style_label_center, size = size.tiny))
+
+// Trigger Fib redraw when structure updates
+if not na(ph) or not na(pl)
+    if not na(lastH.price) and not na(lastL.price)
+        bool isBullishStr = lastH.index > lastL.index
+        SwingPoint OriginObj = isBullishStr ? lastL : lastH
+        SwingPoint TipObj = isBullishStr ? lastH : lastL
+        
+        drawFibs(OriginObj, TipObj, isBullishStr, actualEntryLevel, fibLines, fibLabels, fibColorBull, fibColorBear, fibOpacity, fibLineStyle)
+        
+        if showAnchorLine
+            line.delete(anchorLine)
+            anchorLine := line.new(OriginObj.index, OriginObj.price, TipObj.index, TipObj.price, color = color.new(chart.fg_color, 70), width = 1, style = line.style_dashed)
+        
+        float currentTipPrice = TipObj.price
+        float currentOriginPrice = OriginObj.price
+        float currentEntryPrice = currentTipPrice + (currentOriginPrice - currentTipPrice) * actualEntryLevel
+        markHistoricalTouches(currentEntryPrice, TipObj.index)
+
+if array.size(fibLines) > 0
+    for i = 0 to array.size(fibLines) - 1
+        line.set_x2(array.get(fibLines, i), bar_index)
+        label.set_x(array.get(fibLabels, i), bar_index)
+
+// --- FVG Logic ---
+if showFVG
+    if low > high[2]
+        box b = box.new(bar_index - 2, low, bar_index, high[2], border_color = na, bgcolor = color.new(fvgColorBull, fvgOpacity))
+        array.push(fvgArray, FVGBox.new(b, low, high[2], true))
+    if high < low[2]
+        box b = box.new(bar_index - 2, low[2], bar_index, high, border_color = na, bgcolor = color.new(fvgColorBear, fvgOpacity))
+        array.push(fvgArray, FVGBox.new(b, low[2], high, false))
+
+if fvgArray.size() > 0
+    for i = fvgArray.size() - 1 to 0
+        FVGBox item = fvgArray.get(i)
+        if not item.mitigated
+            if fvgExtend
+                box.set_right(item.b, bar_index)
+            if item.isBull
+                if low < item.bottom
+                    item.mitigated := true
+                    if fvgExtend
+                        box.set_right(item.b, bar_index)
+            else
+                if high > item.top
+                    item.mitigated := true
+                    if fvgExtend
+                        box.set_right(item.b, bar_index)
+
+while fvgArray.size() > fvgHistoryLimit
+    FVGBox removedItem = array.shift(fvgArray)
+    box.delete(removedItem.b)
+
+// --- Live Monitoring & Liquidity Sweeps ---
+float currentEntryPrice = na
+if not na(lastH.price) and not na(lastL.price)
+    bool isBullishStr = lastH.index > lastL.index
+    SwingPoint OriginObj = isBullishStr ? lastL : lastH
+    SwingPoint TipObj = isBullishStr ? lastH : lastL
+    currentEntryPrice := TipObj.price + (OriginObj.price - TipObj.price) * actualEntryLevel
+    
+    // Liquidity Sweep Detection
+    if showSweeps
+        if high > lastH.price and close < lastH.price
+            label.new(bar_index, high, "✖", color = #00000000, textcolor = sweepColBear, style = label.style_label_down, size = size.small)
+        if low < lastL.price and close > lastL.price
+            label.new(bar_index, low, "✖", color = #00000000, textcolor = sweepColBull, style = label.style_label_up, size = size.small)
+
+plot(showLiveEntry ? currentEntryPrice : na, "Live Entry Fib Level", color.new(chart.fg_color, 70), 1, plot.style_linebr)

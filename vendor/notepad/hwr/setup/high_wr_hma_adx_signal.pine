@@ -1,0 +1,331 @@
+//@version=5
+indicator("HMA+ADX 단타 [HWR HMA]", shorttitle="HWR HMA", overlay=true, scale=scale.right, max_labels_count=500, max_boxes_count=80)
+
+// ─────────────────────────────────────────────
+// 코인 단타: 헐이동평균 위 + 밴드가 빨강→청록 + ADX 25.
+// 손절 = HMA 밴드 바닥. 익절 = 1:2.
+// 숏은 반대. 콤보·TB와 같이 켜지 마세요.
+// ─────────────────────────────────────────────
+
+grpHma = "1. HMA 밴드"
+hmaLen = input.int(60, "HMA 기간", minval=4, group=grpHma, tooltip="단타는 60 근처. 더 빠른 봉이면 낮추세요.")
+hmaSrc = input.source(close, "가격", group=grpHma)
+adaptBand = input.bool(true, "약해지면 밴드 폭 축소", group=grpHma, tooltip="ADX·기울기가 약해질수록 밴드가 가운데로 서서히 좁아집니다.")
+adxFull   = input.float(40.0, "밴드 최대 ADX", minval=10, step=1, group=grpHma, tooltip="이 값 이상이면 원래 폭. 아래일수록 좁아집니다.")
+minWidthPct = input.float(28.0, "약할 때 최소 폭 %", minval=8, maxval=90, step=1, group=grpHma)
+bandSmooth  = input.int(8, "폭 변화 속도(봉)", minval=2, maxval=40, group=grpHma, tooltip="클수록 더 천천히 좁아집니다.")
+
+grpAdx = "2. ADX"
+adxLen   = input.int(14, "ADX 기간", minval=2, group=grpAdx)
+adxMin   = input.float(25.0, "최소 ADX", minval=1, step=0.5, group=grpAdx, tooltip="추세 강도. 이 방법의 기본은 25.")
+requireAdx = input.bool(true, "ADX 필수", group=grpAdx)
+
+grpVol = "3. 손절·익절"
+slPadAtr = input.float(0.05, "손절 여유 ATR", minval=0.0, step=0.01, group=grpVol, tooltip="HMA 하단(숏은 상단)에서 조금 바깥.")
+tpR      = input.float(2.00, "익절 (R)", minval=0.5, step=0.1, group=grpVol, tooltip="손익비 1:2면 2.")
+exitOnColor = input.bool(true, "밴드 색이 바뀌면 청산", group=grpVol, tooltip="롱인데 청록→빨강이면 자리가 깨진 것으로 보고 나갑니다.")
+flipOnOpp   = input.bool(false, "반대 신호면 뒤집기", group=grpVol)
+useRsiExit = input.bool(false, "RSI 과매수/과매도면 익절", group=grpVol, tooltip="켜면 롱은 과매수, 숏은 과매도에서 전량 청산합니다. 기본은 꺼져 있습니다.")
+rsiLen     = input.int(14, "RSI 기간", minval=2, group=grpVol)
+rsiTpL     = input.float(70.0, "롱 익절 RSI (과매수)", minval=50, maxval=90, step=1, group=grpVol)
+rsiTpS     = input.float(30.0, "숏 익절 RSI (과매도)", minval=10, maxval=50, step=1, group=grpVol)
+exitCross  = input.bool(true, "RSI가 선을 뚫을 때 청산", group=grpVol)
+
+grpSig = "4. 신호"
+tradeSide = input.string("롱숏", "방향", options=["롱숏", "롱만", "숏만"], group=grpSig)
+allowL = tradeSide != "숏만"
+allowS = tradeSide != "롱만"
+needAbove  = input.bool(true, "HMA 위/아래 필수", group=grpSig, tooltip="롱은 종가가 HMA보다 위, 숏은 아래.")
+cooldownBars = input.int(4, "신호 쿨다운(봉)", minval=1, group=grpSig)
+minHoldBars  = input.int(1, "최소 보유 봉", minval=1, group=grpSig)
+
+grpStat = "5. 측정기간"
+statMode = input.string("최근 N일", "측정 방식", options=["전체", "최근 N일", "기간 지정"], group=grpStat)
+statDays = input.int(60, "최근 N일", minval=1, maxval=3650, group=grpStat)
+statFrom = input.time(timestamp("01 Jan 2026 00:00"), "시작", group=grpStat)
+statTo   = input.time(timestamp("11 Sep 2026 23:59"), "종료", group=grpStat)
+
+grpMoney = "5b. 테스트 금액"
+betAmt = input.float(100.0, "배팅 금액 (달러)", minval=1, step=1, group=grpMoney, tooltip="매 거래 증거금. 잔고가 늘어도 배팅 크기는 그대로입니다.")
+lev    = input.float(1.0, "배율", minval=1, maxval=125, step=0.5, group=grpMoney)
+
+grpUi = "6. 표시"
+showHma   = input.bool(true, "HMA 표시", group=grpUi)
+showBand  = input.bool(true, "밴드 표시", group=grpUi)
+showBoxes = input.bool(true, "TP/SL 구간 표시", group=grpUi)
+showDash  = input.bool(true, "대시보드 표시", group=grpUi)
+alertEntry = input.bool(false, "진입 알림", group=grpUi)
+alertExit  = input.bool(false, "청산 알림", group=grpUi)
+dashPosIn = input.string("오른쪽 위", "테이블 위치", options=["오른쪽 위", "오른쪽 아래", "왼쪽 위", "왼쪽 아래", "가운데 위", "가운데 아래", "오른쪽 중간", "왼쪽 중간"], group=grpUi)
+bullCol = input.color(#26c6da, "청록 (상승)", group=grpUi)
+bearCol = input.color(#ef5350, "빨강 (하락)", group=grpUi)
+
+f_hma(float src, int len) =>
+    int half = int(math.max(math.round(len / 2.0), 1))
+    int root = int(math.max(math.round(math.sqrt(len)), 1))
+    ta.wma(2.0 * ta.wma(src, half) - ta.wma(src, len), root)
+
+hmaMid = f_hma(hmaSrc, hmaLen)
+hmaHi  = f_hma(high, hmaLen)
+hmaLo  = f_hma(low, hmaLen)
+rising = hmaMid > hmaMid[1]
+turnUp = rising and not rising[1]
+turnDn = not rising and rising[1]
+bandCol = rising ? bullCol : bearCol
+
+atrVal = ta.atr(14)
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+adxOk = adxVal >= adxMin
+adxGate = not requireAdx or adxOk
+rsiVal = ta.rsi(close, rsiLen)
+rsiExitL = useRsiExit and (exitCross ? ta.crossover(rsiVal, rsiTpL) or rsiVal >= rsiTpL : rsiVal >= rsiTpL)
+rsiExitS = useRsiExit and (exitCross ? ta.crossunder(rsiVal, rsiTpS) or rsiVal <= rsiTpS : rsiVal <= rsiTpS)
+
+strAdx = math.min(nz(adxVal, 0.0) / math.max(adxFull, 1.0), 1.0)
+strSlope = math.min(math.abs(hmaMid - hmaMid[1]) / math.max(atrVal * 0.06, syminfo.mintick), 1.0)
+rawStr = strAdx * 0.75 + strSlope * 0.25
+minW = minWidthPct * 0.01
+multTgt = adaptBand ? minW + (1.0 - minW) * rawStr : 1.0
+bandMult = nz(ta.ema(multTgt, bandSmooth), multTgt)
+bandHi = hmaMid + (hmaHi - hmaMid) * bandMult
+bandLo = hmaMid - (hmaMid - hmaLo) * bandMult
+
+slLong = bandLo - atrVal * slPadAtr
+slShort = bandHi + atrVal * slPadAtr
+slOkL = slLong < close
+slOkS = slShort > close
+above = close > hmaMid
+below = close < hmaMid
+
+var int lastSigBar = na
+cooled = na(lastSigBar) or (bar_index - lastSigBar >= cooldownBars)
+baseOk = barstate.isconfirmed and cooled and adxGate
+
+longRaw  = baseOk and turnUp and slOkL and (not needAbove or above)
+shortRaw = baseOk and turnDn and slOkS and (not needAbove or below)
+longSignal  = longRaw and allowL and not shortRaw
+shortSignal = shortRaw and allowS and not longRaw
+
+plot(close, "축고정", color=color.new(color.white, 100), linewidth=1, editable=false)
+pMid = plot(showHma ? hmaMid : na, "HMA", color=bandCol, linewidth=2)
+pHi  = plot(showBand ? bandHi : na, "HMA 상단", color=color.new(bandCol, 40), linewidth=1)
+pLo  = plot(showBand ? bandLo : na, "HMA 하단", color=color.new(bandCol, 40), linewidth=1)
+fill(pHi, pLo, color=showBand ? color.new(bandCol, 78) : na, title="HMA 밴드")
+plotshape(longSignal, "롱", shape.triangleup, location.belowbar, bullCol, size=size.small)
+plotshape(shortSignal, "숏", shape.triangledown, location.abovebar, bearCol, size=size.small)
+bgcolor(longSignal ? color.new(bullCol, 88) : shortSignal ? color.new(bearCol, 88) : na)
+alertcondition(alertEntry and longSignal, title="HMA 롱", message="HWR HMA LONG")
+alertcondition(alertEntry and shortSignal, title="HMA 숏", message="HWR HMA SHORT")
+
+f_tpR(bool isLong, float px, float sl, float rMult) =>
+    risk = math.max(math.abs(px - sl), syminfo.mintick)
+    isLong ? px + risk * rMult : px - risk * rMult
+
+var bool zLive = false
+var int zDir = 0
+var float zEntry = na
+var float zAvg = na
+var float zSl = na
+var float zSlOrig = na
+var float zTp = na
+var int zBar = na
+var int zTm = na
+var bool zHitTp = false
+var box bTp = na
+var box bSl = na
+var box bAvg = na
+var label tTp = na
+var label tSl = na
+var label tAvg = na
+var int wins = 0
+var int losses = 0
+var int nBe = 0
+var float sumWinR = 0.0
+var float sumLossR = 0.0
+var float sumUsd = 0.0
+int lookFrom = timenow - statDays * 24 * 60 * 60 * 1000
+bool closedNow = false
+int openDir = 0
+bool isFlip = false
+bool wantWipe = false
+string closeWhy = ""
+bool closeWin = false
+bool closeLoss = false
+bool closeBe = false
+float closeR = na
+
+f_inStat(int t) =>
+    na(t) ? false : statMode == "전체" ? true : statMode == "최근 N일" ? (t >= lookFrom and t <= timenow) : (t >= statFrom and t <= statTo)
+f_zone(float p1, float p2, color bg, color bd) =>
+    box.new(bar_index, math.max(p1, p2), bar_index, math.min(p1, p2), xloc=xloc.bar_index, border_color=bd, border_width=1, bgcolor=bg)
+f_tag(float y, color c, string name, float px) =>
+    label.new(bar_index, y, name + "  " + str.tostring(px, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(c, 20), textcolor=color.white, size=size.tiny)
+f_ext(b) =>
+    if not na(b)
+        box.set_right(b, bar_index)
+    true
+
+if zLive and barstate.isconfirmed
+    bool held = bar_index - zBar >= minHoldBars
+    bool touchTp = zDir == 1 ? high >= zTp : low <= zTp
+    if touchTp
+        zHitTp := true
+    bool hitSl = zDir == 1 ? low <= zSl : high >= zSl
+    bool colorDie = exitOnColor and ((zDir == 1 and turnDn) or (zDir == -1 and turnUp))
+    bool hitRsi = zDir == 1 ? rsiExitL : rsiExitS
+    bool opp = (zDir == 1 and shortSignal) or (zDir == -1 and longSignal)
+    if held and (zHitTp or hitSl or colorDie or hitRsi or opp)
+        float fillPx = hitSl ? zSl : zHitTp ? zTp : close
+        float pnl = zDir == 1 ? fillPx - zEntry : zEntry - fillPx
+        float rNet = pnl / math.max(math.abs(zEntry - nz(zSlOrig, zSl)), syminfo.mintick)
+        bool wrWin = zHitTp
+        bool wrLoss = hitSl and not zHitTp
+        bool wrBe = false
+        if (colorDie or hitRsi or opp) and not wrWin and not wrLoss
+            wrWin := rNet > 0.08
+            wrLoss := rNet < -0.08
+            wrBe := not wrWin and not wrLoss
+        if f_inStat(zTm)
+            if wrWin and not wrBe
+                wins += 1
+                sumWinR += math.max(rNet, 0.01)
+            else if wrLoss
+                losses += 1
+                sumLossR += math.abs(rNet)
+            else
+                nBe += 1
+            float pxMove = zDir == 1 ? (fillPx - zEntry) / math.max(zEntry, syminfo.mintick) : (zEntry - fillPx) / math.max(zEntry, syminfo.mintick)
+            sumUsd += math.max(betAmt * lev * pxMove, -betAmt)
+        closedNow := true
+        closeWhy := zHitTp ? "TP 2R" : hitSl ? "SL" : hitRsi ? (zDir == 1 ? "RSI 과매수" : "RSI 과매도") : colorDie ? "색전환" : "반대신호"
+        closeWin := wrWin and not wrBe
+        closeLoss := wrLoss
+        closeBe := wrBe
+        closeR := rNet
+        wantWipe := true
+        if flipOnOpp and opp and (zDir == 1 ? allowS : allowL)
+            isFlip := true
+            openDir := zDir == 1 ? -1 : 1
+        else
+            zLive := false
+
+if not zLive and openDir == 0 and barstate.isconfirmed
+    if longSignal
+        openDir := 1
+    else if shortSignal
+        openDir := -1
+
+if wantWipe or (openDir != 0 and showBoxes)
+    box.delete(bTp)
+    box.delete(bSl)
+    box.delete(bAvg)
+    label.delete(tTp)
+    label.delete(tSl)
+    label.delete(tAvg)
+    bTp := na
+    bSl := na
+    bAvg := na
+    tTp := na
+    tSl := na
+    tAvg := na
+
+if wantWipe and closedNow
+    string resTxt = closeWhy + "  " + (closeWin ? "익절 +" : closeLoss ? "손절 " : "본절 ") + str.tostring(closeR, "#.##") + "R"
+    color resCol = closeWin ? bullCol : closeLoss ? bearCol : color.new(#f0c14a, 0)
+    bool belowLab = (zDir == 1 and not closeWin) or (zDir == -1 and closeWin)
+    label.new(bar_index, belowLab ? low : high, resTxt, xloc=xloc.bar_index, style=belowLab ? label.style_label_up : label.style_label_down, color=resCol, textcolor=color.white, size=size.tiny)
+
+if openDir != 0
+    zLive := true
+    zDir := openDir
+    zEntry := close
+    zAvg := close
+    zSl := openDir == 1 ? slLong : slShort
+    zSlOrig := zSl
+    zTp := f_tpR(openDir == 1, close, zSl, tpR)
+    zBar := bar_index
+    zTm := time
+    zHitTp := false
+    lastSigBar := bar_index
+    string side = openDir == 1 ? "롱" : "숏"
+    string how = isFlip ? "뒤집기 " : "색전환 "
+    if openDir == 1
+        label.new(bar_index, low, how + side + " ADX" + str.tostring(adxVal, "#.0"), xloc=xloc.bar_index, style=label.style_label_up, color=bullCol, textcolor=color.white, size=size.tiny)
+        if alertEntry
+            alert("HWR HMA LONG  ADX=" + str.tostring(adxVal, "#.0") + "  close=" + str.tostring(close), alert.freq_once_per_bar_close)
+    else
+        label.new(bar_index, high, how + side + " ADX" + str.tostring(adxVal, "#.0"), xloc=xloc.bar_index, style=label.style_label_down, color=bearCol, textcolor=color.white, size=size.tiny)
+        if alertEntry
+            alert("HWR HMA SHORT  ADX=" + str.tostring(adxVal, "#.0") + "  close=" + str.tostring(close), alert.freq_once_per_bar_close)
+    if showBoxes
+        bTp := f_zone(zEntry, zTp, color.new(#26a69a, 78), color.new(#26a69a, 25))
+        bSl := f_zone(zEntry, zSl, color.new(#ab47bc, 72), color.new(#ab47bc, 18))
+        float avgPad0 = math.max(syminfo.mintick * 4, atrVal * 0.04)
+        bAvg := f_zone(zAvg + avgPad0, zAvg - avgPad0, color.new(#e8ecf4, 70), color.new(#c8cdd8, 15))
+        tTp := f_tag(zTp, #26a69a, "TP " + str.tostring(tpR, "#.##") + "R", zTp)
+        tSl := f_tag(zSl, #ab47bc, "SL HMA", zSl)
+        tAvg := f_tag(zAvg, #c8cdd8, (openDir == 1 ? "롱" : "숏") + " 진입", zAvg)
+
+if zLive and showBoxes and not wantWipe
+    f_ext(bTp)
+    f_ext(bSl)
+    f_ext(bAvg)
+    if not na(tTp)
+        label.set_x(tTp, bar_index)
+    if not na(tSl)
+        label.set_x(tSl, bar_index)
+        label.set_y(tSl, zSl)
+    if not na(tAvg)
+        label.set_x(tAvg, bar_index)
+        label.set_y(tAvg, zAvg)
+
+closedTrades = wins + losses
+pendingTrades = zLive ? 1 : 0
+winRate = closedTrades > 0 ? wins / closedTrades * 100.0 : na
+avgWinR = wins > 0 ? sumWinR / wins : 0.0
+avgLossR = losses > 0 ? sumLossR / losses : 0.0
+rrReal = avgLossR > 0 ? avgWinR / avgLossR : na
+expR = closedTrades > 0 ? (wins * avgWinR - losses * avgLossR) / closedTrades : na
+eqEnd = betAmt + sumUsd
+float uUsd = 0.0
+if zLive
+    uUsd := math.max(betAmt * lev * (zDir == 1 ? (close - zEntry) / math.max(zEntry, syminfo.mintick) : (zEntry - close) / math.max(zEntry, syminfo.mintick)), -betAmt)
+string usdTxt = (sumUsd >= 0 ? "+$" : "-$") + str.tostring(math.abs(sumUsd), "#.##")
+if zLive
+    usdTxt := usdTxt + "  미실현 " + (uUsd >= 0 ? "+$" : "-$") + str.tostring(math.abs(uUsd), "#.##")
+
+dashPos = dashPosIn == "오른쪽 아래" ? position.bottom_right : dashPosIn == "왼쪽 위" ? position.top_left : dashPosIn == "왼쪽 아래" ? position.bottom_left : dashPosIn == "가운데 위" ? position.top_center : dashPosIn == "가운데 아래" ? position.bottom_center : dashPosIn == "오른쪽 중간" ? position.middle_right : dashPosIn == "왼쪽 중간" ? position.middle_left : position.top_right
+var table dash = table.new(position.top_right, 2, 17, bgcolor=color.new(#12141c, 12), border_color=color.new(#2a2e3a, 0), border_width=1)
+if barstate.islast
+    table.set_position(dash, dashPos)
+f_cell(int r, string a, string b, color bc) =>
+    table.cell(dash, 0, r, a, text_color=color.new(#c8cdd8, 0), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, r, b, text_color=bc, text_halign=text.align_right, text_size=size.small)
+
+if showDash and barstate.islast
+    wrTxt = closedTrades > 0 ? str.tostring(wins) + "/" + str.tostring(losses) + (nBe > 0 ? " 본절" + str.tostring(nBe) : "") + "  " + str.tostring(winRate, "#.0") + "%" : "-"
+    if pendingTrades > 0
+        wrTxt := wrTxt + "  진행"
+    string posTxt = not zLive ? "없음" : (zDir == 1 ? "롱" : "숏") + "  ADX " + str.tostring(adxVal, "#.0")
+    string boxTxt = not zLive ? "-" : "SL " + str.tostring(zSl, format.mintick) + "  TP " + str.tostring(zTp, format.mintick)
+    table.cell(dash, 0, 0, "HWR HMA", text_color=color.white, text_halign=text.align_left, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    table.cell(dash, 1, 0, timeframe.period, text_color=color.new(#8b95a8, 0), text_halign=text.align_right, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    f_cell(1, "HMA", above ? "가격 위" : below ? "가격 아래" : "접촉", above ? bullCol : below ? bearCol : color.gray)
+    f_cell(2, "밴드", (rising ? "청록 상승" : "빨강 하락") + "  ·  폭 " + str.tostring(bandMult * 100.0, "#") + "%", rising ? bullCol : bearCol)
+    color rsiC = rsiVal >= rsiTpL ? bearCol : rsiVal <= rsiTpS ? bullCol : color.new(#c8cdd8, 0)
+    f_cell(3, "ADX", not adxOk ? str.tostring(adxVal, "#.0") + "  <" + str.tostring(adxMin, "#") : str.tostring(adxVal, "#.0"), adxOk ? bullCol : color.gray)
+    f_cell(4, "RSI", str.tostring(rsiVal, "#.0") + "  ·  롱익절 " + str.tostring(rsiTpL, "#") + " / 숏 " + str.tostring(rsiTpS, "#") + (useRsiExit ? "" : "  (꺼짐)"), rsiC)
+    f_cell(5, "포지션", posTxt, not zLive ? color.gray : zDir == 1 ? bullCol : bearCol)
+    f_cell(6, "실시간 박스", boxTxt, zLive ? color.new(#c8cdd8, 0) : color.gray)
+    f_cell(7, "계획", "SL=HMA 바닥  ·  TP " + str.tostring(tpR, "#.##") + "R (1:" + str.tostring(tpR, "#.##") + ")", color.new(#c8cdd8, 0))
+    f_cell(8, "청산", "박스 TP/SL" + (exitOnColor ? " + 색전환" : "") + (useRsiExit ? " + RSI" : "") + (flipOnOpp ? " + 뒤집기" : ""), color.new(#c8cdd8, 0))
+    f_cell(9, "승/패", wrTxt, not na(winRate) and winRate >= 50 ? bullCol : not na(winRate) and winRate < 40 ? bearCol : color.gray)
+    f_cell(10, "실현 손익비", na(rrReal) ? "-" : str.tostring(rrReal, "#.##") + "  (" + str.tostring(avgWinR, "#.##") + "/" + str.tostring(avgLossR, "#.##") + "R)", na(rrReal) ? color.gray : rrReal >= 1.3 ? bullCol : bearCol)
+    f_cell(11, "거래당 기대 R", na(expR) ? "-" : str.tostring(expR, "#.###"), na(expR) ? color.gray : expR >= 0 ? bullCol : bearCol)
+    f_cell(12, "측정", statMode == "최근 N일" ? str.tostring(statDays) + "일" : statMode, color.new(#c8cdd8, 0))
+    f_cell(13, "진입", tradeSide + "  ·  HMA 위 + 빨강→청록 + ADX" + str.tostring(adxMin, "#"), color.new(#8b95a8, 0))
+    f_cell(14, "배팅", "$" + str.tostring(betAmt, "#.##") + "  ×  " + str.tostring(lev, "#.##") + "x  (매 거래 고정)", color.new(#c8cdd8, 0))
+    f_cell(15, "기간 손익", usdTxt, sumUsd >= 0 ? bullCol : bearCol)
+    f_cell(16, "시작+손익", "$" + str.tostring(eqEnd, "#.##") + "  /  시작 $" + str.tostring(betAmt, "#.##"), eqEnd >= betAmt ? bullCol : bearCol)
+
+alertcondition(alertExit and closedNow, title="HMA 청산", message="HWR HMA EXIT")

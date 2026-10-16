@@ -1,0 +1,215 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/ MPL-2.0
+//@version=6
+indicator("Alligator MTF Heatmap Toolkit - micky v1.0", "Alligator MTF Heatmap Toolkit - micky v1.0", overlay = false, format = format.price, max_labels_count = 500, max_bars_back = 500)
+
+// --- Constants ---
+CLOUD_TRANSPARENCY = 85
+HEATMAP_LABEL_OFFSET = 5
+
+// --- Settings ---
+jawLengthInput   = input.int(13, "Jaw Length", minval = 1, tooltip = "Smoothing length of the Jaw SMMA of median price (hl2), 13 in the classic setup", group = "Settings")
+teethLengthInput = input.int(8, "Teeth Length", minval = 1, tooltip = "Smoothing length of the Teeth SMMA of median price (hl2), 8 in the classic setup", group = "Settings")
+lipsLengthInput  = input.int(5, "Lips Length", minval = 1, tooltip = "Smoothing length of the Lips SMMA of median price (hl2), 5 in the classic setup", group = "Settings")
+jawOffsetInput   = input.int(8, "Jaw Offset", minval = 0, tooltip = "Number of bars the Jaw plot is shifted into the future, 8 in the classic setup", group = "Settings")
+teethOffsetInput = input.int(5, "Teeth Offset", minval = 0, tooltip = "Number of bars the Teeth plot is shifted into the future, 5 in the classic setup", group = "Settings")
+lipsOffsetInput  = input.int(3, "Lips Offset", minval = 0, tooltip = "Number of bars the Lips plot is shifted into the future, 3 in the classic setup", group = "Settings")
+
+set2TimeframeInput = input.timeframe("60", "Set 2 Timeframe", tooltip = "Timeframe used to calculate the second Alligator set. Leave empty to use the chart timeframe.", group = "Set 2")
+showSet2Input = input.bool(true, "Enable Set 2", tooltip = "Enable or disable all Set 2 plots, cloud, heatmap dots, candle agreement, and alerts", group = "Set 2")
+set3TimeframeInput = input.timeframe("240", "Set 3 Timeframe", tooltip = "Timeframe used to calculate the third Alligator set. Leave empty to use the chart timeframe.", group = "Set 3")
+showSet3Input = input.bool(true, "Enable Set 3", tooltip = "Enable or disable all Set 3 plots, cloud, heatmap dots, candle agreement, and alerts", group = "Set 3")
+
+// --- Style ---
+jawColorInput   = input.color(#5b9cf6, "Set 1 Jaw", tooltip = "Color of the first Alligator Jaw line", group = "Style")
+teethColorInput = input.color(#f23645, "Set 1 Teeth", tooltip = "Color of the first Alligator Teeth line", group = "Style")
+lipsColorInput  = input.color(#089981, "Set 1 Lips", tooltip = "Color of the first Alligator Lips line", group = "Style")
+
+set2JawColorInput   = input.color(color.new(#5b9cf6, 35), "Set 2 Jaw", tooltip = "Color of the second Alligator Jaw line", group = "Style")
+set2TeethColorInput = input.color(color.new(#f23645, 35), "Set 2 Teeth", tooltip = "Color of the second Alligator Teeth line", group = "Style")
+set2LipsColorInput  = input.color(color.new(#089981, 35), "Set 2 Lips", tooltip = "Color of the second Alligator Lips line", group = "Style")
+
+set3JawColorInput   = input.color(color.new(#5b9cf6, 65), "Set 3 Jaw", tooltip = "Color of the third Alligator Jaw line", group = "Style")
+set3TeethColorInput = input.color(color.new(#f23645, 65), "Set 3 Teeth", tooltip = "Color of the third Alligator Teeth line", group = "Style")
+set3LipsColorInput  = input.color(color.new(#089981, 65), "Set 3 Lips", tooltip = "Color of the third Alligator Lips line", group = "Style")
+
+showSet1CloudInput = input.bool(true, "Show Set 1 Cloud", tooltip = "Show or hide the first Alligator cloud", group = "Style")
+showSet2CloudInput = input.bool(true, "Show Set 2 Cloud", tooltip = "Show or hide the second Alligator cloud", group = "Style")
+showSet3CloudInput = input.bool(true, "Show Set 3 Cloud", tooltip = "Show or hide the third Alligator cloud", group = "Style")
+
+gradientCandlesInput = input.bool(false, "Gradient Candle Colors", tooltip = "Color candles according to the number of selected Alligator sets agreeing on direction", group = "Candle Colors")
+useSet1ForCandlesInput = input.bool(true, "Include Set 1", tooltip = "Include Set 1 in the candle-color agreement count", group = "Candle Colors")
+useSet2ForCandlesInput = input.bool(true, "Include Set 2", tooltip = "Include Set 2 in the candle-color agreement count", group = "Candle Colors")
+useSet3ForCandlesInput = input.bool(true, "Include Set 3", tooltip = "Include Set 3 in the candle-color agreement count", group = "Candle Colors")
+
+showTrendHeatmapInput = input.bool(true, "Show Trend Heat Map", tooltip = "Show a full-width bottom heat map with the confirmed current candle at the right and previous candles extending to the left", group = "Trend Heat Map")
+heatmapTitleSizeInput = input.string(size.small, "Title Font Size", options = [size.tiny, size.small, size.normal, size.large, size.huge], tooltip = "Font size for the heatmap title bar", group = "Trend Heat Map")
+heatmapSetLabelSizeInput = input.string(size.small, "Set Label Font Size", options = [size.tiny, size.small, size.normal, size.large, size.huge], tooltip = "Font size for the Set 1, Set 2, and Set 3 labels", group = "Trend Heat Map")
+
+// --- Functions ---
+getCloudColor(color baseColor) =>
+    baseOpacity = 100 - color.t(baseColor)
+    cloudOpacity = baseOpacity * (100 - CLOUD_TRANSPARENCY) / 100
+    color.new(baseColor, 100 - cloudOpacity)
+
+getAlligator(string timeframeInput) =>
+    request.security(
+         syminfo.tickerid,
+         timeframeInput,
+         [ta.rma(hl2, jawLengthInput), ta.rma(hl2, teethLengthInput), ta.rma(hl2, lipsLengthInput)],
+         gaps = barmerge.gaps_off,
+         lookahead = barmerge.lookahead_off)
+
+// Interpolation is used only for the visual higher-timeframe plots and clouds.
+getAlligatorVisual(string timeframeInput) =>
+    [jawValue, teethValue, lipsValue, htfTime] = request.security(
+         syminfo.tickerid,
+         timeframeInput,
+         [ta.rma(hl2, jawLengthInput), ta.rma(hl2, teethLengthInput), ta.rma(hl2, lipsLengthInput), time],
+         gaps = barmerge.gaps_off,
+         lookahead = barmerge.lookahead_on)
+    newHtfBar = ta.change(htfTime) != 0
+    previousJaw = ta.valuewhen(newHtfBar, jawValue, 1)
+    previousTeeth = ta.valuewhen(newHtfBar, teethValue, 1)
+    previousLips = ta.valuewhen(newHtfBar, lipsValue, 1)
+    previousHtfTime = ta.valuewhen(newHtfBar, htfTime, 1)
+    htfDuration = htfTime - previousHtfTime
+    progress = not na(previousHtfTime) and htfDuration > 0 ? math.min(1.0, math.max(0.0, (time - htfTime) / htfDuration)) : 0.0
+    interpolatedJaw = na(previousJaw) ? jawValue : previousJaw + (jawValue - previousJaw) * progress
+    interpolatedTeeth = na(previousTeeth) ? teethValue : previousTeeth + (teethValue - previousTeeth) * progress
+    interpolatedLips = na(previousLips) ? lipsValue : previousLips + (lipsValue - previousLips) * progress
+    [interpolatedJaw, interpolatedTeeth, interpolatedLips]
+
+// --- Calculations ---
+jaw = ta.rma(hl2, jawLengthInput)
+teeth = ta.rma(hl2, teethLengthInput)
+lips = ta.rma(hl2, lipsLengthInput)
+
+[set2Jaw, set2Teeth, set2Lips] = getAlligator(set2TimeframeInput)
+[set3Jaw, set3Teeth, set3Lips] = getAlligator(set3TimeframeInput)
+
+[set2JawVisual, set2TeethVisual, set2LipsVisual] = getAlligatorVisual(set2TimeframeInput)
+[set3JawVisual, set3TeethVisual, set3LipsVisual] = getAlligatorVisual(set3TimeframeInput)
+
+// --- Trend States ---
+set1Bullish = lips > teeth and teeth > jaw
+set1Bearish = lips < teeth and teeth < jaw
+set2Bullish = set2Lips > set2Teeth and set2Teeth > set2Jaw
+set2Bearish = set2Lips < set2Teeth and set2Teeth < set2Jaw
+set3Bullish = set3Lips > set3Teeth and set3Teeth > set3Jaw
+set3Bearish = set3Lips < set3Teeth and set3Teeth < set3Jaw
+
+// --- Candle Colors ---
+enabledSetCount = (useSet1ForCandlesInput ? 1 : 0) + (showSet2Input and useSet2ForCandlesInput ? 1 : 0) + (showSet3Input and useSet3ForCandlesInput ? 1 : 0)
+bullishSetCount = (useSet1ForCandlesInput and set1Bullish ? 1 : 0) + (showSet2Input and useSet2ForCandlesInput and set2Bullish ? 1 : 0) + (showSet3Input and useSet3ForCandlesInput and set3Bullish ? 1 : 0)
+bearishSetCount = (useSet1ForCandlesInput and set1Bearish ? 1 : 0) + (showSet2Input and useSet2ForCandlesInput and set2Bearish ? 1 : 0) + (showSet3Input and useSet3ForCandlesInput and set3Bearish ? 1 : 0)
+normalizationCount = math.max(enabledSetCount, 1)
+
+bullishCandleColor = color.from_gradient(bullishSetCount, 0, normalizationCount, color.new(chart.fg_color, 85), lipsColorInput)
+bearishCandleColor = color.from_gradient(bearishSetCount, 0, normalizationCount, color.new(chart.fg_color, 85), jawColorInput)
+candleColor = bullishSetCount > bearishSetCount and bullishSetCount > 0 ? bullishCandleColor : bearishSetCount > bullishSetCount and bearishSetCount > 0 ? bearishCandleColor : na
+barcolor(gradientCandlesInput and enabledSetCount > 0 ? candleColor : na)
+
+// --- Plots ---
+set1JawPlot = plot(jaw, "Set 1 Jaw", jawColorInput, offset = jawOffsetInput, force_overlay = true)
+plot(teeth, "Set 1 Teeth", teethColorInput, offset = teethOffsetInput, force_overlay = true)
+set1LipsPlot = plot(lips, "Set 1 Lips", lipsColorInput, offset = lipsOffsetInput, force_overlay = true)
+
+set2JawPlot = plot(showSet2Input ? set2JawVisual : na, "Set 2 Jaw", set2JawColorInput, offset = jawOffsetInput, style = plot.style_line, force_overlay = true)
+plot(showSet2Input ? set2TeethVisual : na, "Set 2 Teeth", set2TeethColorInput, offset = teethOffsetInput, style = plot.style_line, force_overlay = true)
+set2LipsPlot = plot(showSet2Input ? set2LipsVisual : na, "Set 2 Lips", set2LipsColorInput, offset = lipsOffsetInput, style = plot.style_line, force_overlay = true)
+
+set3JawPlot = plot(showSet3Input ? set3JawVisual : na, "Set 3 Jaw", set3JawColorInput, offset = jawOffsetInput, style = plot.style_line, force_overlay = true)
+plot(showSet3Input ? set3TeethVisual : na, "Set 3 Teeth", set3TeethColorInput, offset = teethOffsetInput, style = plot.style_line, force_overlay = true)
+set3LipsPlot = plot(showSet3Input ? set3LipsVisual : na, "Set 3 Lips", set3LipsColorInput, offset = lipsOffsetInput, style = plot.style_line, force_overlay = true)
+
+set1CloudColor = lips >= jaw ? getCloudColor(lipsColorInput) : getCloudColor(jawColorInput)
+set2CloudColor = set2Lips >= set2Jaw ? getCloudColor(set2LipsColorInput) : getCloudColor(set2JawColorInput)
+set3CloudColor = set3Lips >= set3Jaw ? getCloudColor(set3LipsColorInput) : getCloudColor(set3JawColorInput)
+
+fill(set1JawPlot, set1LipsPlot, showSet1CloudInput ? set1CloudColor : na, "Set 1 Cloud")
+fill(set2JawPlot, set2LipsPlot, showSet2Input and showSet2CloudInput ? set2CloudColor : na, "Set 2 Cloud")
+fill(set3JawPlot, set3LipsPlot, showSet3Input and showSet3CloudInput ? set3CloudColor : na, "Set 3 Cloud")
+
+// --- Trend Heat Map ---
+// Each row contains one dot per bar and uses the actual Alligator line ordering.
+set1HeatmapBullish = close > lips and lips > teeth and teeth > jaw
+set1HeatmapBearish = close < lips and lips < teeth and teeth < jaw
+set2HeatmapBullish = close > set2LipsVisual and set2LipsVisual > set2TeethVisual and set2TeethVisual > set2JawVisual
+set2HeatmapBearish = close < set2LipsVisual and set2LipsVisual < set2TeethVisual and set2TeethVisual < set2JawVisual
+set3HeatmapBullish = close > set3LipsVisual and set3LipsVisual > set3TeethVisual and set3TeethVisual > set3JawVisual
+set3HeatmapBearish = close < set3LipsVisual and set3LipsVisual < set3TeethVisual and set3TeethVisual < set3JawVisual
+
+set1TrendColor = set1HeatmapBullish ? color.new(lipsColorInput, 15) : set1HeatmapBearish ? color.new(jawColorInput, 15) : color.new(teethColorInput, 65)
+set2TrendColor = set2HeatmapBullish ? color.new(set2LipsColorInput, 15) : set2HeatmapBearish ? color.new(set2JawColorInput, 15) : color.new(set2TeethColorInput, 65)
+set3TrendColor = set3HeatmapBullish ? color.new(set3LipsColorInput, 15) : set3HeatmapBearish ? color.new(set3JawColorInput, 15) : color.new(set3TeethColorInput, 65)
+
+// --- Heatmap Pane ---
+// The pane is independent of price, while every dot remains aligned with its chart bar.
+plot(showTrendHeatmapInput ? 3.0 : na, "Set 1 Trend Heatmap", set1TrendColor, linewidth = 1, style = plot.style_circles)
+plot(showTrendHeatmapInput and showSet2Input ? 2.0 : na, "Set 2 Trend Heatmap", set2TrendColor, linewidth = 1, style = plot.style_circles)
+plot(showTrendHeatmapInput and showSet3Input ? 1.0 : na, "Set 3 Trend Heatmap", set3TrendColor, linewidth = 1, style = plot.style_circles)
+
+var label set1HeatmapLabel = na
+var label set2HeatmapLabel = na
+var label set3HeatmapLabel = na
+var label heatmapTitleLabel = na
+
+if barstate.islast
+    if showTrendHeatmapInput
+        heatmapLabelX = bar_index + HEATMAP_LABEL_OFFSET
+        heatmapTitleY = 4.0
+        if na(set1HeatmapLabel)
+            set1HeatmapLabel := label.new(heatmapLabelX, 3.0, "Set 1", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = set1TrendColor, size = heatmapSetLabelSizeInput)
+            set2HeatmapLabel := label.new(heatmapLabelX, 2.0, "Set 2", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = showSet2Input ? set2TrendColor : na, size = heatmapSetLabelSizeInput)
+            set3HeatmapLabel := label.new(heatmapLabelX, 1.0, "Set 3", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = showSet3Input ? set3TrendColor : na, size = heatmapSetLabelSizeInput)
+            heatmapTitleLabel := label.new(heatmapLabelX, heatmapTitleY, "HEATMAP - Alligator MTF Toolkit - micky v1.0", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_right, color = color.new(chart.bg_color, 15), textcolor = chart.fg_color, size = heatmapTitleSizeInput)
+        else
+            label.set_x(set1HeatmapLabel, heatmapLabelX)
+            label.set_y(set1HeatmapLabel, 3.0)
+            label.set_textcolor(set1HeatmapLabel, set1TrendColor)
+            label.set_size(set1HeatmapLabel, heatmapSetLabelSizeInput)
+            label.set_x(set2HeatmapLabel, heatmapLabelX)
+            label.set_y(set2HeatmapLabel, 2.0)
+            label.set_textcolor(set2HeatmapLabel, showSet2Input ? set2TrendColor : na)
+            label.set_size(set2HeatmapLabel, heatmapSetLabelSizeInput)
+            label.set_x(set3HeatmapLabel, heatmapLabelX)
+            label.set_y(set3HeatmapLabel, 1.0)
+            label.set_textcolor(set3HeatmapLabel, showSet3Input ? set3TrendColor : na)
+            label.set_size(set3HeatmapLabel, heatmapSetLabelSizeInput)
+            label.set_x(heatmapTitleLabel, heatmapLabelX)
+            label.set_y(heatmapTitleLabel, heatmapTitleY)
+            label.set_textcolor(heatmapTitleLabel, chart.fg_color)
+            label.set_size(heatmapTitleLabel, heatmapTitleSizeInput)
+    else
+        if not na(set1HeatmapLabel)
+            label.delete(set1HeatmapLabel)
+            set1HeatmapLabel := na
+        if not na(set2HeatmapLabel)
+            label.delete(set2HeatmapLabel)
+            set2HeatmapLabel := na
+        if not na(set3HeatmapLabel)
+            label.delete(set3HeatmapLabel)
+            set3HeatmapLabel := na
+        if not na(heatmapTitleLabel)
+            label.delete(heatmapTitleLabel)
+            heatmapTitleLabel := na
+
+// --- Alerts ---
+// Crosses are evaluated on unshifted values; plot offsets shift the display only.
+awakeningUp = ta.crossover(lips, teeth)
+awakeningDown = ta.crossunder(lips, teeth)
+set2AwakeningUpRaw = ta.crossover(set2Lips, set2Teeth)
+set2AwakeningDownRaw = ta.crossunder(set2Lips, set2Teeth)
+set3AwakeningUpRaw = ta.crossover(set3Lips, set3Teeth)
+set3AwakeningDownRaw = ta.crossunder(set3Lips, set3Teeth)
+set2AwakeningUp = showSet2Input and set2AwakeningUpRaw
+set2AwakeningDown = showSet2Input and set2AwakeningDownRaw
+set3AwakeningUp = showSet3Input and set3AwakeningUpRaw
+set3AwakeningDown = showSet3Input and set3AwakeningDownRaw
+
+alertcondition(awakeningUp, "Set 1 Awakening Up", "Williams Alligator Set 1 Lips crossed above Teeth")
+alertcondition(awakeningDown, "Set 1 Awakening Down", "Williams Alligator Set 1 Lips crossed below Teeth")
+alertcondition(set2AwakeningUp, "Set 2 Awakening Up", "Williams Alligator Set 2 Lips crossed above Teeth")
+alertcondition(set2AwakeningDown, "Set 2 Awakening Down", "Williams Alligator Set 2 Lips crossed below Teeth")
+alertcondition(set3AwakeningUp, "Set 3 Awakening Up", "Williams Alligator Set 3 Lips crossed above Teeth")
+alertcondition(set3AwakeningDown, "Set 3 Awakening Down", "Williams Alligator Set 3 Lips crossed below Teeth")

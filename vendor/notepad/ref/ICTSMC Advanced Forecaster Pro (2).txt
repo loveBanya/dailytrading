@@ -1,0 +1,144 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LuxAlgo
+
+//@version=6
+indicator("ICT/SMC Advanced Forecaster Pro", "ICT Forecaster Pro", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+
+// --- Constants ---
+string G_SESS  = "Sessions"
+string G_MA    = "Moving Averages"
+string G_VIS   = "Visuals & Strategy"
+color C_GREEN  = #089981
+color C_RED    = #f23645
+color C_BLUE   = #2196f3
+color C_BG     = #131722
+
+// --- Inputs ---
+asiaSessInput   = input.session("0000-0600", "Asian Session", group = G_SESS)
+londonSessInput = input.session("0800-1200", "London Session", group = G_SESS)
+nySessInput     = input.session("1300-1700", "New York Session", group = G_SESS)
+timeZoneInput   = input.string("UTC", "Timezone", options = ["UTC", "America/New_York", "Europe/London"], group = G_SESS)
+
+tightThresholdInput = input.float(20.0, "Asian 'Tight' Threshold (Pips)", minval = 0, group = G_SESS)
+
+fastMaLenInput = input.int(20, "Fast MA Length", minval = 1, group = G_MA)
+slowMaLenInput = input.int(50, "Slow MA Length", minval = 1, group = G_MA)
+
+rrInput        = input.float(2.0, "Risk/Reward Ratio", minval = 0.1, group = G_VIS)
+stopLossPips   = input.float(12.0, "Stop Loss (Pips)", minval = 1, group = G_VIS)
+riskAmount     = input.float(750.0, "Risk Amount ($)", minval = 1, group = G_VIS)
+trendFilter    = input.bool(true, "Trend Filter (EMA Cross)", group = G_VIS)
+
+// --- Helper Functions ---
+is_in_session(sess, tz) => not na(time(timeframe.period, sess, tz))
+
+// --- Logic ---
+inAsia   = is_in_session(asiaSessInput, timeZoneInput)
+inLondon = is_in_session(londonSessInput, timeZoneInput)
+inNY     = is_in_session(nySessInput, timeZoneInput)
+
+var float asiaHigh = na
+var float asiaLow  = na
+var int   asiaStart = na
+
+if inAsia and not inAsia[1]
+    asiaHigh  := high
+    asiaLow   := low
+    asiaStart := bar_index
+else if inAsia
+    asiaHigh  := math.max(asiaHigh, high)
+    asiaLow   := math.min(asiaLow, low)
+
+// EMA Trend
+fastMa = ta.ema(close, fastMaLenInput)
+slowMa = ta.ema(close, slowMaLenInput)
+plot(fastMa, "Fast EMA", color.new(C_RED, 20))
+plot(slowMa, "Slow EMA", color.new(C_BLUE, 20))
+
+// --- Forecasting Tool Visual Function ---
+draw_forecaster(isLong, entry, sl, tp, width = 30) =>
+    float pnlDist = math.abs(tp - entry)
+    float slDist  = math.abs(entry - sl)
+    float pips    = slDist / syminfo.mintick / 10
+    float perc    = (slDist / entry) * 100
+    float qty     = math.round(riskAmount / slDist)
+    float targetAmount = qty * pnlDist
+
+    // Tool Background Boxes
+    box.new(bar_index, isLong ? entry : sl, bar_index + width, isLong ? sl : entry, bgcolor = color.new(C_RED, 80), border_color = C_RED, border_width = 1)
+    box.new(bar_index, isLong ? tp : entry, bar_index + width, isLong ? entry : tp, bgcolor = color.new(C_GREEN, 80), border_color = C_GREEN, border_width = 1)
+    
+    // Entry Line
+    line.new(bar_index, entry, bar_index + width, entry, color = color.new(chart.fg_color, 50), style = line.style_solid, width = 1)
+
+    // Center Info Label (Closed P&L Style)
+    string centerTxt = "Closed P&L: " + str.tostring(pnlDist, "#.#####") + ", Qty: " + str.tostring(qty) + "\nRisk/reward ratio: " + str.tostring(rrInput)
+    label.new(bar_index + width/2, entry, centerTxt, color = C_GREEN, textcolor = color.white, style = label.style_label_center, size = size.small)
+
+    // Top/Bottom Labels (SL/TP)
+    string tpTxt = "Target: " + str.tostring(pnlDist, "#.#####") + " (" + str.tostring((pnlDist/entry)*100, "0.###") + "%) " + str.tostring(pnlDist/syminfo.mintick/10, "0.0") + ", Amount: " + str.tostring(targetAmount, "0.00")
+    string slTxt = "Stop: " + str.tostring(slDist, "#.#####") + " (" + str.tostring(perc, "0.###") + "%) " + str.tostring(pips, "0.0") + ", Amount: " + str.tostring(riskAmount)
+    
+    label.new(bar_index + width, tp, tpTxt, color = C_GREEN, textcolor = color.white, style = isLong ? label.style_label_down : label.style_label_up, size = size.tiny)
+    label.new(bar_index + width, sl, slTxt, color = C_RED, textcolor = color.white, style = isLong ? label.style_label_up : label.style_label_down, size = size.tiny)
+
+// --- Strategy Tracking ---
+var int totalTrades = 0
+var int wins = 0
+var int losses = 0
+var bool asiaHighSwept = false
+var bool asiaLowSwept = false
+
+if inAsia and not inAsia[1]
+    asiaHighSwept := false
+    asiaLowSwept := false
+
+if (inLondon or inNY) and not na(asiaHigh)
+    float slDist = stopLossPips * syminfo.mintick * 10
+    
+    // Long Setup
+    if low < asiaLow and close > asiaLow and not asiaLowSwept
+        if not trendFilter or fastMa > slowMa
+            float sl = close - slDist
+            float tp = close + (close - sl) * rrInput
+            draw_forecaster(true, close, sl, tp)
+            asiaLowSwept := true
+            totalTrades += 1
+            if high[15] > close // Simulation logic
+                wins += 1
+            else
+                losses += 1
+
+    // Short Setup
+    else if high > asiaHigh and close < asiaHigh and not asiaHighSwept
+        if not trendFilter or fastMa < slowMa
+            float sl = close + slDist
+            float tp = close - (sl - close) * rrInput
+            draw_forecaster(false, close, sl, tp)
+            asiaHighSwept := true
+            totalTrades += 1
+            if low[15] < close // Simulation logic
+                wins += 1
+            else
+                losses += 1
+
+// --- Dashboard ---
+var table perfTable = table.new(position.top_right, 2, 3, bgcolor = C_BG, border_color = color.gray, border_width = 1)
+if barstate.islast
+    winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0
+    table.cell(perfTable, 0, 0, "PERFORMANCE", text_color = color.white, text_size = size.small)
+    table.cell(perfTable, 1, 0, "STATS", text_color = color.white, text_size = size.small)
+    table.cell(perfTable, 0, 1, "Win Rate", text_color = color.white)
+    table.cell(perfTable, 1, 1, str.tostring(winRate, "0.0") + "%", text_color = winRate > 50 ? C_GREEN : C_RED)
+    table.cell(perfTable, 0, 2, "W/L Ratio", text_color = color.white)
+    table.cell(perfTable, 1, 2, str.tostring(wins) + "W / " + str.tostring(losses) + "L", text_color = color.white)
+
+// --- Session Box ---
+if inAsia
+    var box aBox = na
+    if not inAsia[1]
+        aBox := box.new(bar_index, asiaHigh, bar_index, asiaLow, bgcolor = color.new(color.gray, 90), border_color = color.gray, text = "Asia", text_size = size.tiny)
+    else
+        box.set_top(aBox, asiaHigh)
+        box.set_bottom(aBox, asiaLow)
+        box.set_right(aBox, bar_index)

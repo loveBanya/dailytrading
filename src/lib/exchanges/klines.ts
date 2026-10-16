@@ -6,6 +6,8 @@ export interface Candle {
   high: number;
   low: number;
   close: number;
+  /** 거래량. 예전 응답에는 없을 수 있다. */
+  volume?: number;
 }
 
 interface KlineResult {
@@ -77,6 +79,18 @@ function sortCandles(candles: Candle[]): Candle[] {
   return candles.sort((a, b) => a.time - b.time);
 }
 
+function candleFromRow(row: unknown[]): Candle {
+  const volume = Number(row[5]);
+  return {
+    time: Math.floor(Number(row[0]) / 1000),
+    open: Number(row[1]),
+    high: Number(row[2]),
+    low: Number(row[3]),
+    close: Number(row[4]),
+    volume: Number.isFinite(volume) ? volume : 0,
+  };
+}
+
 async function fetchBybitKlines(options: {
   symbol: string;
   interval: string;
@@ -98,15 +112,7 @@ async function fetchBybitKlines(options: {
     params
   );
 
-  return sortCandles(
-    (result.list ?? []).map((row) => ({
-      time: Math.floor(Number(row[0]) / 1000),
-      open: Number(row[1]),
-      high: Number(row[2]),
-      low: Number(row[3]),
-      close: Number(row[4]),
-    }))
-  );
+  return sortCandles((result.list ?? []).map((row) => candleFromRow(row)));
 }
 
 async function fetchBinanceUrlKlines(
@@ -137,15 +143,7 @@ async function fetchBinanceUrlKlines(
     throw new Error(`Binance klines HTTP ${res.status}`);
   }
   const rows = (await res.json()) as unknown[][];
-  return sortCandles(
-    rows.map((row) => ({
-      time: Math.floor(Number(row[0]) / 1000),
-      open: Number(row[1]),
-      high: Number(row[2]),
-      low: Number(row[3]),
-      close: Number(row[4]),
-    }))
-  );
+  return sortCandles(rows.map((row) => candleFromRow(row)));
 }
 
 async function fetchOkxKlines(options: {
@@ -177,13 +175,7 @@ async function fetchOkxKlines(options: {
   }
 
   // OKX: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm] newest first
-  let candles = (data.data ?? []).map((row) => ({
-    time: Math.floor(Number(row[0]) / 1000),
-    open: Number(row[1]),
-    high: Number(row[2]),
-    low: Number(row[3]),
-    close: Number(row[4]),
-  }));
+  let candles = (data.data ?? []).map((row) => candleFromRow(row));
 
   if (options.start) {
     const startSec = Math.floor(options.start / 1000);
@@ -234,6 +226,74 @@ async function trySources(
       errors.push(
         `${src}: ${err instanceof Error ? err.message : String(err)}`
       );
+    }
+  }
+  throw new Error(`캔들 조회 실패 — ${errors.join(" · ")}`);
+}
+
+async function collectPages(
+  load: (endMs: number, limit: number) => Promise<Candle[]>,
+  bars: number,
+  pageSize: number
+): Promise<Candle[]> {
+  const map = new Map<number, Candle>();
+  let end = Date.now();
+  for (let page = 0; page < 24 && map.size < bars; page += 1) {
+    const chunk = await load(end, pageSize);
+    if (chunk.length === 0) break;
+    let oldest = Infinity;
+    for (const candle of chunk) {
+      if (candle.time * 1000 > end) continue;
+      if (!map.has(candle.time)) map.set(candle.time, candle);
+      oldest = Math.min(oldest, candle.time);
+    }
+    if (chunk.length < pageSize || !Number.isFinite(oldest)) break;
+    const next = oldest * 1000 - 1;
+    if (next >= end) break;
+    end = next;
+  }
+  return [...map.values()].sort((a, b) => a.time - b.time).slice(-bars);
+}
+
+/** 백테스트용으로 봉을 여러 페이지 이어 붙입니다. 바이비트 우선, 안 되면 바이낸스. */
+export async function fetchKlineHistory(options: {
+  symbol: string;
+  interval?: string;
+  bars?: number;
+  prefer?: "bybit" | "binance";
+}): Promise<Candle[]> {
+  const interval = options.interval ?? "15";
+  const bars = Math.min(8000, Math.max(100, Math.floor(options.bars ?? 2000)));
+  const prefer = options.prefer ?? "bybit";
+  const sources: Source[] =
+    prefer === "binance"
+      ? ["binance", "binance-data", "bybit"]
+      : ["bybit", "binance", "binance-data"];
+  const errors: string[] = [];
+  for (const src of sources) {
+    try {
+      const pageSize = src === "bybit" ? 1000 : 1500;
+      const candles = await collectPages(
+        (end, limit) => {
+          const args = {
+            symbol: options.symbol,
+            interval,
+            end,
+            limit,
+          };
+          if (src === "bybit") return fetchBybitKlines(args);
+          if (src === "binance") {
+            return fetchBinanceUrlKlines(BINANCE_FAPI, "/fapi/v1/klines", args);
+          }
+          return fetchBinanceUrlKlines(BINANCE_DATA, "/api/v3/klines", args);
+        },
+        bars,
+        pageSize
+      );
+      if (candles.length > 0) return candles;
+      errors.push(`${src}: empty`);
+    } catch (err) {
+      errors.push(`${src}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   throw new Error(`캔들 조회 실패 — ${errors.join(" · ")}`);

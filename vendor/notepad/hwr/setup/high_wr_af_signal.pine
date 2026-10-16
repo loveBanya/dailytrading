@@ -1,0 +1,268 @@
+//@version=5
+indicator("평균 힘 모멘텀 [HWR AF]", shorttitle="HWR AF", overlay=true, scale=scale.right, max_labels_count=500, max_boxes_count=80)
+
+// ─────────────────────────────────────────────
+// 평균 힘이 0을 위로 넘으면 롱, 아래로 내리면 숏.
+// 종가가 200 EMA 위면 롱만, 아래면 숏만.
+// 손절·익절은 진입 봉의 ATR 밴드. 롱은 하단 손절·상단 익절, 숏은 반대.
+// 봉이 닫힌 뒤에만. 다른 HWR과 같이 켜지 말 것.
+// ─────────────────────────────────────────────
+
+grpAf = "1. 평균 힘"
+afLen = input.int(30, "기간", minval=1, group=grpAf)
+afSmooth = input.int(18, "스무딩", minval=1, group=grpAf)
+afSrc = input.source(close, "가격", group=grpAf)
+
+grpEma = "2. 200 EMA"
+emaLen = input.int(200, "EMA 기간", minval=2, group=grpEma)
+emaSrc = input.source(close, "EMA 가격", group=grpEma)
+
+grpAtr = "3. ATR 밴드"
+atrLen = input.int(14, "ATR 기간", minval=1, group=grpAtr)
+srcUp = input.source(close, "상단 가격", group=grpAtr)
+srcDn = input.source(close, "하단 가격", group=grpAtr)
+multUp = input.float(1.0, "상단 배수", step=0.1, group=grpAtr, tooltip="롱 익절, 숏 손절 거리. 가격이 종가면 ATR×이 값.")
+multDn = input.float(1.0, "하단 배수", step=0.1, group=grpAtr, tooltip="롱 손절, 숏 익절 거리. 가격이 종가면 ATR×이 값.")
+
+grpSig = "4. 신호"
+cooldownBars = input.int(2, "쿨다운 봉", minval=0, group=grpSig)
+
+grpMoney = "5. 테스트 금액"
+betAmt = input.float(100.0, "진입 금액 (달러)", minval=1, step=1, group=grpMoney, tooltip="주문마다 같은 증거금. 손실은 이 금액까지.")
+lev = input.float(1.0, "배율", minval=1, maxval=125, step=0.5, group=grpMoney)
+
+grpStat = "6. 측정"
+statMode = input.string("최근 N일", "측정 방식", options=["전체", "최근 N일", "기간 지정"], group=grpStat)
+statDays = input.int(60, "최근 N일", minval=1, maxval=3650, group=grpStat)
+statFrom = input.time(timestamp("01 Jan 2026 00:00"), "시작", group=grpStat)
+statTo = input.time(timestamp("30 Sep 2026 23:59"), "종료", group=grpStat)
+sessTz = input.string("Asia/Seoul", "타임존", options=["Asia/Seoul", "America/New_York", "Europe/London", "UTC"], group=grpStat)
+
+grpUi = "7. 표시"
+showEma = input.bool(true, "EMA", group=grpUi)
+showBand = input.bool(true, "ATR 밴드", group=grpUi)
+showBoxes = input.bool(true, "손절·익절 구간", group=grpUi)
+showDash = input.bool(true, "표", group=grpUi)
+alertEntry = input.bool(true, "진입 알림", group=grpUi, tooltip="알림은 'alert() 함수 호출'로 만드세요.")
+alertExit = input.bool(true, "청산 알림", group=grpUi)
+dashPosIn = input.string("오른쪽 위", "테이블 위치", options=["오른쪽 위", "오른쪽 아래", "왼쪽 위", "왼쪽 아래"], group=grpUi)
+longCol = input.color(color.yellow, "롱 (힘 양)", group=grpUi)
+shortCol = input.color(color.fuchsia, "숏 (힘 음)", group=grpUi)
+upCol = input.color(color.green, "상단 밴드", group=grpUi)
+dnCol = input.color(color.red, "하단 밴드", group=grpUi)
+
+float hh = ta.highest(high, afLen)
+float ll = ta.lowest(low, afLen)
+float span = hh - ll
+float rawForce = span == 0.0 ? 0.0 : (afSrc - ll) / span - 0.5
+float af = ta.sma(rawForce, afSmooth)
+bool flipUp = ta.crossover(af, 0.0)
+bool flipDn = ta.crossunder(af, 0.0)
+color afCol = af > 0.0 ? longCol : shortCol
+
+float ema = ta.ema(emaSrc, emaLen)
+bool emaLong = close > ema
+bool emaShort = close < ema
+
+float atr = ta.atr(atrLen)
+float bandUp = srcUp + atr * multUp
+float bandDn = srcDn - atr * multDn
+bool bandOk = bandUp > close and bandDn < close
+
+var int lastSigBar = na
+bool cooled = na(lastSigBar) or bar_index - lastSigBar >= cooldownBars
+
+var bool zLive = false
+bool armLong = barstate.isconfirmed and flipUp and emaLong and bandOk
+bool armShort = barstate.isconfirmed and flipDn and emaShort and bandOk
+bool longSignal = armLong and cooled and not zLive
+bool shortSignal = armShort and cooled and not zLive
+bool skipLong = barstate.isconfirmed and flipUp and emaShort
+bool skipShort = barstate.isconfirmed and flipDn and emaLong
+
+var int zDir = 0
+var int zBar = na
+var int zTm = na
+var float zEnt = na
+var float zSl = na
+var float zTp = na
+var box bTp = na
+var box bSl = na
+var label tTp = na
+var label tSl = na
+var label tEn = na
+var int wins = 0
+var int losses = 0
+var float sumWinR = 0.0
+var float sumLossR = 0.0
+var float sumUsd = 0.0
+var int firstTradeTime = na
+var int lastCloseTime = na
+
+int lookFrom = timenow - statDays * 24 * 60 * 60 * 1000
+f_inStat(int t) =>
+    na(t) ? false : statMode == "전체" ? true : statMode == "최근 N일" ? (t >= lookFrom and t <= timenow) : (t >= statFrom and t <= statTo)
+f_zone(float p1, float p2, color bg, color bd) =>
+    box.new(bar_index, math.max(p1, p2), bar_index, math.min(p1, p2), xloc=xloc.bar_index, border_color=bd, border_width=1, bgcolor=bg)
+f_tag(float y, color c, string name) =>
+    label.new(bar_index, y, name, xloc=xloc.bar_index, style=label.style_label_left, color=color.new(c, 15), textcolor=color.white, size=size.tiny)
+
+bool exitNow = false
+bool exitWin = false
+float exitR = 0.0
+
+if zLive and bar_index > zBar and barstate.isconfirmed
+    bool hitSl = zDir == 1 ? low <= zSl : high >= zSl
+    bool hitTp = zDir == 1 ? high >= zTp : low <= zTp
+    if hitTp and not hitSl
+        exitNow := true
+        exitWin := true
+        exitR := math.abs(zTp - zEnt) / math.max(math.abs(zEnt - zSl), syminfo.mintick)
+    else if hitSl
+        exitNow := true
+        exitR := -1.0
+
+if exitNow
+    if f_inStat(zTm)
+        if exitWin
+            wins += 1
+            sumWinR += exitR
+        else
+            losses += 1
+            sumLossR += 1.0
+        float move = zDir == 1 ? ((exitWin ? zTp : zSl) - zEnt) / math.max(zEnt, syminfo.mintick) : (zEnt - (exitWin ? zTp : zSl)) / math.max(zEnt, syminfo.mintick)
+        sumUsd += math.max(betAmt * lev * move, -betAmt)
+        if na(firstTradeTime)
+            firstTradeTime := zTm
+        lastCloseTime := time
+    box.delete(bTp)
+    box.delete(bSl)
+    label.delete(tTp)
+    label.delete(tSl)
+    label.delete(tEn)
+    bTp := na
+    bSl := na
+    tTp := na
+    tSl := na
+    tEn := na
+    string resTxt = exitWin ? "익절" : "손절"
+    color resCol = exitWin ? upCol : dnCol
+    bool resBelow = (zDir == 1 and not exitWin) or (zDir == -1 and exitWin)
+    label.new(bar_index, resBelow ? low : high, resTxt, xloc=xloc.bar_index, style=resBelow ? label.style_label_up : label.style_label_down, color=resCol, textcolor=color.white, size=size.tiny)
+    if alertExit
+        alert(syminfo.ticker + " AF " + resTxt + "  " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+    zLive := false
+
+if longSignal or shortSignal
+    box.delete(bTp)
+    box.delete(bSl)
+    label.delete(tTp)
+    label.delete(tSl)
+    label.delete(tEn)
+    bool isL = longSignal
+    float px = close
+    float slv = isL ? bandDn : bandUp
+    float tpv = isL ? bandUp : bandDn
+    zLive := true
+    zDir := isL ? 1 : -1
+    zBar := bar_index
+    zTm := time
+    zEnt := px
+    zSl := slv
+    zTp := tpv
+    lastSigBar := bar_index
+    if showBoxes
+        bTp := f_zone(px, tpv, color.new(upCol, 82), color.new(upCol, 25))
+        bSl := f_zone(px, slv, color.new(dnCol, 78), color.new(dnCol, 20))
+        tEn := f_tag(px, #c8cdd8, "진입  " + str.tostring(px, format.mintick))
+        tTp := f_tag(tpv, upCol, "익절  " + str.tostring(tpv, format.mintick))
+        tSl := f_tag(slv, dnCol, "손절  " + str.tostring(slv, format.mintick))
+    string sideTxt = isL ? "롱" : "숏"
+    label.new(bar_index, isL ? low : high, sideTxt + "  손절 " + str.tostring(slv, format.mintick) + "  익절 " + str.tostring(tpv, format.mintick), xloc=xloc.bar_index, style=isL ? label.style_label_up : label.style_label_down, color=isL ? longCol : shortCol, textcolor=color.black, size=size.small)
+    if alertEntry
+        alert(syminfo.ticker + " AF " + sideTxt + "  진입 " + str.tostring(px, format.mintick) + "  손절 " + str.tostring(slv, format.mintick) + "  익절 " + str.tostring(tpv, format.mintick), alert.freq_once_per_bar_close)
+
+if zLive
+    if not na(bTp)
+        box.set_right(bTp, bar_index)
+    if not na(bSl)
+        box.set_right(bSl, bar_index)
+    if not na(tTp)
+        label.set_x(tTp, bar_index)
+    if not na(tSl)
+        label.set_x(tSl, bar_index)
+    if not na(tEn)
+        label.set_x(tEn, bar_index)
+
+plot(ema, "EMA", color=showEma ? color.new(#c8cdd8, 0) : na, linewidth=2)
+plot(bandUp, "ATR 상단", color=showBand ? upCol : na, linewidth=1)
+plot(bandDn, "ATR 하단", color=showBand ? dnCol : na, linewidth=1)
+plot(af, "AF", color=afCol, style=plot.style_columns, display=display.pane)
+plot(0.0, "0", color=color.new(#8b95a8, 40), display=display.pane)
+plotshape(longSignal, title="롱", style=shape.triangleup, location=location.belowbar, color=longCol, size=size.tiny)
+plotshape(shortSignal, title="숏", style=shape.triangledown, location=location.abovebar, color=shortCol, size=size.tiny)
+
+int closedTrades = wins + losses
+float winRate = closedTrades > 0 ? wins / closedTrades * 100.0 : na
+float avgWinR = wins > 0 ? sumWinR / wins : 0.0
+float avgLossR = losses > 0 ? sumLossR / losses : 0.0
+float expR = closedTrades > 0 ? (sumWinR - sumLossR) / closedTrades : na
+
+string job = "대기"
+color jobC = color.gray
+if longSignal
+    job := "롱. 손절은 하단 밴드, 익절은 상단 밴드"
+    jobC := longCol
+else if shortSignal
+    job := "숏. 손절은 상단 밴드, 익절은 하단 밴드"
+    jobC := shortCol
+else if zLive
+    job := zDir == 1 ? "롱 보유. 하단 손절, 상단 익절" : "숏 보유. 상단 손절, 하단 익절"
+    jobC := zDir == 1 ? longCol : shortCol
+else if (armLong or armShort) and not cooled
+    job := "쿨다운"
+else if skipLong
+    job := "힘이 양으로 바뀌었고 200 아래. 대기"
+else if skipShort
+    job := "힘이 음으로 바뀌었고 200 위. 대기"
+else if not bandOk
+    job := "밴드가 가격을 감싸지 않음"
+else if emaLong
+    job := "200 위. 힘이 0을 넘으면 롱"
+    jobC := longCol
+else if emaShort
+    job := "200 아래. 힘이 0 아래로 가면 숏"
+    jobC := shortCol
+
+dashPos = dashPosIn == "오른쪽 아래" ? position.bottom_right : dashPosIn == "왼쪽 위" ? position.top_left : dashPosIn == "왼쪽 아래" ? position.bottom_left : position.top_right
+var table dash = table.new(position.top_right, 2, 10, bgcolor=color.new(#12141c, 12), border_color=color.new(#2a2e3a, 0), border_width=1)
+if barstate.islast
+    table.set_position(dash, dashPos)
+f_cell(int r, string a, string b, color bc) =>
+    table.cell(dash, 0, r, a, text_color=color.new(#c8cdd8, 0), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, r, b, text_color=bc, text_halign=text.align_right, text_size=size.small)
+
+if showDash and barstate.islast
+    string wrTxt = closedTrades > 0 ? str.tostring(wins) + "/" + str.tostring(losses) + "  " + str.tostring(winRate, "#.0") + "%" : "-"
+    if zLive
+        wrTxt := wrTxt + "  진행"
+    string perTxt = statMode == "기간 지정" ? str.format_time(statFrom, "yy.MM.dd HH:mm", sessTz) + " ~ " + str.format_time(statTo, "yy.MM.dd HH:mm", sessTz) : statMode == "최근 N일" ? str.format_time(lookFrom, "yy.MM.dd HH:mm", sessTz) + " ~ " + str.format_time(timenow, "yy.MM.dd HH:mm", sessTz) : na(firstTradeTime) ? "-" : str.format_time(firstTradeTime, "yy.MM.dd HH:mm", sessTz) + " ~ " + (na(lastCloseTime) ? "진행중" : str.format_time(lastCloseTime, "yy.MM.dd HH:mm", sessTz))
+    float eqEnd = betAmt + sumUsd
+    color usdC = sumUsd > 0 ? upCol : sumUsd < 0 ? dnCol : color.gray
+    string sideTxt = emaLong ? "롱만" : emaShort ? "숏만" : "같음"
+    table.cell(dash, 0, 0, "HWR AF", text_color=color.white, text_halign=text.align_left, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    table.cell(dash, 1, 0, timeframe.period, text_color=color.new(#8b95a8, 0), text_halign=text.align_right, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    f_cell(1, "할 일", job, jobC)
+    f_cell(2, "평균 힘", str.tostring(af, "#.###") + (af > 0 ? "  양" : "  음"), afCol)
+    f_cell(3, "200 EMA", sideTxt + "  " + str.tostring(ema, format.mintick), emaLong ? longCol : emaShort ? shortCol : color.gray)
+    f_cell(4, "밴드", str.tostring(bandDn, format.mintick) + "  ~  " + str.tostring(bandUp, format.mintick), color.new(#c8cdd8, 0))
+    f_cell(5, "승/패", wrTxt, not na(winRate) and winRate >= 55 ? upCol : not na(winRate) and winRate < 45 ? dnCol : color.gray)
+    f_cell(6, "거래당 기대 R", na(expR) ? "-" : str.tostring(expR, "#.###") + "  (" + str.tostring(avgWinR, "#.##") + "/" + str.tostring(avgLossR, "#.##") + ")", na(expR) ? color.gray : expR >= 0 ? upCol : dnCol)
+    f_cell(7, "배팅", "$" + str.tostring(betAmt, "#.##") + "  ×  " + str.tostring(lev, "#.##") + "x", color.new(#c8cdd8, 0))
+    f_cell(8, "기간 손익", closedTrades > 0 ? (sumUsd >= 0 ? "+" : "") + str.tostring(sumUsd, "#.##") + " 달러" : "-", usdC)
+    f_cell(9, "기간", perTxt, color.new(#8b95a8, 0))
+
+alertcondition(longSignal, title="AF 롱", message="HWR AF LONG")
+alertcondition(shortSignal, title="AF 숏", message="HWR AF SHORT")
+alertcondition(exitNow and exitWin, title="AF 익절", message="HWR AF TP")
+alertcondition(exitNow and not exitWin, title="AF 손절", message="HWR AF SL")

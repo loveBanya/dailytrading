@@ -1,0 +1,730 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// FIBONACCI STRUCTURE ENGINE [BACKTESTING STRATEGY]
+// ══════════════════════════════════════════════════════════
+
+strategy(
+    title            = "FibSniper Pro: SMC Edition",
+    shorttitle       = "FibSniper Pro: SMC Edition",
+    overlay          = true,
+    initial_capital  = 50000,
+    default_qty_type = strategy.fixed,
+    default_qty_value= 5,
+    currency         = currency.USD,
+    commission_type  = strategy.commission.cash_per_contract,
+    commission_value = 0.5,
+    margin_long      = 0,   // <-- EL SALVOCONDUCTO PARA FUTUROS
+    margin_short     = 0,   // <-- EL SALVOCONDUCTO PARA FUTUROS
+    calc_on_every_tick=true,
+    max_labels_count = 500,
+    max_lines_count  = 500,
+    max_boxes_count  = 500,
+    max_bars_back    = 5000)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_STRAT   = "🤖 Gestión de Riesgo (Trailing)"
+GRP_MAIN    = "⚙️ Main Settings"
+GRP_FIB     = "📐 Fibonacci Levels"
+GRP_STRUCT  = "🏗️ Structure"
+GRP_VISUAL  = "🎨 Visual Settings"
+GRP_DASH    = "📊 Dashboard"
+GRP_COLORS  = "🎨 Colors"
+
+INDICATOR_VERSION = "v1.3.1 - Strategy Mod"
+
+// ══════════════════════════════════════
+// INPUTS — Gestión de Riesgo (Inyectado)
+// ══════════════════════════════════════
+trail_act_pts = input.float(20.0, "Activación Trailing (Puntos)", step=1.0, group=GRP_STRAT)
+trail_off_pts = input.float(5.0, "Distancia Trailing (Puntos)", step=1.0, group=GRP_STRAT)
+sl_atr_mult = input.float(2, "Multiplicador ATR para Stop Loss inicial", step=0.1, group=GRP_STRAT)
+
+// ══════════════════════════════════════
+// INPUTS — Main Settings & Filtros de Drawdown
+// ══════════════════════════════════════
+swingLenInput = input.int(10, "Swing Detection Length", minval = 3, maxval = 50, step = 1, group = GRP_MAIN)
+atrFilterInput = input.bool(true, "ATR Swing Filter", group = GRP_MAIN)
+atrMultInput = input.float(0.5, "ATR Filter Multiplier", minval = 0.1, maxval = 3.0, step = 0.1, group = GRP_MAIN)
+cooldownInput = input.int(5, "Signal Cooldown (bars)", minval = 1, maxval = 50, step = 1, group = GRP_MAIN)
+
+use_ema_filter = input.bool(false, "Filtrar por Tendencia (EMA 200)", group=GRP_MAIN)
+use_session = input.bool(false, "Operar solo en NY Killzone", group=GRP_MAIN)
+session_time = input.session("0930-1500", "Horario NY", group=GRP_MAIN)
+min_confluence = input.float(2.0, "Confluencia Mínima Fib", step=0.5, group=GRP_MAIN, tooltip="Aumentar a 2.0 o 2.5 obliga a que el precio llegue a la Golden Zone (0.500 o 0.618) para entrar. Evita entradas prematuras.")
+
+// ══════════════════════════════════════
+// INPUTS — Fibonacci Levels & Mode
+// ══════════════════════════════════════
+fib_mode = input.string("Agresivo", "Modo Operativo", options=["Agresivo", "Conservador"], group = GRP_FIB, tooltip="Agresivo: Toma todos los retrocesos. Conservador: Exige un impulso de tamaño institucional.")
+min_fib_pts = input.float(40.0, "Distancia Mínima Fib (Puntos MNQ)", step=5.0, group = GRP_FIB, tooltip="Exige que la distancia entre el 0 y el 1 del Fib mida al menos estos puntos (ej. 40 o 50 pts). Ignora rangos cortos.")
+
+showFibInput = input.bool(true, "Show Fibonacci Levels", group = GRP_FIB)
+fibExtendInput = input.int(20, "Fib Extension Bars", minval = 5, maxval = 100, step = 5, group = GRP_FIB)
+
+showFib236Input = input.bool(false, "0.236", inline = "fib1", group = GRP_FIB)
+showFib382Input = input.bool(true, "0.382", inline = "fib1", group = GRP_FIB)
+showFib500Input = input.bool(true, "0.500", inline = "fib1", group = GRP_FIB)
+showFib618Input = input.bool(true, "0.618", inline = "fib2", group = GRP_FIB)
+showFib786Input = input.bool(true, "0.786", inline = "fib2", group = GRP_FIB)
+showFibTargetInput = input.bool(true, "Target (-0.618)", inline = "fib3", group = GRP_FIB)
+showFibTgt50Input = input.bool(true, "-0.5", inline = "fib3", group = GRP_FIB)
+
+confluenceTolInput = input.float(0.3, "Confluence ATR Tolerance", minval = 0.05, maxval = 1.0, step = 0.05, group = GRP_FIB)
+
+// ══════════════════════════════════════
+// INPUTS — Order Blocks (SMC Pro)
+// ══════════════════════════════════════
+GRP_OB = "📦 Order Blocks (SMC)"
+use_ob_filter = input.bool(false, "Exigir Confluencia con Order Block", group=GRP_OB, tooltip="Si está activado, solo entrará si el precio rebota dentro de un OB no mitigado.")
+mostrar_ob = input.bool(true, "Mostrar Order Blocks Visualmente", group=GRP_OB)
+ob_lookback = input.int(50, "Validez del OB (barras)", minval=10, maxval=200, group=GRP_OB)
+ob_mitigation = input.string("50%", "Nivel de Mitigación OB", options=["25%", "50%", "75%", "100%"], group=GRP_OB)
+color_ob_alcista = input.color(color.new(color.lime, 90), "Color OB Alcista", group=GRP_OB)
+color_ob_bajista = input.color(color.new(color.red, 90), "Color OB Bajista", group=GRP_OB)
+
+// ══════════════════════════════════════
+// INPUTS — Structure
+// ══════════════════════════════════════
+showStructInput = input.bool(true, "Show BOS / CHoCH", group = GRP_STRUCT)
+showSwingsInput = input.bool(true, "Show Swing Labels", group = GRP_STRUCT)
+showEngulfInput = input.bool(true, "Show Engulfing Signals", group = GRP_STRUCT)
+
+// ══════════════════════════════════════
+// INPUTS — Visual
+// ══════════════════════════════════════
+themeInput = input.string("Dark", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL)
+showSignalsInput = input.bool(true, "Show Buy/Sell Signals", group = GRP_VISUAL)
+structLineStyleInput = input.string("Solid", "Structure Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_VISUAL)
+structLineWidthInput = input.int(1, "Structure Line Width", minval = 1, maxval = 4, step = 1, group = GRP_VISUAL)
+// ══════════════════════════════════════
+// INPUTS — Visual Settings
+// ══════════════════════════════════════
+show_signal_labels = input.bool(true, "Mostrar Etiquetas LONG/SHORT", group = GRP_VISUAL, tooltip="Dibuja una etiqueta en el gráfico indicando el punto exacto de entrada. Puedes apagarla para limpiar la pantalla.")
+
+// ══════════════════════════════════════
+// INPUTS — Colors
+// ══════════════════════════════════════
+bullColorInput = input.color(#00E676, "Bull", inline = "colors", group = GRP_COLORS)
+bearColorInput = input.color(#FF5252, "Bear", inline = "colors", group = GRP_COLORS)
+fibColorInput = input.color(#42A5F5, "Fib Lines", inline = "colors2", group = GRP_COLORS)
+confluenceColorInput = input.color(#FFD600, "Confluence", inline = "colors2", group = GRP_COLORS)
+
+// ══════════════════════════════════════
+// THEME DETECTION & COLORS
+// ══════════════════════════════════════
+isDark = true
+TEXT_COLOR    = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED    = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+LABEL_TEXT   = #FFFFFF
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+getLineStyle(string s) =>
+    switch s
+        "Solid"  => line.style_solid
+        "Dotted" => line.style_dotted
+        => line.style_dashed
+
+fibLevel(float swH, float swL, float ratio) =>
+    swH - (swH - swL) * ratio
+
+// ══════════════════════════════════════
+// CORE CALCULATIONS
+// ══════════════════════════════════════
+float atrValue = nz(ta.atr(14), 0.0)
+int WARMUP_BARS = math.max(swingLenInput * 3, 50)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+float pivotHigh = ta.pivothigh(high, swingLenInput, swingLenInput)
+float pivotLow  = ta.pivotlow(low, swingLenInput, swingLenInput)
+
+var float swHigh1 = na
+var float swHigh2 = na
+var int   swHigh1Idx = na
+var int   swHigh2Idx = na
+
+var float swLow1 = na
+var float swLow2 = na
+var int   swLow1Idx = na
+var int   swLow2Idx = na
+
+bool newSwingHigh = false
+bool newSwingLow  = false
+
+float atrMinSize = atrFilterInput ? atrValue * atrMultInput : 0.0
+
+if not na(pivotHigh)
+    bool passFilter = na(swLow1) or (pivotHigh - swLow1) >= atrMinSize
+    if passFilter
+        swHigh2 := swHigh1
+        swHigh2Idx := swHigh1Idx
+        swHigh1 := pivotHigh
+        swHigh1Idx := bar_index - swingLenInput
+        newSwingHigh := true
+
+if not na(pivotLow)
+    bool passFilter = na(swHigh1) or (swHigh1 - pivotLow) >= atrMinSize
+    if passFilter
+        swLow2 := swLow1
+        swLow2Idx := swLow1Idx
+        swLow1 := pivotLow
+        swLow1Idx := bar_index - swingLenInput
+        newSwingLow := true
+
+if newSwingHigh and not na(swHigh2) and isWarmedUp and showSwingsInput
+    string swLbl = swHigh1 > swHigh2 ? "HH" : "LH"
+    color swClr = swHigh1 > swHigh2 ? bullColorInput : bearColorInput
+    label.new(swHigh1Idx, swHigh1, swLbl, color = color.new(swClr, 100), textcolor = swClr, style = label.style_label_down, size = size.tiny)
+
+if newSwingLow and not na(swLow2) and isWarmedUp and showSwingsInput
+    string swLbl = swLow1 > swLow2 ? "HL" : "LL"
+    color swClr = swLow1 > swLow2 ? bullColorInput : bearColorInput
+    label.new(swLow1Idx, swLow1, swLbl, color = color.new(swClr, 100), textcolor = swClr, style = label.style_label_up, size = size.tiny)
+
+// ══════════════════════════════════════
+// STRUCTURE DETECTION (BOS / CHoCH)
+// ══════════════════════════════════════
+var int structureBias = 0
+var float lastBrokenHigh = na
+var float lastBrokenLow  = na
+var int lastChochDir = 0
+
+bool isBOS   = false
+bool isCHoCH = false
+bool isBullBreak = false
+bool isBearBreak = false
+
+bool bullBreakCond = not na(swHigh1) and barstate.isconfirmed and isWarmedUp and close > swHigh1 and (na(lastBrokenHigh) or swHigh1 != lastBrokenHigh)
+bool bearBreakCond = not na(swLow1) and barstate.isconfirmed and isWarmedUp and close < swLow1 and (na(lastBrokenLow) or swLow1 != lastBrokenLow)
+
+if bullBreakCond and bearBreakCond
+    if structureBias <= 0
+        bearBreakCond := false
+    else
+        bullBreakCond := false
+
+if bullBreakCond
+    if structureBias <= 0
+        isCHoCH := true
+        lastChochDir := 1
+    else
+        isBOS := true
+    structureBias := 1
+    isBullBreak := true
+    lastBrokenHigh := swHigh1
+
+if bearBreakCond
+    if structureBias >= 0
+        isCHoCH := true
+        lastChochDir := -1
+    else
+        isBOS := true
+    structureBias := -1
+    isBearBreak := true
+    lastBrokenLow := swLow1
+
+if showStructInput and (isBOS or isCHoCH)
+    float breakPrice = isBullBreak ? nz(swHigh1, close) : nz(swLow1, close)
+    color breakColor = isBullBreak ? bullColorInput : bearColorInput
+    string breakText = isCHoCH ? "CHoCH" : "BOS"
+    int startIdx = isBullBreak ? nz(swHigh1Idx, bar_index - 10) : nz(swLow1Idx, bar_index - 10)
+    int midIdx = math.round(math.avg(startIdx, bar_index))
+    line.new(startIdx, breakPrice, bar_index, breakPrice, color = breakColor, style = getLineStyle(structLineStyleInput), width = structLineWidthInput)
+    label.new(midIdx, breakPrice, breakText, color = color.new(breakColor, 100), textcolor = breakColor, style = isBullBreak ? label.style_label_down : label.style_label_up, size = size.small)
+
+// ══════════════════════════════════════
+// SMC ORDER BLOCKS ENGINE (INJECTED)
+// ══════════════════════════════════════
+var float ob_alcista_top = na
+var float ob_alcista_bottom = na
+var int bar_ob_alcista = na
+var box ob_box_alcista = na
+
+var float ob_bajista_top = na
+var float ob_bajista_bottom = na
+var int bar_ob_bajista = na
+var box ob_box_bajista = na
+
+float nivel_mitigacion_ob = ob_mitigation == "25%" ? 0.25 : ob_mitigation == "50%" ? 0.5 : ob_mitigation == "75%" ? 0.75 : 1.0
+
+if isBullBreak
+    for i = 1 to 15
+        if close[i] < open[i]
+            ob_alcista_top := high[i]
+            ob_alcista_bottom := low[i]
+            bar_ob_alcista := bar_index - i
+            if mostrar_ob
+                if not na(ob_box_alcista)
+                    box.delete(ob_box_alcista)
+                ob_box_alcista := box.new(bar_ob_alcista, ob_alcista_top, bar_index + ob_lookback, ob_alcista_bottom, border_color=color.lime, bgcolor=color_ob_alcista, border_width=1, text="OB+", text_color=color.lime, text_size=size.small, text_halign=text.align_right)
+            break
+
+if isBearBreak
+    for i = 1 to 15
+        if close[i] > open[i]
+            ob_bajista_top := high[i]
+            ob_bajista_bottom := low[i]
+            bar_ob_bajista := bar_index - i
+            if mostrar_ob
+                if not na(ob_box_bajista)
+                    box.delete(ob_box_bajista)
+                ob_box_bajista := box.new(bar_ob_bajista, ob_bajista_top, bar_index + ob_lookback, ob_bajista_bottom, border_color=color.red, bgcolor=color_ob_bajista, border_width=1, text="OB-", text_color=color.red, text_size=size.small, text_halign=text.align_right)
+            break
+
+bool ob_alcista_mitigado = true 
+if not na(ob_alcista_top) and not na(bar_ob_alcista)
+    if bar_index - bar_ob_alcista <= ob_lookback
+        ob_alcista_mitigado := false
+        float nivel_mitigacion_precio_bull = ob_alcista_bottom + ((ob_alcista_top - ob_alcista_bottom) * nivel_mitigacion_ob)
+        if low <= nivel_mitigacion_precio_bull
+            ob_alcista_mitigado := true
+            if mostrar_ob and not na(ob_box_alcista)
+                box.set_bgcolor(ob_box_alcista, color.new(color.gray, 90))
+                box.set_border_color(ob_box_alcista, color.new(color.gray, 80))
+        if not ob_alcista_mitigado and mostrar_ob and not na(ob_box_alcista)
+            box.set_right(ob_box_alcista, bar_index + 5)
+    else
+        ob_alcista_mitigado := true
+
+bool ob_bajista_mitigado = true
+if not na(ob_bajista_top) and not na(bar_ob_bajista)
+    if bar_index - bar_ob_bajista <= ob_lookback
+        ob_bajista_mitigado := false
+        float nivel_mitigacion_precio_bear = ob_bajista_top - ((ob_bajista_top - ob_bajista_bottom) * nivel_mitigacion_ob)
+        if high >= nivel_mitigacion_precio_bear
+            ob_bajista_mitigado := true
+            if mostrar_ob and not na(ob_box_bajista)
+                box.set_bgcolor(ob_box_bajista, color.new(color.gray, 90))
+                box.set_border_color(ob_box_bajista, color.new(color.gray, 80))
+        if not ob_bajista_mitigado and mostrar_ob and not na(ob_box_bajista)
+            box.set_right(ob_box_bajista, bar_index + 5)
+    else
+        ob_bajista_mitigado := true
+
+// ══════════════════════════════════════
+// FIBONACCI RETRACEMENT ENGINE
+// ══════════════════════════════════════
+var float fibSwingHigh = na
+var float fibSwingLow  = na
+var int   fibSwingHighIdx = na
+var int   fibSwingLowIdx  = na
+var bool  fibNeedsRedraw = false
+var bool  fibHighIsLive = false
+var bool  fibLowIsLive  = false
+var int fibDirection = 0
+
+if isCHoCH and isBullBreak
+    fibDirection := 1
+    fibSwingHigh := high
+    fibSwingHighIdx := bar_index
+    fibSwingLow := swLow1
+    fibSwingLowIdx := nz(swLow1Idx, bar_index - 10)
+    fibHighIsLive := true
+    fibLowIsLive := false
+    fibNeedsRedraw := true
+
+if isCHoCH and isBearBreak
+    fibDirection := -1
+    fibSwingLow := low
+    fibSwingLowIdx := bar_index
+    fibSwingHigh := swHigh1
+    fibSwingHighIdx := nz(swHigh1Idx, bar_index - 10)
+    fibLowIsLive := true
+    fibHighIsLive := false
+    fibNeedsRedraw := true
+
+if isBOS and isBullBreak
+    fibSwingHigh := high
+    fibSwingHighIdx := bar_index
+    fibSwingLow := swLow1
+    fibSwingLowIdx := nz(swLow1Idx, bar_index - 10)
+    fibHighIsLive := true
+    fibLowIsLive := false
+    fibNeedsRedraw := true
+
+if isBOS and isBearBreak
+    fibSwingLow := low
+    fibSwingLowIdx := bar_index
+    fibSwingHigh := swHigh1
+    fibSwingHighIdx := nz(swHigh1Idx, bar_index - 10)
+    fibLowIsLive := true
+    fibHighIsLive := false
+    fibNeedsRedraw := true
+
+if not isBullBreak and not isBearBreak
+    if fibHighIsLive and not na(fibSwingHigh) and high > fibSwingHigh
+        fibSwingHigh := high
+        fibSwingHighIdx := bar_index
+        fibNeedsRedraw := true
+    if fibLowIsLive and not na(fibSwingLow) and low < fibSwingLow
+        fibSwingLow := low
+        fibSwingLowIdx := bar_index
+        fibNeedsRedraw := true
+
+if newSwingHigh and fibHighIsLive and not na(swHigh1)
+    fibSwingHigh := swHigh1
+    fibSwingHighIdx := swHigh1Idx
+    fibHighIsLive := false
+    fibNeedsRedraw := true
+
+if newSwingLow and fibLowIsLive and not na(swLow1)
+    fibSwingLow := swLow1
+    fibSwingLowIdx := swLow1Idx
+    fibLowIsLive := false
+    fibNeedsRedraw := true
+
+if newSwingHigh and not fibHighIsLive and not na(swHigh1) and not na(fibSwingHigh) and swHigh1 != fibSwingHigh
+    fibSwingHigh := swHigh1
+    fibSwingHighIdx := swHigh1Idx
+    fibNeedsRedraw := true
+
+if newSwingLow and not fibLowIsLive and not na(swLow1) and not na(fibSwingLow) and swLow1 != fibSwingLow
+    fibSwingLow := swLow1
+    fibSwingLowIdx := swLow1Idx
+    fibNeedsRedraw := true
+
+var float fib236Price = na
+var float fib382Price = na
+var float fib500Price = na
+var float fib618Price = na
+var float fib786Price = na
+var float fibTargetPrice = na
+var float fibTgt50Price = na
+
+bool fibRangeValid = not na(fibSwingHigh) and not na(fibSwingLow) and fibSwingHigh > fibSwingLow and fibDirection != 0
+
+if fibRangeValid
+    if fibDirection == 1
+        fib236Price := fibLevel(fibSwingHigh, fibSwingLow, 0.236)
+        fib382Price := fibLevel(fibSwingHigh, fibSwingLow, 0.382)
+        fib500Price := fibLevel(fibSwingHigh, fibSwingLow, 0.500)
+        fib618Price := fibLevel(fibSwingHigh, fibSwingLow, 0.618)
+        fib786Price := fibLevel(fibSwingHigh, fibSwingLow, 0.786)
+        fibTgt50Price := fibLevel(fibSwingHigh, fibSwingLow, -0.5)
+        fibTargetPrice := fibLevel(fibSwingHigh, fibSwingLow, -0.618)
+    else
+        float fibRange = fibSwingHigh - fibSwingLow
+        fib236Price := fibSwingLow + fibRange * 0.236
+        fib382Price := fibSwingLow + fibRange * 0.382
+        fib500Price := fibSwingLow + fibRange * 0.500
+        fib618Price := fibSwingLow + fibRange * 0.618
+        fib786Price := fibSwingLow + fibRange * 0.786
+        fibTgt50Price := fibSwingLow - fibRange * 0.5
+        fibTargetPrice := fibSwingLow - fibRange * 0.618
+else
+    fib236Price := na
+    fib382Price := na
+    fib500Price := na
+    fib618Price := na
+    fib786Price := na
+    fibTgt50Price := na
+    fibTargetPrice := na
+
+var line  fibLine236 = na
+var line  fibLine382 = na
+var line  fibLine500 = na
+var line  fibLine618 = na
+var line  fibLine786 = na
+var label fibLbl236 = na
+var label fibLbl382 = na
+var label fibLbl500 = na
+var label fibLbl618 = na
+var label fibLbl786 = na
+var line  fibRefLine = na
+var line  fibLineTarget = na
+var label fibLblTarget = na
+var line  fibLineTgt50 = na
+var label fibLblTgt50 = na
+var box   fibGoldenZone = na
+var box   fibTargetZone = na
+
+if showFibInput and fibRangeValid
+    int rightEdge = bar_index + fibExtendInput
+    color targetColor = fibDirection == 1 ? bullColorInput : bearColorInput
+
+    if fibNeedsRedraw
+        line.delete(fibLine236), line.delete(fibLine382), line.delete(fibLine500)
+        line.delete(fibLine618), line.delete(fibLine786), line.delete(fibRefLine)
+        line.delete(fibLineTarget), line.delete(fibLineTgt50)
+        label.delete(fibLbl236), label.delete(fibLbl382), label.delete(fibLbl500)
+        label.delete(fibLbl618), label.delete(fibLbl786), label.delete(fibLblTarget), label.delete(fibLblTgt50)
+        box.delete(fibGoldenZone), box.delete(fibTargetZone)
+
+        color fibCol = fibColorInput
+        fibRefLine := line.new(fibSwingLowIdx, fibSwingLow, fibSwingHighIdx, fibSwingHigh, color = color.new(fibCol, 60), style = line.style_dotted, width = 1)
+
+        float gzTop = math.max(fib500Price, fib786Price)
+        float gzBot = math.min(fib500Price, fib786Price)
+        fibGoldenZone := box.new(bar_index, gzTop, rightEdge, gzBot, border_color = color.new(#FFD600, 70), bgcolor = color.new(#FFD600, 88), border_width = 0)
+
+        if showFib236Input
+            fibLine236 := line.new(bar_index, fib236Price, rightEdge, fib236Price, color = color.new(fibCol, 40), style = line.style_dotted, width = 1)
+            fibLbl236 := label.new(rightEdge, fib236Price, "0.236", color = color.new(fibCol, 100), textcolor = color.new(fibCol, 20), style = label.style_label_left, size = size.small)
+        if showFib382Input
+            fibLine382 := line.new(bar_index, fib382Price, rightEdge, fib382Price, color = color.new(fibCol, 30), style = line.style_dotted, width = 1)
+            fibLbl382 := label.new(rightEdge, fib382Price, "0.382", color = color.new(fibCol, 100), textcolor = color.new(fibCol, 10), style = label.style_label_left, size = size.small)
+        if showFib500Input
+            fibLine500 := line.new(bar_index, fib500Price, rightEdge, fib500Price, color = color.new(fibCol, 20), style = line.style_dashed, width = 2)
+            fibLbl500 := label.new(rightEdge, fib500Price, "0.500", color = color.new(fibCol, 100), textcolor = color.new(fibCol, 0), style = label.style_label_left, size = size.small)
+        if showFib618Input
+            fibLine618 := line.new(bar_index, fib618Price, rightEdge, fib618Price, color = color.new(fibCol, 10), style = line.style_solid, width = 2)
+            fibLbl618 := label.new(rightEdge, fib618Price, "0.618", color = color.new(fibCol, 100), textcolor = color.new(fibCol, 0), style = label.style_label_left, size = size.small)
+        if showFib786Input
+            fibLine786 := line.new(bar_index, fib786Price, rightEdge, fib786Price, color = color.new(fibCol, 30), style = line.style_dotted, width = 1)
+            fibLbl786 := label.new(rightEdge, fib786Price, "0.786", color = color.new(fibCol, 100), textcolor = color.new(fibCol, 10), style = label.style_label_left, size = size.small)
+        if showFibTargetInput
+            string tgtLabel = fibDirection == 1 ? "Target ↑" : "Target ↓"
+            fibLineTarget := line.new(bar_index, fibTargetPrice, rightEdge, fibTargetPrice, color = targetColor, style = line.style_dashed, width = 2)
+            fibLblTarget := label.new(rightEdge, fibTargetPrice, tgtLabel, color = color.new(targetColor, 100), textcolor = targetColor, style = label.style_label_left, size = size.small)
+        if showFibTgt50Input
+            string tgt50Label = fibDirection == 1 ? "-0.5 ↑" : "-0.5 ↓"
+            fibLineTgt50 := line.new(bar_index, fibTgt50Price, rightEdge, fibTgt50Price, color = color.new(targetColor, 40), style = line.style_dotted, width = 1)
+            fibLblTgt50 := label.new(rightEdge, fibTgt50Price, tgt50Label, color = color.new(targetColor, 100), textcolor = color.new(targetColor, 40), style = label.style_label_left, size = size.small)
+
+        if showFibTargetInput or showFibTgt50Input
+            float tzTop = math.max(fibTgt50Price, fibTargetPrice)
+            float tzBot = math.min(fibTgt50Price, fibTargetPrice)
+            color tzColor = fibDirection == 1 ? bullColorInput : bearColorInput
+            fibTargetZone := box.new(bar_index, tzTop, rightEdge, tzBot, border_color = color.new(tzColor, 70), bgcolor = color.new(tzColor, 88), border_width = 0)
+
+        fibNeedsRedraw := false
+    else
+        int rEdge = bar_index + fibExtendInput
+        if not na(fibLine236)
+            fibLine236.set_x2(rEdge), fibLbl236.set_x(rEdge)
+        if not na(fibLine382)
+            fibLine382.set_x2(rEdge), fibLbl382.set_x(rEdge)
+        if not na(fibLine500)
+            fibLine500.set_x2(rEdge), fibLbl500.set_x(rEdge)
+        if not na(fibLine618)
+            fibLine618.set_x2(rEdge), fibLbl618.set_x(rEdge)
+        if not na(fibLine786)
+            fibLine786.set_x2(rEdge), fibLbl786.set_x(rEdge)
+        if not na(fibLineTarget)
+            fibLineTarget.set_x2(rEdge), fibLblTarget.set_x(rEdge)
+        if not na(fibLineTgt50)
+            fibLineTgt50.set_x2(rEdge), fibLblTgt50.set_x(rEdge)
+        if not na(fibGoldenZone)
+            fibGoldenZone.set_right(rEdge)
+        if not na(fibTargetZone)
+            fibTargetZone.set_right(rEdge)
+
+if not showFibInput or not fibRangeValid
+    fibNeedsRedraw := false
+
+bool inPremium = false
+bool inDiscount = false
+
+if not na(fib500Price) and fibRangeValid
+    if fibDirection == 1
+        inPremium := close > fib500Price
+        inDiscount := close <= fib500Price
+    else
+        inPremium := close < fib500Price
+        inDiscount := close >= fib500Price
+
+float confTolerance = atrValue > 0 ? atrValue * confluenceTolInput : 0.001
+isNearLevel(float level) =>
+    not na(level) and math.abs(close - level) <= confTolerance
+
+float confluenceWeight = 0.0
+
+if showFib236Input and isNearLevel(fib236Price)
+    confluenceWeight += 1.0
+if isNearLevel(fib382Price)
+    confluenceWeight += 1.5
+if isNearLevel(fib500Price)
+    confluenceWeight += 2.0
+if isNearLevel(fib618Price)
+    confluenceWeight += 2.5
+if isNearLevel(fib786Price)
+    confluenceWeight += 1.5
+if not na(swHigh1) and isNearLevel(swHigh1)
+    confluenceWeight += 1.0
+if not na(swLow1) and isNearLevel(swLow1)
+    confluenceWeight += 1.0
+
+// ══════════════════════════════════════
+// ENGULFING PATTERN DETECTION
+// ══════════════════════════════════════
+float bodyHi = math.max(close, open)
+float bodyLo = math.min(close, open)
+float body = bodyHi - bodyLo
+float bodyAvg = nz(ta.ema(body, 14), body)
+bool isLongBody = body > bodyAvg
+bool isSmallPrev = nz(body[1], 0.0) < nz(bodyAvg[1], body)
+
+bool bearishEngulf = close < open and isLongBody and close[1] > open[1] and isSmallPrev and close <= open[1] and open >= close[1] and (close < open[1] or open > close[1])
+bool bullishEngulf = close > open and isLongBody and close[1] < open[1] and isSmallPrev and close >= open[1] and open <= close[1] and (close > open[1] or open < close[1])
+
+bool bearEngulfCtx = bearishEngulf and barstate.isconfirmed and isWarmedUp and (inPremium or confluenceWeight >= 1.5)
+bool bullEngulfCtx = bullishEngulf and barstate.isconfirmed and isWarmedUp and (inDiscount or confluenceWeight >= 1.5)
+
+if showEngulfInput and bearEngulfCtx
+    label.new(bar_index, high, "▼", color = color.new(bearColorInput, 100), textcolor = bearColorInput, style = label.style_label_down, size = size.small)
+
+if showEngulfInput and bullEngulfCtx
+    label.new(bar_index, low, "▲", color = color.new(bullColorInput, 100), textcolor = bullColorInput, style = label.style_label_up, size = size.small)
+
+// ══════════════════════════════════════
+// SIGNAL LOGIC (Ultra-Estricto Anti Drawdown)
+// ══════════════════════════════════════
+var int barsSinceLastBuy  = 999
+var int barsSinceLastSell = 999
+barsSinceLastBuy  += 1
+barsSinceLastSell += 1
+
+// 1. Filtro Macro (EMA 200)
+float ema200 = ta.ema(close, 200)
+bool trend_ok_long = use_ema_filter ? close > ema200 : true
+bool trend_ok_short = use_ema_filter ? close < ema200 : true
+
+// 2. Filtro de Horario (NY Killzone)
+bool in_session = use_session ? not na(time(timeframe.period, session_time, "America/New_York")) : true
+
+// 3. Filtro de Rango Fibo en PUNTOS REALES (Agresivo vs Conservador)
+float current_fib_pts = math.abs(nz(fibSwingHigh) - nz(fibSwingLow))
+bool range_ok = fib_mode == "Agresivo" ? true : (current_fib_pts >= min_fib_pts)
+
+// 4. Filtro SMC: Order Blocks Exigidos
+bool ob_long_ok = use_ob_filter ? (not ob_alcista_mitigado and low <= ob_alcista_top and close >= ob_alcista_bottom) : true
+bool ob_short_ok = use_ob_filter ? (not ob_bajista_mitigado and high >= ob_bajista_bottom and close <= ob_bajista_top) : true
+
+// 5. Gatillos Blindados (Ahora con OB)
+bool buyRaw = bullEngulfCtx and structureBias == 1 and confluenceWeight >= min_confluence and trend_ok_long and in_session and range_ok and ob_long_ok
+bool sellRaw = bearEngulfCtx and structureBias == -1 and confluenceWeight >= min_confluence and trend_ok_short and in_session and range_ok and ob_short_ok
+
+bool confirmedBuy  = buyRaw and barsSinceLastBuy >= cooldownInput
+bool confirmedSell = sellRaw and barsSinceLastSell >= cooldownInput
+
+if confirmedBuy
+    barsSinceLastBuy := 0
+if confirmedSell
+    barsSinceLastSell := 0
+    
+// ══════════════════════════════════════
+// 🤖 ESTRATEGIA Y GESTIÓN DE RIESGO (TRAILING STOP) + VISUAL TRACKER
+// ══════════════════════════════════════
+var float trade_sl = na
+var float trade_entry = na
+var float trade_risk = na
+float tick_size = syminfo.mintick
+
+// Variables en la sombra para los Láseres del Trade Activo
+var line active_entry_ln = na
+var line active_trail_act_ln = na
+var line active_sl_ln = na
+var label active_trade_lbl = na
+
+// ENTRADAS LARGAS
+if confirmedBuy and strategy.position_size == 0
+    trade_sl := low - (atrValue * sl_atr_mult)
+    trade_entry := close
+    trade_risk := math.abs(trade_entry - trade_sl)
+    strategy.entry("Long", strategy.long)
+    
+    // 🏷️ ETIQUETA VISUAL LONG
+    if show_signal_labels
+        label.new(bar_index, low - (atrValue * 0.5), "🚀 LONG", color=color.new(color.lime, 80), textcolor=color.lime, style=label.style_label_up, size=size.small)
+
+    // Limpiar cualquier láser viejo por seguridad
+    if not na(active_entry_ln)
+        line.delete(active_entry_ln)
+        line.delete(active_trail_act_ln)
+        line.delete(active_sl_ln)
+        label.delete(active_trade_lbl)
+
+
+    // Limpiar cualquier láser viejo por seguridad
+    if not na(active_entry_ln)
+        line.delete(active_entry_ln)
+        line.delete(active_trail_act_ln)
+        line.delete(active_sl_ln)
+        label.delete(active_trade_lbl)
+
+    // Disparar los Láseres en Vivo (Long)
+    active_entry_ln := line.new(bar_index, trade_entry, bar_index + 5, trade_entry, color=color.new(color.blue, 20), style=line.style_solid, width=1)
+    active_trail_act_ln := line.new(bar_index, trade_entry + trail_act_pts, bar_index + 5, trade_entry + trail_act_pts, color=color.new(color.lime, 20), style=line.style_dashed, width=2)
+    active_sl_ln := line.new(bar_index, trade_sl, bar_index + 5, trade_sl, color=color.new(color.red, 20), style=line.style_solid, width=2)
+    active_trade_lbl := label.new(bar_index + 5, trade_entry + trail_act_pts, "🎯 Activa Trailing", color=color.new(color.lime, 100), textcolor=color.lime, style=label.style_label_down, size=size.small)
+
+// ENTRADAS CORTAS
+if confirmedSell and strategy.position_size == 0
+    trade_sl := high + (atrValue * sl_atr_mult)
+    trade_entry := close
+    trade_risk := math.abs(trade_sl - trade_entry)
+    strategy.entry("Short", strategy.short)
+    
+    // 🏷️ ETIQUETA VISUAL SHORT
+    if show_signal_labels
+        label.new(bar_index, high + (atrValue * 0.5), "🩸 SHORT", color=color.new(color.red, 80), textcolor=color.red, style=label.style_label_down, size=size.small)
+
+    // Limpiar cualquier láser viejo por seguridad
+    if not na(active_entry_ln)
+        line.delete(active_entry_ln)
+        line.delete(active_trail_act_ln)
+        line.delete(active_sl_ln)
+        label.delete(active_trade_lbl)
+
+    // Limpiar cualquier láser viejo por seguridad
+    if not na(active_entry_ln)
+        line.delete(active_entry_ln)
+        line.delete(active_trail_act_ln)
+        line.delete(active_sl_ln)
+        label.delete(active_trade_lbl)
+
+    // Disparar los Láseres en Vivo (Short)
+    active_entry_ln := line.new(bar_index, trade_entry, bar_index + 5, trade_entry, color=color.new(color.blue, 20), style=line.style_solid, width=1)
+    active_trail_act_ln := line.new(bar_index, trade_entry - trail_act_pts, bar_index + 5, trade_entry - trail_act_pts, color=color.new(color.lime, 20), style=line.style_dashed, width=2)
+    active_sl_ln := line.new(bar_index, trade_sl, bar_index + 5, trade_sl, color=color.new(color.red, 20), style=line.style_solid, width=2)
+    active_trade_lbl := label.new(bar_index + 5, trade_entry - trail_act_pts, "🎯 Activa Trailing", color=color.new(color.lime, 100), textcolor=color.lime, style=label.style_label_up, size=size.small)
+
+// GESTIÓN DE SALIDAS Y PROYECCIÓN DEL LÁSER
+if strategy.position_size > 0
+    float tr_act_ticks = trail_act_pts / tick_size
+    float tr_off_ticks = trail_off_pts / tick_size
+    float sl_ticks = math.max(1, trade_risk / tick_size)
+    strategy.exit("Trail Long", "Long", loss=sl_ticks, trail_points=tr_act_ticks, trail_offset=tr_off_ticks)
+
+    // Estirar los láseres con el precio actual
+    if not na(active_entry_ln)
+        line.set_x2(active_entry_ln, bar_index + 5)
+        line.set_x2(active_trail_act_ln, bar_index + 5)
+        line.set_x2(active_sl_ln, bar_index + 5)
+        label.set_x(active_trade_lbl, bar_index + 5)
+
+if strategy.position_size < 0
+    float tr_act_ticks = trail_act_pts / tick_size
+    float tr_off_ticks = trail_off_pts / tick_size
+    float sl_ticks = math.max(1, trade_risk / tick_size)
+    strategy.exit("Trail Short", "Short", loss=sl_ticks, trail_points=tr_act_ticks, trail_offset=tr_off_ticks)
+
+    // Estirar los láseres con el precio actual
+    if not na(active_entry_ln)
+        line.set_x2(active_entry_ln, bar_index + 5)
+        line.set_x2(active_trail_act_ln, bar_index + 5)
+        line.set_x2(active_sl_ln, bar_index + 5)
+        label.set_x(active_trade_lbl, bar_index + 5)
+
+// 🧹 AUTO-DESTRUCCIÓN ANTI-CHURRE
+// Si la posición se cierra (pasa de >0 o <0 a 0), borramos el holograma del trade
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    if not na(active_entry_ln)
+        line.delete(active_entry_ln)
+        line.delete(active_trail_act_ln)
+        line.delete(active_sl_ln)
+        label.delete(active_trade_lbl)
+        active_entry_ln := na // Reseteamos la memoria
+
+// ══════════════════════════════════════
+// CLEANUP GENERAL
+// ══════════════════════════════════════
+if array.size(label.all) > 490
+    label.delete(array.shift(label.all))
+if array.size(line.all) > 490
+    line.delete(array.shift(line.all))
+if array.size(box.all) > 490
+    box.delete(array.shift(box.all))

@@ -1,18 +1,24 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   AreaSeries,
   ColorType,
   createChart,
+  type IChartApi,
+  type ISeriesApi,
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { DailyPnl } from "@/lib/stats/compute";
 import { buildDayAccounts } from "@/lib/stats/equity";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
-import { formatPnl } from "@/lib/utils/format";
 import type { AssetFlow } from "@/app/api/asset-flows/route";
 import { followedEquity, walletFollowLabel } from "@/lib/wallet-follow";
+import { CurrencyToggle } from "./CurrencyToggle";
+import {
+  formatDisplayMoney,
+  type DisplayCurrency,
+} from "@/lib/display-money";
 
 interface EquityCurvePanelProps {
   daily: DailyPnl[];
@@ -27,10 +33,8 @@ interface EquityCurvePanelProps {
   fxRate?: number;
   /** 월간 목표와 같은 지갑 */
   walletFollow?: string;
-}
-
-function won(n: number): string {
-  return `₩${Math.round(n).toLocaleString("ko-KR")}`;
+  currency?: DisplayCurrency;
+  onCurrencyChange?: (next: DisplayCurrency) => void;
 }
 
 const STABLES = new Set([
@@ -46,7 +50,16 @@ const STABLES = new Set([
 ]);
 
 function dayToUtcSec(day: string): number {
-  return Math.floor(new Date(`${day}T00:00:00+09:00`).getTime() / 1000);
+  const [year, month, date] = day.split("-").map(Number);
+  return Math.floor(Date.UTC(year, (month ?? 1) - 1, date ?? 1) / 1000);
+}
+
+function formatUtcDay(sec: number): string {
+  const date = new Date(sec * 1000);
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 function flowNet(f: AssetFlow): number {
@@ -63,9 +76,22 @@ export function EquityCurvePanel({
   flowsRefreshKey = 0,
   fxRate: fxRateProp,
   walletFollow,
+  currency = "krw",
+  onCurrencyChange,
 }: EquityCurvePanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
   const [flows, setFlows] = useState<AssetFlow[]>([]);
+  const [hover, setHover] = useState<{
+    x: number;
+    y: number;
+    paneLeft: number;
+    paneTop: number;
+    paneW: number;
+    paneH: number;
+    label: string;
+  } | null>(null);
   const fxRate = fxRateProp && fxRateProp > 0 ? fxRateProp : 1350;
 
   useEffect(() => {
@@ -178,7 +204,7 @@ export function EquityCurvePanel({
     if (!el || series.length === 0) return;
 
     const chart = createChart(el, {
-      height: 280,
+      autoSize: true,
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
         textColor: "#a1a1aa",
@@ -194,10 +220,17 @@ export function EquityCurvePanel({
         timeVisible: false,
       },
       crosshair: {
-        vertLine: { color: "#71717a" },
-        horzLine: { color: "#71717a" },
+        vertLine: { visible: false, labelVisible: false },
+        horzLine: { visible: false, labelVisible: false },
       },
+      localization: {
+        priceFormatter: (price: number) =>
+          formatDisplayMoney(price, currency, fxRate),
+      },
+      handleScroll: false,
+      handleScale: false,
     });
+    chartRef.current = chart;
 
     const area = chart.addSeries(AreaSeries, {
       lineColor: "#34d399",
@@ -206,6 +239,7 @@ export function EquityCurvePanel({
       lineWidth: 2,
       priceLineVisible: false,
     });
+    seriesRef.current = area;
 
     area.setData(
       series.map((p) => ({
@@ -237,67 +271,100 @@ export function EquityCurvePanel({
     }
 
     chart.timeScale().fitContent();
-    const ro = new ResizeObserver(() => {
-      if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth });
-      }
-    });
-    ro.observe(el);
-    chart.applyOptions({ width: el.clientWidth });
 
     return () => {
-      ro.disconnect();
+      chartRef.current = null;
+      seriesRef.current = null;
       chart.remove();
     };
-  }, [series, liveEquity, goalUsdt]);
+  }, [series, liveEquity, goalUsdt, currency, fxRate]);
+
+  function onChartMove(event: MouseEvent<HTMLDivElement>) {
+    const root = containerRef.current;
+    const chart = chartRef.current;
+    const area = seriesRef.current;
+    if (!root || !chart || !area) return;
+    const pane = root.querySelector("canvas");
+    if (!pane) return;
+    const host = root.getBoundingClientRect();
+    const rect = pane.getBoundingClientRect();
+    const localX = event.clientX - rect.left;
+    const localY = event.clientY - rect.top;
+    if (localX < 0 || localY < 0 || localX > rect.width || localY > rect.height) {
+      setHover(null);
+      return;
+    }
+    const price = area.coordinateToPrice(localY);
+    const time = chart.timeScale().coordinateToTime(localX);
+    const day = typeof time === "number" ? formatUtcDay(time) : "—";
+    const priceText =
+      price == null ? "—" : formatDisplayMoney(price, currency, fxRate);
+    const paneLeft = rect.left - host.left;
+    const paneTop = rect.top - host.top;
+    setHover({
+      x: paneLeft + localX,
+      y: paneTop + localY,
+      paneLeft,
+      paneTop,
+      paneW: rect.width,
+      paneH: rect.height,
+      label: `${day}  ${priceText}`,
+    });
+  }
 
   const last = series[series.length - 1]?.value;
   const maxCoin = nonStableCoins[0]?.usdValue ?? 0;
+  const altCurrency: DisplayCurrency = currency === "krw" ? "usdt" : "krw";
+  const show = (n: number, signed = false) =>
+    formatDisplayMoney(n, currency, fxRate, signed);
+  const showAlt = (n: number) => formatDisplayMoney(n, altCurrency, fxRate);
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-zinc-500">
-        단위는 USDT($)입니다. 한화는 업비트 USDT 환율로 환산한 참고값입니다. 파란
-        점선=현재
-        {goalUsdt != null ? " · 노란 점선=이번 달 월말 목표 자산" : ""}.
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-zinc-500">
+          파란 점선=현재
+          {goalUsdt != null ? " · 노란 점선=이번 달 월말 목표 자산" : ""}. 환율은
+          업비트 USDT 시세({fxRate.toLocaleString("ko-KR")}원)입니다. 십자선은
+          마우스 위치에 맞춥니다.
+        </p>
+        {onCurrencyChange && (
+          <CurrencyToggle value={currency} onChange={onCurrencyChange} />
+        )}
+      </div>
 
       <div className="flex flex-wrap gap-4 text-sm">
         <div>
-          <p className="text-[11px] text-zinc-500">곡선 최신 (USDT)</p>
+          <p className="text-[11px] text-zinc-500">곡선 최신</p>
           <p className="font-semibold tabular-nums text-zinc-100">
-            {last != null ? `$${last.toFixed(2)}` : "—"}
+            {last != null ? show(last) : "—"}
           </p>
           {last != null && (
-            <p className="text-[11px] tabular-nums text-zinc-600">
-              {won(last * fxRate)}
-            </p>
+            <p className="text-[11px] tabular-nums text-zinc-600">{showAlt(last)}</p>
           )}
         </div>
         <div>
-          <p className="text-[11px] text-zinc-500">누적 실현손익 (USDT)</p>
+          <p className="text-[11px] text-zinc-500">누적 실현손익</p>
           <p
             className={`font-semibold tabular-nums ${
               totalPnl >= 0 ? "text-emerald-400" : "text-rose-400"
             }`}
           >
-            {formatPnl(totalPnl)}
+            {show(totalPnl, true)}
           </p>
-          <p className="text-[11px] tabular-nums text-zinc-600">
-            {won(totalPnl * fxRate)}
-          </p>
+          <p className="text-[11px] tabular-nums text-zinc-600">{showAlt(totalPnl)}</p>
         </div>
         <div>
-          <p className="text-[11px] text-zinc-500">USDT 순유입</p>
+          <p className="text-[11px] text-zinc-500">순유입</p>
           <p
             className={`font-semibold tabular-nums ${
               netExternalAll >= 0 ? "text-emerald-400" : "text-rose-400"
             }`}
           >
-            ${netExternalAll.toFixed(2)}
+            {show(netExternalAll, true)}
           </p>
           <p className="text-[11px] tabular-nums text-zinc-600">
-            {won(netExternalAll * fxRate)}
+            {showAlt(netExternalAll)}
           </p>
         </div>
         <div>
@@ -305,26 +372,18 @@ export function EquityCurvePanel({
             실시간 자산 · {walletFollowLabel(walletFollow)}
           </p>
           <p className="font-semibold tabular-nums text-sky-300">
-            {walletLoading
-              ? "…"
-              : liveEquity != null
-                ? `$${liveEquity.toFixed(2)}`
-                : "—"}
+            {walletLoading ? "…" : liveEquity != null ? show(liveEquity) : "—"}
           </p>
           {!walletLoading && liveEquity != null && (
             <p className="text-[11px] tabular-nums text-zinc-600">
-              {won(liveEquity * fxRate)}
+              {showAlt(liveEquity)}
             </p>
           )}
         </div>
         <div>
           <p className="text-[11px] text-zinc-500">비안정 코인</p>
           <p className="font-semibold tabular-nums text-zinc-100">
-            {walletLoading
-              ? "…"
-              : coinAssetUsd > 0
-                ? `$${coinAssetUsd.toFixed(2)}`
-                : "—"}
+            {walletLoading ? "…" : coinAssetUsd > 0 ? show(coinAssetUsd) : "—"}
           </p>
         </div>
         <div>
@@ -334,7 +393,7 @@ export function EquityCurvePanel({
               liveUpl >= 0 ? "text-emerald-400" : "text-rose-400"
             }`}
           >
-            {walletLoading ? "…" : formatPnl(liveUpl)}
+            {walletLoading ? "…" : show(liveUpl, true)}
           </p>
         </div>
       </div>
@@ -346,8 +405,32 @@ export function EquityCurvePanel({
       ) : (
         <div
           ref={containerRef}
-          className="w-full overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/40"
-        />
+          onMouseMove={onChartMove}
+          onMouseLeave={() => setHover(null)}
+          className="relative h-[280px] w-full overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/40"
+        >
+          {hover && (
+            <>
+              <div
+                className="pointer-events-none absolute z-10 w-px bg-zinc-300/80"
+                style={{ left: hover.x, top: hover.paneTop, height: hover.paneH }}
+              />
+              <div
+                className="pointer-events-none absolute z-10 h-px bg-zinc-300/80"
+                style={{ top: hover.y, left: hover.paneLeft, width: hover.paneW }}
+              />
+              <div
+                className="pointer-events-none absolute z-10 rounded bg-zinc-950/95 px-1.5 py-0.5 text-[11px] tabular-nums text-zinc-100"
+                style={{
+                  left: Math.min(hover.x + 8, hover.paneLeft + hover.paneW - 120),
+                  top: Math.max(hover.paneTop + 4, hover.y - 26),
+                }}
+              >
+                {hover.label}
+              </div>
+            </>
+          )}
+        </div>
       )}
 
       {nonStableCoins.length > 0 && (

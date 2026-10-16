@@ -26,6 +26,11 @@ import {
   formatPrice,
 } from "@/lib/utils/format";
 import { exchangeLabel } from "@/lib/utils/labels";
+import { CurrencyToggle } from "./CurrencyToggle";
+import {
+  formatDisplayMoney,
+  type DisplayCurrency,
+} from "@/lib/display-money";
 
 function ratioText(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "-";
@@ -35,13 +40,6 @@ function ratioText(v: number | null | undefined): string {
 function pfText(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "-";
   return v.toFixed(2);
-}
-
-function formatVolume(n: number): string {
-  return n.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
 }
 
 function formatDayPnl(n: number): string {
@@ -64,6 +62,9 @@ interface StatsPanelsProps {
   equityTotalPnl?: number;
   wallet?: WalletOverview | null;
   walletFollow?: string;
+  fxRate?: number;
+  currency?: DisplayCurrency;
+  onCurrencyChange?: (next: DisplayCurrency) => void;
 }
 
 type StatsPeriod = "all" | "since" | "before" | "d7" | "d30" | "custom";
@@ -130,6 +131,9 @@ export function StatsPanels({
   equityTotalPnl,
   wallet,
   walletFollow,
+  fxRate = 1350,
+  currency = "krw",
+  onCurrencyChange,
 }: StatsPanelsProps) {
   const [period, setPeriod] = useState<StatsPeriod>("all");
   const [customFrom, setCustomFrom] = useState(SCENARIO_ENTRY_FROM);
@@ -137,6 +141,10 @@ export function StatsPanels({
   const [remote, setRemote] = useState<StatsPayload | null>(null);
   const [remoteLoading, setRemoteLoading] = useState(false);
   const [remoteError, setRemoteError] = useState<string | null>(null);
+  const [flows, setFlows] = useState<{ in: number; out: number; net: number } | null>(
+    null
+  );
+  const [flowsLoading, setFlowsLoading] = useState(true);
 
   const today = seoulToday();
   const range = resolveStatsRange(period, customFrom, customTo, today);
@@ -179,6 +187,37 @@ export function StatsPanels({
     return () => ctrl.abort();
   }, [ranged, range.ready, range.from, range.to, statsRevision]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setFlowsLoading(true);
+    void fetch("/api/asset-flows")
+      .then(async (res) => {
+        const data = (await res.json()) as {
+          totals?: { in?: number; out?: number; net?: number };
+          error?: string;
+        };
+        if (cancelled) return;
+        if (!res.ok || data.error || !data.totals) {
+          setFlows(null);
+          return;
+        }
+        setFlows({
+          in: Number(data.totals.in) || 0,
+          out: Number(data.totals.out) || 0,
+          net: Number(data.totals.net) || 0,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setFlows(null);
+      })
+      .finally(() => {
+        if (!cancelled) setFlowsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [statsRevision]);
+
   const calendarTrades = useMemo(
     () => filterByEntryDay(trades, range.from, range.to),
     [trades, range.from, range.to]
@@ -198,7 +237,8 @@ export function StatsPanels({
   return (
     <div className="space-y-6">
       <div>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap gap-1.5">
           {PERIODS.map((item) => (
             <button
               key={item.id}
@@ -216,6 +256,10 @@ export function StatsPanels({
               {item.label}
             </button>
           ))}
+          </div>
+          {onCurrencyChange && (
+            <CurrencyToggle value={currency} onChange={onCurrencyChange} />
+          )}
         </div>
         {period === "custom" && (
           <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -257,6 +301,10 @@ export function StatsPanels({
           equityTotalPnl={equityTotalPnl}
           wallet={wallet}
           walletFollow={walletFollow}
+          fxRate={fxRate}
+          currency={currency}
+          flows={flows}
+          flowsLoading={flowsLoading}
         />
       )}
     </div>
@@ -276,7 +324,15 @@ function StatsBody({
   equityTotalPnl,
   wallet,
   walletFollow,
-}: StatsPanelsProps & { emptyHint?: string }) {
+  fxRate = 1350,
+  currency = "krw",
+  flows = null,
+  flowsLoading = false,
+}: StatsPanelsProps & {
+  emptyHint?: string;
+  flows?: { in: number; out: number; net: number } | null;
+  flowsLoading?: boolean;
+}) {
   if (loading) {
     return <p className="text-sm text-zinc-500">통계를 불러오는 중…</p>;
   }
@@ -291,26 +347,50 @@ function StatsBody({
     );
   }
 
+  const money = (n: number, signed = false) =>
+    formatDisplayMoney(n, currency, fxRate, signed);
+  const flowText = (n: number | undefined, signed = false) => {
+    if (flowsLoading) return "…";
+    if (n == null || !flows) return "—";
+    return money(n, signed);
+  };
+
   const leftRows: StatRow[] = [
     {
       label: "총 수익",
-      value: `${overall.totalProfit.toFixed(2)} USD`,
+      value: money(overall.totalProfit),
       tone: "pos",
     },
     {
       label: "총 손실",
-      value: `${overall.totalLoss.toFixed(2)} USD`,
+      value: money(overall.totalLoss),
       tone: "neg",
     },
     {
       label: "순손익",
-      value: `${overall.totalPnl.toFixed(2)} USD`,
+      value: money(overall.totalPnl, true),
       tone: overall.totalPnl >= 0 ? "pos" : "neg",
       emphasize: true,
     },
     {
+      label: "총 입금",
+      value: flowText(flows?.in),
+      tone: "pos",
+    },
+    {
+      label: "총 출금",
+      value: flowText(flows?.out),
+      tone: "neg",
+    },
+    {
+      label: "총순익",
+      value: flowText(flows?.net, true),
+      tone: flows == null ? undefined : flows.net >= 0 ? "pos" : "neg",
+      emphasize: true,
+    },
+    {
       label: "거래대금",
-      value: formatVolume(overall.tradingVolume),
+      value: money(overall.tradingVolume),
     },
     {
       label: "승률",
@@ -335,12 +415,12 @@ function StatsBody({
     },
     {
       label: "평균 수익",
-      value: `${overall.avgWin.toFixed(2)} USD`,
+      value: money(overall.avgWin),
       tone: "pos",
     },
     {
       label: "평균 손실",
-      value: `${Math.abs(overall.avgLoss).toFixed(2)} USD`,
+      value: money(Math.abs(overall.avgLoss)),
       tone: "neg",
     },
     {
@@ -361,8 +441,10 @@ function StatsBody({
           <StatColumn rows={rightRows} />
         </div>
         <p className="mt-3 text-[11px] text-zinc-600">
-          거래 {overall.trades}회 · 기대값 {formatPnl(overall.expectancy)} · 평균
-          보유 {formatDuration(Math.round(overall.avgHoldMinutes))}
+          거래 {overall.trades}회 · 기대값 {money(overall.expectancy, true)} · 평균
+          보유 {formatDuration(Math.round(overall.avgHoldMinutes))}. 총 입금·총
+          출금·총순익은 자산에 적어 둔 전체 입출금입니다. 총순익은 입금에서 출금을
+          뺀 값입니다.
         </p>
         <SideSplit long={overall.long} short={overall.short} />
       </div>

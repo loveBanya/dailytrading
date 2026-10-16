@@ -1,0 +1,135 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/ MPL-2.0
+//@version=6
+indicator("LuxQuant - HA-VWRSI - micky v1.0", shorttitle="LuxQuant - HA-VWRSI - micky v1.0")
+
+// --- Inputs ---
+lengthInput = input.int(14, title="RSI Length", minval=1)
+smoothInput = input.int(3,  title="Smoothing", minval=1, tooltip="Smooths the RSI values to reduce noise.")
+sigLength   = input.int(9,  title="Signal Length", minval=1, tooltip="Length for the Signal Line.")
+pivotLookback = input.int(5, title="Pivot Lookback", minval=1, tooltip="Lookback for finding divergences.")
+
+// Dashboard Inputs
+showDash    = input.bool(true, title="Show Dashboard")
+dashPos     = input.string("Top Right", title="Dashboard Position", options=["Top Right", "Bottom Right", "Top Left", "Bottom Left"])
+
+bullColor   = input.color(#089981, title="Bull Color", group="Style")
+bearColor   = input.color(#f23645, title="Bear Color", group="Style")
+sigColor    = input.color(#f5cb5c, title="Signal Color", group="Style")
+
+// --- Calculation ---
+// Custom Volume-Weighted RSI function
+vw_rsi(src, len) =>
+    change = ta.change(src)
+    up = ta.rma(math.max(change, 0) * volume, len)
+    down = ta.rma(-math.min(change, 0) * volume, len)
+    100 - (100 / (1 + up / down))
+
+// Calculate Volume-Weighted RSI for each price component
+rsiO = vw_rsi(open, lengthInput)
+rsiH = vw_rsi(high, lengthInput)
+rsiL = vw_rsi(low, lengthInput)
+rsiC = vw_rsi(close, lengthInput)
+
+// Smooth the components to reduce noise
+sRsiO = ta.ema(rsiO, smoothInput)
+sRsiH = ta.ema(rsiH, smoothInput)
+sRsiL = ta.ema(rsiL, smoothInput)
+sRsiC = ta.ema(rsiC, smoothInput)
+
+// Calculate Heikin Ashi candles from the smoothed VWRSI values
+var float haOpen = na
+haClose = (sRsiO + sRsiH + sRsiL + sRsiC) / 4
+haOpen := na(haOpen[1]) ? (sRsiO + sRsiC) / 2 : (haOpen[1] + nz(haClose[1])) / 2
+haHigh = math.max(sRsiH, math.max(haOpen, haClose))
+haLow  = math.min(sRsiL, math.min(haOpen, haClose))
+
+// Signal Line
+signal = ta.ema(haClose, sigLength)
+
+// --- Divergences ---
+// Find pivots on the HA Close
+plFound = na(ta.pivotlow(haClose, pivotLookback, pivotLookback)) ? false : true
+phFound = na(ta.pivothigh(haClose, pivotLookback, pivotLookback)) ? false : true
+
+// Keep track of previous pivots
+var float prevOscPl = na
+var float prevPricePl = na
+var float prevOscPh = na
+var float prevPricePh = na
+
+float oscPl = ta.valuewhen(plFound, haClose[pivotLookback], 0)
+float pricePl = ta.valuewhen(plFound, low[pivotLookback], 0)
+float oscPh = ta.valuewhen(phFound, haClose[pivotLookback], 0)
+float pricePh = ta.valuewhen(phFound, high[pivotLookback], 0)
+
+bool bullDiv = false
+bool bearDiv = false
+
+if plFound
+    if oscPl > prevOscPl and pricePl < prevPricePl
+        bullDiv := true
+    prevOscPl := oscPl
+    prevPricePl := pricePl
+
+if phFound
+    if oscPh < prevOscPh and pricePh > prevPricePh
+        bearDiv := true
+    prevOscPh := oscPh
+    prevPricePh := pricePh
+
+// --- Multi-Timeframe Heatmap Data ---
+f_get_ha_trend() =>
+    _rsiO = vw_rsi(open, lengthInput)
+    _rsiH = vw_rsi(high, lengthInput)
+    _rsiL = vw_rsi(low, lengthInput)
+    _rsiC = vw_rsi(close, lengthInput)
+    _sRsiO = ta.ema(_rsiO, smoothInput)
+    _sRsiH = ta.ema(_rsiH, smoothInput)
+    _sRsiL = ta.ema(_rsiL, smoothInput)
+    _sRsiC = ta.ema(_rsiC, smoothInput)
+    _haC = (_sRsiO + _sRsiH + _sRsiL + _sRsiC) / 4
+    float _haO = na
+    _haO := na(_haO[1]) ? (_sRsiO + _sRsiC) / 2 : (_haO[1] + nz(_haC[1])) / 2
+    _haC > _haO ? 1 : -1
+
+trend5m = request.security(syminfo.tickerid, "5", f_get_ha_trend())
+trend15m = request.security(syminfo.tickerid, "15", f_get_ha_trend())
+trend1h = request.security(syminfo.tickerid, "60", f_get_ha_trend())
+trend4h = request.security(syminfo.tickerid, "240", f_get_ha_trend())
+
+// --- Dashboard ---
+if showDash and barstate.islast
+    pos = dashPos == "Top Right" ? position.top_right : dashPos == "Bottom Right" ? position.bottom_right : dashPos == "Top Left" ? position.top_left : position.bottom_left
+    var tb = table.new(pos, 2, 5, bgcolor=color.new(chart.bg_color, 20), border_width=1, border_color=color.new(chart.fg_color, 80))
+    
+    table.cell(tb, 0, 0, "TF", text_color=chart.fg_color, bgcolor=color.new(chart.fg_color, 90))
+    table.cell(tb, 1, 0, "Trend", text_color=chart.fg_color, bgcolor=color.new(chart.fg_color, 90))
+    
+    table.cell(tb, 0, 1, "5m", text_color=chart.fg_color)
+    table.cell(tb, 1, 1, "", bgcolor=trend5m > 0 ? color.new(bullColor, 20) : color.new(bearColor, 20))
+    
+    table.cell(tb, 0, 2, "15m", text_color=chart.fg_color)
+    table.cell(tb, 1, 2, "", bgcolor=trend15m > 0 ? color.new(bullColor, 20) : color.new(bearColor, 20))
+    
+    table.cell(tb, 0, 3, "1h", text_color=chart.fg_color)
+    table.cell(tb, 1, 3, "", bgcolor=trend1h > 0 ? color.new(bullColor, 20) : color.new(bearColor, 20))
+    
+    table.cell(tb, 0, 4, "4h", text_color=chart.fg_color)
+    table.cell(tb, 1, 4, "", bgcolor=trend4h > 0 ? color.new(bullColor, 20) : color.new(bearColor, 20))
+
+// --- Plotting ---
+// Reference levels
+hline(50, title="Middle Line", color=color.new(chart.fg_color, 50), linestyle=hline.style_dashed)
+hline(70, title="Overbought", color=color.new(chart.fg_color, 70), linestyle=hline.style_dotted)
+hline(30, title="Oversold", color=color.new(chart.fg_color, 70), linestyle=hline.style_dotted)
+
+// Plot Heikin Ashi Candles
+candleColor = haClose >= haOpen ? bullColor : bearColor
+plotcandle(haOpen, haHigh, haLow, haClose, title="HA VWRSI Candles", color=candleColor, wickcolor=candleColor, bordercolor=candleColor)
+
+// Signal Line
+plot(signal, title="Signal Line", color=sigColor, linewidth=1)
+
+// Divergence Labels
+plotshape(bullDiv ? haLow[pivotLookback] - 5 : na, title="Bullish Divergence", location=location.absolute, style=shape.labelup, text="DIV", color=color.new(bullColor, 0), textcolor=color.white, size=size.tiny, offset=-pivotLookback)
+plotshape(bearDiv ? haHigh[pivotLookback] + 5 : na, title="Bearish Divergence", location=location.absolute, style=shape.labeldown, text="DIV", color=color.new(bearColor, 0), textcolor=color.white, size=size.tiny, offset=-pivotLookback)

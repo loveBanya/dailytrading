@@ -1,0 +1,547 @@
+//@version=5
+indicator("TRAMA 돌파 [HWR TB]", shorttitle="HWR TB", overlay=true, scale=scale.right, max_labels_count=500, max_lines_count=20, max_boxes_count=80)
+
+// ─────────────────────────────────────────────
+// 적응이평 위(또는 돌파) + 추세선 돌파가 겹치면 진입.
+// 박스는 콤보와 같음: SL + TP1/TP2/TP3, 봉마다 오른쪽 연장.
+// 롱 추가 익절: RSI 과매수. 숏: RSI 과매도.
+// LuxAlgo TRAMA·Trendlines with Breaks 개념만. 원본 복제 아님.
+// 콤보·RR·8090과 같이 켜지 마세요.
+// ─────────────────────────────────────────────
+
+grpAma = "1. 적응이평 (TRAMA)"
+amaLen = input.int(99, "TRAMA 기간", minval=5, group=grpAma)
+amaSrc = input.source(close, "가격", group=grpAma)
+
+grpTl = "2. 추세선 돌파"
+tlLen     = input.int(14, "스윙 탐색 봉", minval=3, maxval=40, group=grpTl)
+tlMult    = input.float(1.0, "기울기", minval=0, step=0.1, group=grpTl)
+tlMethod  = input.string("ATR", "기울기 방식", options=["ATR", "표준편차", "회귀"], group=grpTl)
+needBreak = input.bool(true, "추세선 돌파 필수", group=grpTl, tooltip="끄면 적응이평 돌파만으로 진입합니다.")
+needAma   = input.bool(true, "적응이평 위/아래 필수", group=grpTl, tooltip="끄면 추세선 돌파만으로 진입합니다.")
+allowHold = input.bool(true, "이미 돌파된 상태 + 이평 교차도 허용", group=grpTl, tooltip="돌파 라벨과 이평 돌파가 다른 봉에 나와도 잡습니다.")
+
+grpVol = "3. 손절·익절 박스"
+swingLen  = input.int(8, "스윙 손절 봉", minval=3, maxval=30, group=grpVol)
+slPadAtr  = input.float(0.12, "손절 여유 ATR", minval=0.0, step=0.02, group=grpVol)
+slMinAtr  = input.float(0.90, "손절 최소 ATR", minval=0.4, step=0.05, group=grpVol)
+slMaxAtr  = input.float(2.20, "손절 최대 ATR", minval=0.8, step=0.05, group=grpVol)
+usePivotSl = input.bool(true, "깨진 추세선 피벗도 손절에 반영", group=grpVol, tooltip="롱은 최근 피벗 저점, 숏은 피벗 고점. 너무 멀면 ATR 최대로 가둡니다.")
+tp1R      = input.float(0.80, "TP1 (R)", minval=0.3, step=0.05, group=grpVol, tooltip="손절 거리 대비. 대시보드 승률은 TP1 먼저 닿았는지.")
+tp2R      = input.float(2.00, "TP2 (R)", minval=0.5, step=0.1, group=grpVol)
+tp3R      = input.float(3.20, "TP3 (R)", minval=0.8, step=0.1, group=grpVol)
+q1Pct     = input.float(30.0, "TP1 비중 %", minval=0, maxval=100, step=5, group=grpVol)
+q2Pct     = input.float(40.0, "TP2 비중 %", minval=0, maxval=100, step=5, group=grpVol)
+slToBe    = input.bool(true, "TP1 후 손절을 본절로", group=grpVol)
+useTrailSl = input.bool(false, "TP1 후 구조 트레일", group=grpVol)
+trailBars = input.int(6, "구조 트레일 봉", minval=3, maxval=20, group=grpVol)
+q3Pct     = math.max(100.0 - q1Pct - q2Pct, 0.0)
+tpCount   = q3Pct < 0.5 ? 2 : 3
+
+grpEx = "3b. 추가 청산"
+rsiLen  = input.int(14, "RSI 기간", minval=2, group=grpEx)
+rsiTpL  = input.float(70.0, "롱 익절 RSI (과매수)", minval=50, maxval=90, step=1, group=grpEx)
+rsiTpS  = input.float(30.0, "숏 익절 RSI (과매도)", minval=10, maxval=50, step=1, group=grpEx)
+useRsiExit = input.bool(true, "RSI 과매수/과매도면 전량 청산", group=grpEx)
+exitCross = input.bool(true, "RSI가 선을 뚫을 때 청산", group=grpEx)
+flipOnOpp = input.bool(true, "반대 신호면 뒤집기", group=grpEx)
+
+grpSig = "4. 신호 품질"
+tradeSide = input.string("롱숏", "방향", options=["롱숏", "롱만", "숏만"], group=grpSig)
+allowL = tradeSide != "숏만"
+allowS = tradeSide != "롱만"
+cooldownBars = input.int(4, "신호 쿨다운(봉)", minval=1, group=grpSig)
+minHoldBars  = input.int(1, "최소 보유 봉", minval=1, group=grpSig)
+requireAdx   = input.bool(false, "ADX 필수", group=grpSig)
+adxLen = input.int(14, "ADX 기간", minval=2, group=grpSig)
+adxMin = input.float(16.0, "최소 ADX", minval=1, step=0.5, group=grpSig)
+
+grpSkip = "4b. 건너뛰기"
+skipRetrace = input.bool(false, "되돌림 나온 뒤에만 진입", group=grpSkip, tooltip="돌파 봉은 건너뛰고, 깨진 추세선까지 되밀린 다음 종가가 선을 지키면 들어갑니다. 신호 줄면 끄세요.")
+retestAtr   = input.float(0.35, "되돌림 허용 ATR", minval=0.05, step=0.05, group=grpSkip, tooltip="저점(숏은 고점)이 추세선에서 이 ATR 안이면 되돌림으로 봅니다.")
+skipChop    = input.bool(false, "횡보 스킵 (ADX)", group=grpSkip, tooltip="ADX가 최소값(기본 16) 아래면 가짜 돌파로 보고 건너뜁니다.")
+skipAdx25   = input.bool(false, "ADX 25 이상만", group=grpSkip, tooltip="ADX가 25 미만이면 건너뜁니다. 횡보 스킵(16)보다 추세가 더 뚜렷할 때만 남깁니다.")
+skipChase   = input.bool(false, "추세선에서 멀면 스킵", group=grpSkip, tooltip="이미 선에서 멀리 달린 추격 진입을 막습니다.")
+chaseAtr    = input.float(1.20, "최대 거리 ATR", minval=0.3, step=0.1, group=grpSkip)
+skipTightSl = input.bool(false, "손절이 구조보다 짧으면 스킵", group=grpSkip, tooltip="피벗이 멀어서 손절을 ATR 최대로 가둬야 하면 건너뜁니다.")
+skipRsiExt  = input.bool(false, "RSI 과열이면 진입 금지", group=grpSkip, tooltip="켜면 롱은 RSI가 롱 익절선(기본 70) 이상이거나, 아래 봉 동안 그만큼 급등하면 건너뜁니다. 숏은 숏 익절선 이하이거나 같은 폭으로 급락할 때.")
+rsiRiseBars = input.int(5, "RSI 급변 봉", minval=1, maxval=30, group=grpSkip, tooltip="이 봉 수 동안의 RSI 변화로 급등·급락을 봅니다.")
+rsiRiseMin  = input.float(12.0, "RSI 급변 폭", minval=1, step=1, group=grpSkip, tooltip="롱은 RSI가 이 값 이상 오르면, 숏은 이 값 이상 내리면 진입을 막습니다.")
+
+grpStat = "5. 측정기간"
+statMode = input.string("최근 N일", "측정 방식", options=["전체", "최근 N일", "기간 지정"], group=grpStat)
+statDays = input.int(60, "최근 N일", minval=1, maxval=3650, group=grpStat)
+statFrom = input.time(timestamp("01 Jan 2026 00:00"), "시작", group=grpStat)
+statTo   = input.time(timestamp("11 Sep 2026 23:59"), "종료", group=grpStat)
+sessTz   = input.string("Asia/Seoul", "타임존", options=["Asia/Seoul", "America/New_York", "Europe/London", "UTC"], group=grpStat)
+
+grpMoney = "5b. 테스트 금액"
+betAmt = input.float(100.0, "배팅 금액 (달러)", minval=1, step=1, group=grpMoney, tooltip="매 거래 증거금. 100이면 100달러. 잔고가 늘어도 배팅 크기는 그대로입니다.")
+lev    = input.float(1.0, "배율", minval=1, maxval=125, step=0.5, group=grpMoney, tooltip="포지션 = 금액 × 배율. 1이면 레버리지 없음. 손실은 증거금까지만.")
+
+grpUi = "6. 표시"
+showAma   = input.bool(true, "TRAMA 표시", group=grpUi)
+showTl    = input.bool(true, "추세선 표시", group=grpUi)
+showExt   = input.bool(true, "추세선 점선 연장", group=grpUi, tooltip="지금 살아있는 추세선을 오른쪽으로 점선 연장합니다.")
+showBoxes = input.bool(true, "TP/SL 구간 표시", group=grpUi)
+showDash  = input.bool(true, "대시보드 표시", group=grpUi)
+alertEntry = input.bool(false, "진입 알림", group=grpUi, tooltip="끄면 롱/숏 진입 알림을 보내지 않습니다. 차트 라벨은 그대로입니다.")
+alertExit  = input.bool(false, "청산 알림", group=grpUi, tooltip="끄면 청산 알림을 보내지 않습니다.")
+dashPosIn = input.string("오른쪽 위", "테이블 위치", options=["오른쪽 위", "오른쪽 아래", "왼쪽 위", "왼쪽 아래", "가운데 위", "가운데 아래", "오른쪽 중간", "왼쪽 중간"], group=grpUi)
+bullCol   = input.color(color.new(#26a69a, 0), "롱 색", group=grpUi)
+bearCol   = input.color(color.new(#ef5350, 0), "숏 색", group=grpUi)
+amaCol    = input.color(#ff1100, "TRAMA 색", group=grpUi)
+
+atrVal = ta.atr(14)
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+adxOk = adxVal > adxMin
+adx25Ok = adxVal >= 25.0
+rsiVal = ta.rsi(close, rsiLen)
+swingLo = ta.lowest(low, swingLen)
+swingHi = ta.highest(high, swingLen)
+
+// ===== TRAMA 개념: 속도는 high/low 신고·신저, 값은 src =====
+hhHit = math.max(math.sign(ta.change(ta.highest(high, amaLen))), 0)
+llHit = math.max(math.sign(ta.change(ta.lowest(low, amaLen)) * -1), 0)
+reg = hhHit > 0 or llHit > 0 ? 1.0 : 0.0
+tc = math.pow(ta.sma(reg, amaLen), 2)
+float ama = 0.0
+ama := nz(ama[1] + tc * (amaSrc - ama[1]), amaSrc)
+amaUp = close > ama
+amaDn = close < ama
+amaXup = ta.crossover(close, ama)
+amaXdn = ta.crossunder(close, ama)
+
+// ===== 추세선 돌파 개념: 피벗에서 기울기로 선이 모임 =====
+ph = ta.pivothigh(high, tlLen, tlLen)
+pl = ta.pivotlow(low, tlLen, tlLen)
+n = bar_index
+slopeAtr = ta.atr(tlLen) / tlLen * tlMult
+slopeStd = ta.stdev(close, tlLen) / tlLen * tlMult
+slopeLin = ta.variance(n, tlLen) == 0 ? slopeAtr : math.abs(ta.sma(close * n, tlLen) - ta.sma(close, tlLen) * ta.sma(n, tlLen)) / ta.variance(n, tlLen) / 2.0 * tlMult
+slopeRaw = tlMethod == "ATR" ? slopeAtr : tlMethod == "표준편차" ? slopeStd : slopeLin
+var float slopeUp = 0.0
+var float slopeDn = 0.0
+var float upper = na
+var float lower = na
+var float lastPh = na
+var float lastPl = na
+slopeUp := not na(ph) ? slopeRaw : slopeUp
+slopeDn := not na(pl) ? slopeRaw : slopeDn
+upper := not na(ph) ? ph : nz(upper) - slopeUp
+lower := not na(pl) ? pl : nz(lower) + slopeDn
+if not na(ph)
+    lastPh := ph
+if not na(pl)
+    lastPl := pl
+liveUp = upper - slopeUp * tlLen
+liveDn = lower + slopeDn * tlLen
+var int brokeUp = 0
+var int brokeDn = 0
+brokeUp := not na(ph) ? 0 : close > liveUp ? 1 : brokeUp
+brokeDn := not na(pl) ? 0 : close < liveDn ? 1 : brokeDn
+upBreak = brokeUp > brokeUp[1]
+dnBreak = brokeDn > brokeDn[1]
+
+adxGate = ((not requireAdx and not skipChop) or adxOk) and (not skipAdx25 or adx25Ok)
+var int lastSigBar = na
+cooled = na(lastSigBar) or (bar_index - lastSigBar >= cooldownBars)
+baseOk = barstate.isconfirmed and cooled and adxGate
+
+amaLong = not needAma or amaUp or amaXup
+amaShort = not needAma or amaDn or amaXdn
+rawLong = needBreak ? (upBreak and amaLong) or (allowHold and amaXup and brokeUp == 1) : amaXup or (amaUp and upBreak)
+rawShort = needBreak ? (dnBreak and amaShort) or (allowHold and amaXdn and brokeDn == 1) : amaXdn or (amaDn and dnBreak)
+
+var bool waitRetL = false
+var bool waitRetS = false
+var bool tagRetL = false
+var bool tagRetS = false
+if not na(ph)
+    waitRetL := false
+    tagRetL := false
+if not na(pl)
+    waitRetS := false
+    tagRetS := false
+if skipRetrace
+    if upBreak
+        waitRetL := true
+        tagRetL := false
+        waitRetS := false
+        tagRetS := false
+    else if waitRetL and brokeUp == 1 and low <= liveUp + atrVal * retestAtr
+        tagRetL := true
+    if dnBreak
+        waitRetS := true
+        tagRetS := false
+        waitRetL := false
+        tagRetL := false
+    else if waitRetS and brokeDn == 1 and high >= liveDn - atrVal * retestAtr
+        tagRetS := true
+retestLong = waitRetL and tagRetL and close > liveUp and amaLong
+retestShort = waitRetS and tagRetS and close < liveDn and amaShort
+trigLong = skipRetrace and needBreak ? retestLong : rawLong
+trigShort = skipRetrace and needBreak ? retestShort : rawShort
+
+chaseBlockL = skipChase and (close - liveUp) > atrVal * chaseAtr
+chaseBlockS = skipChase and (liveDn - close) > atrVal * chaseAtr
+rsiJump = rsiVal - nz(rsiVal[rsiRiseBars], rsiVal)
+rsiBlockL = skipRsiExt and (rsiVal >= rsiTpL or rsiJump >= rsiRiseMin)
+rsiBlockS = skipRsiExt and (rsiVal <= rsiTpS or rsiJump <= -rsiRiseMin)
+pivL = nz(lastPl, swingLo)
+pivS = nz(lastPh, swingHi)
+rawSlL = (usePivotSl ? math.min(swingLo, pivL) : swingLo) - atrVal * slPadAtr
+rawSlS = (usePivotSl ? math.max(swingHi, pivS) : swingHi) + atrVal * slPadAtr
+slClampL = skipTightSl and math.abs(close - rawSlL) > atrVal * slMaxAtr
+slClampS = skipTightSl and math.abs(close - rawSlS) > atrVal * slMaxAtr
+
+longRaw = baseOk and trigLong and not trigShort and not chaseBlockL and not rsiBlockL and not slClampL
+shortRaw = baseOk and trigShort and not trigLong and not chaseBlockS and not rsiBlockS and not slClampS
+longSignal = longRaw and allowL
+shortSignal = shortRaw and allowS
+if longSignal
+    waitRetL := false
+    tagRetL := false
+if shortSignal
+    waitRetS := false
+    tagRetS := false
+
+rsiExitL = useRsiExit and (exitCross ? ta.crossover(rsiVal, rsiTpL) or rsiVal >= rsiTpL : rsiVal >= rsiTpL)
+rsiExitS = useRsiExit and (exitCross ? ta.crossunder(rsiVal, rsiTpS) or rsiVal <= rsiTpS : rsiVal <= rsiTpS)
+
+plot(close, "축고정", color=color.new(color.white, 100), linewidth=1, editable=false)
+plot(showAma ? ama : na, "TRAMA", color=amaCol, linewidth=2)
+plot(showTl ? upper : na, "하락 추세선", color=showTl and na(ph) ? bullCol : na, linewidth=1, offset=-tlLen)
+plot(showTl ? lower : na, "상승 추세선", color=showTl and na(pl) ? bearCol : na, linewidth=1, offset=-tlLen)
+var line lnExtUp = na
+var line lnExtDn = na
+if showTl and showExt
+    int pivBar = bar_index - tlLen
+    if not na(ph)
+        if na(lnExtUp)
+            lnExtUp := line.new(pivBar, ph, pivBar + 1, ph - slopeUp, xloc=xloc.bar_index, color=bullCol, style=line.style_dashed, width=1, extend=extend.right)
+        else
+            line.set_xy1(lnExtUp, pivBar, ph)
+            line.set_xy2(lnExtUp, pivBar + 1, ph - slopeUp)
+            line.set_color(lnExtUp, bullCol)
+    if not na(pl)
+        if na(lnExtDn)
+            lnExtDn := line.new(pivBar, pl, pivBar + 1, pl + slopeDn, xloc=xloc.bar_index, color=bearCol, style=line.style_dashed, width=1, extend=extend.right)
+        else
+            line.set_xy1(lnExtDn, pivBar, pl)
+            line.set_xy2(lnExtDn, pivBar + 1, pl + slopeDn)
+            line.set_color(lnExtDn, bearCol)
+else
+    line.delete(lnExtUp)
+    line.delete(lnExtDn)
+    lnExtUp := na
+    lnExtDn := na
+plotshape(upBreak, "상향 돌파", shape.triangleup, location.belowbar, bullCol, size=size.tiny)
+plotshape(dnBreak, "하향 돌파", shape.triangledown, location.abovebar, bearCol, size=size.tiny)
+bgcolor(longSignal ? color.new(bullCol, 92) : shortSignal ? color.new(bearCol, 92) : na)
+alertcondition(alertEntry and longSignal, title="TB 롱", message="HWR TB LONG")
+alertcondition(alertEntry and shortSignal, title="TB 숏", message="HWR TB SHORT")
+
+f_sl(bool isLong, float px) =>
+    float piv = isLong ? nz(lastPl, swingLo) : nz(lastPh, swingHi)
+    float structPx = isLong ? math.min(swingLo, piv) : math.max(swingHi, piv)
+    float usePx = usePivotSl ? structPx : (isLong ? swingLo : swingHi)
+    raw = isLong ? usePx - atrVal * slPadAtr : usePx + atrVal * slPadAtr
+    dist = math.abs(px - raw)
+    adj = math.max(atrVal * slMinAtr, math.min(atrVal * slMaxAtr, dist))
+    isLong ? px - adj : px + adj
+f_tpR(bool isLong, float px, float sl, float rMult) =>
+    risk = math.max(math.abs(px - sl), syminfo.mintick)
+    isLong ? px + risk * rMult : px - risk * rMult
+
+// ===== 포지션 + 콤보형 실시간 박스 =====
+var bool zLive = false
+var int zDir = 0
+var float zEntry = na
+var float zAvg = na
+var float zSl = na
+var float zSlOrig = na
+var float zTp1 = na
+var float zTp2 = na
+var float zTp3 = na
+var int zBar = na
+var int zTm = na
+var bool zHit1 = false
+var bool zHit2 = false
+var bool zHit3 = false
+var bool zBe = false
+var int zLockBar = na
+var box bTp1 = na
+var box bTp2 = na
+var box bTp3 = na
+var box bSl = na
+var box bAvg = na
+var label tTp1 = na
+var label tTp2 = na
+var label tTp3 = na
+var label tSl = na
+var label tAvg = na
+var int wins = 0
+var int losses = 0
+var int nBe = 0
+var float sumWinR = 0.0
+var float sumLossR = 0.0
+var float sumUsd = 0.0
+var int firstTradeTime = na
+var int lastCloseTime = na
+int lookFrom = timenow - statDays * 24 * 60 * 60 * 1000
+bool openedL = false
+bool openedS = false
+bool closedNow = false
+int openDir = 0
+bool isFlip = false
+bool wantWipe = false
+string closeWhy = ""
+bool closeWin = false
+bool closeLoss = false
+bool closeBe = false
+float closeR = na
+
+f_inStat(int t) =>
+    na(t) ? false : statMode == "전체" ? true : statMode == "최근 N일" ? (t >= lookFrom and t <= timenow) : (t >= statFrom and t <= statTo)
+f_zone(float p1, float p2, color bg, color bd) =>
+    box.new(bar_index, math.max(p1, p2), bar_index, math.min(p1, p2), xloc=xloc.bar_index, border_color=bd, border_width=1, bgcolor=bg)
+f_tag(float y, color c, string name, float px) =>
+    label.new(bar_index, y, name + "  " + str.tostring(px, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(c, 20), textcolor=color.white, size=size.tiny)
+f_ext(b) =>
+    if not na(b)
+        box.set_right(b, bar_index)
+    true
+
+if zLive and barstate.isconfirmed
+    bool held = bar_index - zBar >= minHoldBars
+    bool touch1 = zDir == 1 ? high >= zTp1 : low <= zTp1
+    bool touch2 = zDir == 1 ? high >= zTp2 : low <= zTp2
+    bool touch3 = zDir == 1 ? high >= zTp3 : low <= zTp3
+    if touch1 and not zHit1
+        zHit1 := true
+        zLockBar := bar_index
+        if slToBe and tpCount >= 2
+            zSl := zAvg
+            zBe := true
+            if showBoxes
+                box.delete(bSl)
+                label.delete(tSl)
+                float bePad = math.max(syminfo.mintick * 4, atrVal * 0.05)
+                bSl := f_zone(zAvg + bePad, zAvg - bePad, color.new(#f0c14a, 70), color.new(#f0c14a, 20))
+                tSl := f_tag(zAvg, #f0c14a, "본절", zAvg)
+    if tpCount >= 2 and touch2
+        zHit2 := true
+    if tpCount >= 3 and touch3
+        zHit3 := true
+    if zHit1 and useTrailSl
+        float trailLv = zDir == 1 ? ta.lowest(low, trailBars) - atrVal * 0.08 : ta.highest(high, trailBars) + atrVal * 0.08
+        float newSl = zDir == 1 ? math.max(zSl, math.max(zAvg, trailLv)) : math.min(zSl, math.min(zAvg, trailLv))
+        if newSl != zSl
+            zSl := newSl
+            if showBoxes and not na(tSl)
+                label.set_y(tSl, zSl)
+                label.set_text(tSl, "트레일  " + str.tostring(zSl, format.mintick))
+            if showBoxes and not na(bSl)
+                float tPad = math.max(syminfo.mintick * 4, atrVal * 0.04)
+                box.set_top(bSl, zSl + tPad)
+                box.set_bottom(bSl, zSl - tPad)
+    bool lastTpHit = tpCount == 1 ? zHit1 : tpCount == 2 ? zHit2 : zHit3
+    bool slArmed = na(zLockBar) or bar_index > zLockBar
+    bool hitSl = slArmed and (zDir == 1 ? low <= zSl : high >= zSl)
+    bool hitRsi = zDir == 1 ? rsiExitL : rsiExitS
+    bool opp = (zDir == 1 and shortSignal) or (zDir == -1 and longSignal)
+    if held and (lastTpHit or hitSl or hitRsi or opp)
+        float fill = hitSl ? zSl : lastTpHit ? (tpCount == 1 ? zTp1 : tpCount == 2 ? zTp2 : zTp3) : close
+        float pnl = zDir == 1 ? fill - zEntry : zEntry - fill
+        float rNet = pnl / math.max(math.abs(zEntry - nz(zSlOrig, zSl)), syminfo.mintick)
+        bool wrWin = zHit1 or zHit2 or zHit3
+        bool wrBe = zBe and zHit1 and not zHit2 and not zHit3 and hitSl
+        bool wrLoss = hitSl and not zHit1
+        if hitRsi and not wrWin and not wrLoss
+            wrWin := rNet > 0.08
+            wrLoss := rNet < -0.08
+            wrBe := not wrWin and not wrLoss
+        if opp and not wrWin and not wrLoss
+            wrWin := rNet > 0.08
+            wrLoss := rNet < -0.08
+            wrBe := not wrWin and not wrLoss
+        if f_inStat(zTm)
+            if wrWin and not wrBe
+                wins += 1
+                sumWinR += math.max(rNet, 0.01)
+            else if wrLoss
+                losses += 1
+                sumLossR += math.abs(rNet)
+            else
+                nBe += 1
+            float pxMove = zDir == 1 ? (fill - zEntry) / math.max(zEntry, syminfo.mintick) : (zEntry - fill) / math.max(zEntry, syminfo.mintick)
+            float tradeUsd = math.max(betAmt * lev * pxMove, -betAmt)
+            sumUsd += tradeUsd
+        closedNow := true
+        lastCloseTime := time
+        closeWhy := lastTpHit ? (zHit3 ? "TP3" : zHit2 ? "TP2" : "TP1") : hitSl ? (wrBe ? "본절" : "SL") : hitRsi ? (zDir == 1 ? "RSI 과매수" : "RSI 과매도") : "반대신호"
+        closeWin := wrWin and not wrBe
+        closeLoss := wrLoss
+        closeBe := wrBe
+        closeR := rNet
+        wantWipe := true
+        if flipOnOpp and opp and (zDir == 1 ? allowS : allowL)
+            isFlip := true
+            openDir := zDir == 1 ? -1 : 1
+        else
+            zLive := false
+
+if not zLive and openDir == 0 and barstate.isconfirmed
+    if longSignal
+        openDir := 1
+    else if shortSignal
+        openDir := -1
+
+if wantWipe or (openDir != 0 and showBoxes)
+    box.delete(bTp1)
+    box.delete(bTp2)
+    box.delete(bTp3)
+    box.delete(bSl)
+    box.delete(bAvg)
+    label.delete(tTp1)
+    label.delete(tTp2)
+    label.delete(tTp3)
+    label.delete(tSl)
+    label.delete(tAvg)
+    bTp1 := na
+    bTp2 := na
+    bTp3 := na
+    bSl := na
+    bAvg := na
+    tTp1 := na
+    tTp2 := na
+    tTp3 := na
+    tSl := na
+    tAvg := na
+
+if wantWipe and closedNow
+    string resTxt = closeWhy + "  " + (closeWin ? "익절 +" : closeLoss ? "손절 " : "본절 ") + str.tostring(closeR, "#.##") + "R"
+    color resCol = closeWin ? bullCol : closeLoss ? bearCol : color.new(#f0c14a, 0)
+    bool below = (zDir == 1 and not closeWin) or (zDir == -1 and closeWin)
+    label.new(bar_index, below ? low : high, resTxt, xloc=xloc.bar_index, style=below ? label.style_label_up : label.style_label_down, color=resCol, textcolor=color.white, size=size.tiny)
+
+if openDir != 0
+    zLive := true
+    zDir := openDir
+    zEntry := close
+    zAvg := close
+    zSl := f_sl(openDir == 1, close)
+    zSlOrig := zSl
+    zTp1 := f_tpR(openDir == 1, close, zSl, tp1R)
+    zTp2 := f_tpR(openDir == 1, close, zSl, tp2R)
+    zTp3 := f_tpR(openDir == 1, close, zSl, tp3R)
+    zBar := bar_index
+    zTm := time
+    zHit1 := false
+    zHit2 := false
+    zHit3 := false
+    zBe := false
+    zLockBar := na
+    lastSigBar := bar_index
+    if openDir == 1
+        openedL := true
+    else
+        openedS := true
+    if f_inStat(time) and na(firstTradeTime)
+        firstTradeTime := time
+    string side = openDir == 1 ? "롱" : "숏"
+    string how = isFlip ? "뒤집기 " : (openDir == 1 ? (upBreak ? "상향돌파 " : "이평돌파 ") : (dnBreak ? "하향돌파 " : "이평돌파 "))
+    if openDir == 1
+        label.new(bar_index, low, how + side + " RSI" + str.tostring(rsiVal, "#.0"), xloc=xloc.bar_index, style=label.style_label_up, color=bullCol, textcolor=color.white, size=size.tiny)
+        if alertEntry
+            alert("HWR TB LONG  RSI=" + str.tostring(rsiVal, "#.0") + "  close=" + str.tostring(close), alert.freq_once_per_bar_close)
+    else
+        label.new(bar_index, high, how + side + " RSI" + str.tostring(rsiVal, "#.0"), xloc=xloc.bar_index, style=label.style_label_down, color=bearCol, textcolor=color.white, size=size.tiny)
+        if alertEntry
+            alert("HWR TB SHORT  RSI=" + str.tostring(rsiVal, "#.0") + "  close=" + str.tostring(close), alert.freq_once_per_bar_close)
+    if showBoxes
+        bTp1 := f_zone(zEntry, zTp1, color.new(#26a69a, 78), color.new(#26a69a, 25))
+        bTp2 := tpCount >= 2 ? f_zone(zTp1, zTp2, color.new(#4db6ac, 80), color.new(#26a69a, 25)) : na
+        bTp3 := tpCount >= 3 ? f_zone(zTp2, zTp3, color.new(#80cbc4, 82), color.new(#26a69a, 25)) : na
+        bSl := f_zone(zEntry, zSl, color.new(#ab47bc, 72), color.new(#ab47bc, 18))
+        float avgPad0 = math.max(syminfo.mintick * 4, atrVal * 0.04)
+        bAvg := f_zone(zAvg + avgPad0, zAvg - avgPad0, color.new(#e8ecf4, 70), color.new(#c8cdd8, 15))
+        tTp1 := f_tag(zTp1, #26a69a, "TP1 " + str.tostring(q1Pct, "#") + "%", zTp1)
+        tTp2 := tpCount >= 2 ? f_tag(zTp2, #4db6ac, "TP2 " + str.tostring(q2Pct, "#") + "%", zTp2) : na
+        tTp3 := tpCount >= 3 ? f_tag(zTp3, #80cbc4, "TP3 " + str.tostring(q3Pct, "#") + "%", zTp3) : na
+        tSl := f_tag(zSl, #ab47bc, "SL", zSl)
+        tAvg := f_tag(zAvg, #c8cdd8, (openDir == 1 ? "롱" : "숏") + " 진입", zAvg)
+
+if zLive and showBoxes and not wantWipe
+    f_ext(bTp1)
+    f_ext(bTp2)
+    f_ext(bTp3)
+    f_ext(bSl)
+    f_ext(bAvg)
+    if not na(tTp1)
+        label.set_x(tTp1, bar_index)
+    if not na(tTp2)
+        label.set_x(tTp2, bar_index)
+    if not na(tTp3)
+        label.set_x(tTp3, bar_index)
+    if not na(tSl)
+        label.set_x(tSl, bar_index)
+        label.set_y(tSl, zSl)
+    if not na(tAvg)
+        label.set_x(tAvg, bar_index)
+        label.set_y(tAvg, zAvg)
+
+closedTrades = wins + losses
+pendingTrades = zLive ? 1 : 0
+winRate = closedTrades > 0 ? wins / closedTrades * 100.0 : na
+avgWinR = wins > 0 ? sumWinR / wins : 0.0
+avgLossR = losses > 0 ? sumLossR / losses : 0.0
+rrReal = avgLossR > 0 ? avgWinR / avgLossR : na
+expR = closedTrades > 0 ? (wins * avgWinR - losses * avgLossR) / closedTrades : na
+eqEnd = betAmt + sumUsd
+float uUsd = 0.0
+if zLive
+    uUsd := math.max(betAmt * lev * (zDir == 1 ? (close - zEntry) / math.max(zEntry, syminfo.mintick) : (zEntry - close) / math.max(zEntry, syminfo.mintick)), -betAmt)
+string usdTxt = (sumUsd >= 0 ? "+$" : "-$") + str.tostring(math.abs(sumUsd), "#.##")
+if zLive
+    usdTxt := usdTxt + "  미실현 " + (uUsd >= 0 ? "+$" : "-$") + str.tostring(math.abs(uUsd), "#.##")
+
+dashPos = dashPosIn == "오른쪽 아래" ? position.bottom_right : dashPosIn == "왼쪽 위" ? position.top_left : dashPosIn == "왼쪽 아래" ? position.bottom_left : dashPosIn == "가운데 위" ? position.top_center : dashPosIn == "가운데 아래" ? position.bottom_center : dashPosIn == "오른쪽 중간" ? position.middle_right : dashPosIn == "왼쪽 중간" ? position.middle_left : position.top_right
+var table dash = table.new(position.top_right, 2, 19, bgcolor=color.new(#12141c, 12), border_color=color.new(#2a2e3a, 0), border_width=1)
+if barstate.islast
+    table.set_position(dash, dashPos)
+f_cell(int r, string a, string b, color bc) =>
+    table.cell(dash, 0, r, a, text_color=color.new(#c8cdd8, 0), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, r, b, text_color=bc, text_halign=text.align_right, text_size=size.small)
+
+if showDash and barstate.islast
+    wrTxt = closedTrades > 0 ? str.tostring(wins) + "/" + str.tostring(losses) + (nBe > 0 ? " 본절" + str.tostring(nBe) : "") + "  " + str.tostring(winRate, "#.0") + "%" : "-"
+    if pendingTrades > 0
+        wrTxt := wrTxt + "  진행"
+    string posTxt = not zLive ? "없음" : (zDir == 1 ? "롱" : "숏") + "  RSI " + str.tostring(rsiVal, "#.0")
+    color rsiC = rsiVal >= rsiTpL ? bearCol : rsiVal <= rsiTpS ? bullCol : color.new(#c8cdd8, 0)
+    string boxTxt = not zLive ? "-" : "SL " + str.tostring(zSl, format.mintick) + "  TP1 " + str.tostring(zTp1, format.mintick)
+    table.cell(dash, 0, 0, "HWR TB", text_color=color.white, text_halign=text.align_left, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    table.cell(dash, 1, 0, timeframe.period, text_color=color.new(#8b95a8, 0), text_halign=text.align_right, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    f_cell(1, "TRAMA", amaUp ? "가격 위" : amaDn ? "가격 아래" : "접촉", amaUp ? bullCol : amaDn ? bearCol : color.gray)
+    f_cell(2, "추세선", brokeUp == 1 ? "상향 돌파됨" : brokeDn == 1 ? "하향 돌파됨" : "대기", brokeUp == 1 ? bullCol : brokeDn == 1 ? bearCol : color.gray)
+    string rsiGate = not skipRsiExt ? "" : rsiBlockL ? "  롱 금지" : rsiBlockS ? "  숏 금지" : "  진입 가능"
+    f_cell(3, "RSI", str.tostring(rsiVal, "#.0") + "  ·  롱익절 " + str.tostring(rsiTpL, "#") + " / 숏 " + str.tostring(rsiTpS, "#") + rsiGate, rsiBlockL or rsiBlockS ? bearCol : rsiC)
+    f_cell(4, "ADX", skipAdx25 and not adx25Ok ? "25미만 " + str.tostring(adxVal, "#.0") : not adxOk ? "횡보 " + str.tostring(adxVal, "#.0") : str.tostring(adxVal, "#.0"), skipAdx25 ? (adx25Ok ? bullCol : color.gray) : (adxOk ? bullCol : color.gray))
+    f_cell(5, "포지션", posTxt, not zLive ? color.gray : zDir == 1 ? bullCol : bearCol)
+    f_cell(6, "실시간 박스", boxTxt, zLive ? color.new(#c8cdd8, 0) : color.gray)
+    f_cell(7, "계획 TP", str.tostring(tp1R, "#.##") + "/" + str.tostring(tp2R, "#.##") + "/" + str.tostring(tp3R, "#.##") + "R  " + str.tostring(q1Pct, "#") + "/" + str.tostring(q2Pct, "#") + "/" + str.tostring(q3Pct, "#") + "%", color.new(#c8cdd8, 0))
+    f_cell(8, "청산", "박스 TP/SL" + (useRsiExit ? " + RSI" : "") + (flipOnOpp ? " + 뒤집기" : ""), color.new(#c8cdd8, 0))
+    f_cell(9, "승/패", wrTxt, not na(winRate) and winRate >= 50 ? bullCol : not na(winRate) and winRate < 40 ? bearCol : color.gray)
+    f_cell(10, "실현 손익비", na(rrReal) ? "-" : str.tostring(rrReal, "#.##") + "  (" + str.tostring(avgWinR, "#.##") + "/" + str.tostring(avgLossR, "#.##") + "R)", na(rrReal) ? color.gray : rrReal >= 1.3 ? bullCol : bearCol)
+    f_cell(11, "거래당 기대 R", na(expR) ? "-" : str.tostring(expR, "#.###"), na(expR) ? color.gray : expR >= 0 ? bullCol : bearCol)
+    f_cell(12, "측정", statMode == "최근 N일" ? str.tostring(statDays) + "일" : statMode, color.new(#c8cdd8, 0))
+    f_cell(13, "진입", tradeSide + (skipRetrace ? "  ·  되돌림 후" : "  ·  이평 위 + 상향돌파 = 롱"), color.new(#8b95a8, 0))
+    f_cell(14, "손절", "피벗·스윙 + ATR 가둠  " + str.tostring(slMinAtr, "#.##") + "~" + str.tostring(slMaxAtr, "#.##"), color.new(#8b95a8, 0))
+    f_cell(15, "익절", "박스 TP1→TP2, RSI " + str.tostring(rsiTpL, "#") + "/" + str.tostring(rsiTpS, "#") + "면 전량", color.new(#8b95a8, 0))
+    f_cell(16, "배팅", "$" + str.tostring(betAmt, "#.##") + "  ×  " + str.tostring(lev, "#.##") + "x  (매 거래 고정)", color.new(#c8cdd8, 0))
+    f_cell(17, "기간 손익", usdTxt, sumUsd >= 0 ? bullCol : bearCol)
+    f_cell(18, "시작+손익", "$" + str.tostring(eqEnd, "#.##") + "  /  시작 $" + str.tostring(betAmt, "#.##"), eqEnd >= betAmt ? bullCol : bearCol)
+
+alertcondition(alertExit and closedNow, title="TB 청산", message="HWR TB EXIT")

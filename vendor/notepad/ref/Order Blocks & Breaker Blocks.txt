@@ -1,0 +1,258 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/ MPL-2.0
+
+//@version=6
+indicator("Order Blocks & Breaker Blocks", overlay = true
+  , max_lines_count  = 500
+  , max_labels_count = 500
+  , max_boxes_count  = 500)
+
+//------------------------------------------------------------------------------
+// Settings
+//------------------------------------------------------------------------------
+length   = input.int(10, "Swing Lookback", minval = 3, tooltip = "Number of bars used to detect swing points.")
+showBull = input.int(3, "Show Last Bullish OB", minval = 0, tooltip = "Number of recent bullish order blocks to display.")
+showBear = input.int(3, "Show Last Bearish OB", minval = 0, tooltip = "Number of recent bearish order blocks to display.")
+useBody  = input.bool(false, "Use Candle Body", tooltip = "Use candle bodies instead of full candle ranges when building blocks.")
+showVolume = input.bool(true, "Show Internal Volume", tooltip = "Display the accumulated up-volume and down-volume inside each order block and breaker block.")
+
+//------------------------------------------------------------------------------
+// Style
+//------------------------------------------------------------------------------
+bullCss      = input.color(color.new(#2157f3, 80), "Bullish OB", inline = "bullcss", group = "Style")
+bullBreakCss = input.color(color.new(#ff1100, 80), "Bullish Break", inline = "bullcss", group = "Style")
+bearCss      = input.color(color.new(#ff5d00, 80), "Bearish OB", inline = "bearcss", group = "Style")
+bearBreakCss = input.color(color.new(#0cb51a, 80), "Bearish Break", inline = "bearcss", group = "Style")
+volumeTextCss = input.color(color.gray, "Internal Volume Text", group = "Style", tooltip = "Text color used for internal volume metrics.")
+showLabels = input.bool(false, "Show Historical Polarity Changes", tooltip = "Show labels when a breaker block confirms a polarity change.")
+
+//------------------------------------------------------------------------------
+// UDTs
+//------------------------------------------------------------------------------
+type ob
+    float top = na
+    float btm = na
+    int   loc = bar_index
+    bool  breaker = false
+    int   break_loc = na
+    float buyVolume = 0.0
+    float sellVolume = 0.0
+    float breakerBuyVolume = 0.0
+    float breakerSellVolume = 0.0
+
+type swing
+    float y = na
+    int   x = na
+    bool  crossed = false
+
+//------------------------------------------------------------------------------
+// Functions
+//------------------------------------------------------------------------------
+swings(len) =>
+    var os = 0
+    var swing top = swing.new(na, na)
+    var swing btm = swing.new(na, na)
+
+    upper = ta.highest(len)
+    lower = ta.lowest(len)
+
+    os := high[len] > upper ? 0 : low[len] < lower ? 1 : os
+
+    if os == 0 and os[1] != 0
+        top := swing.new(high[length], bar_index[length])
+
+    if os == 1 and os[1] != 1
+        btm := swing.new(low[length], bar_index[length])
+
+    [top, btm]
+
+method notransp(color css) => color.rgb(color.r(css), color.g(css), color.b(css))
+
+method volumeText(ob id, bool isBreaker) =>
+    buyVolume = isBreaker ? id.breakerBuyVolume : id.buyVolume
+    sellVolume = isBreaker ? id.breakerSellVolume : id.sellVolume
+    totalVolume = buyVolume + sellVolume
+    buyPercent = totalVolume > 0 ? buyVolume / totalVolume * 100 : 0.0
+    sellPercent = totalVolume > 0 ? sellVolume / totalVolume * 100 : 0.0
+    showVolume ? "Vol: " + str.tostring(totalVolume, format.volume) + "\nUp: " + str.tostring(buyPercent, "#.0") + "%  Down: " + str.tostring(sellPercent, "#.0") + "%" : ""
+
+method display(ob id, css, breakCss) =>
+    if id.breaker
+        box.new(id.loc, id.top, id.break_loc, id.btm, css.notransp()
+          , bgcolor = css
+          , text = id.volumeText(false)
+          , text_color = volumeTextCss
+          , text_size = size.tiny
+          , text_halign = text.align_left
+          , text_valign = text.align_center
+          , xloc = xloc.bar_time)
+
+        box.new(id.break_loc, id.top, time + 1, id.btm, na
+          , bgcolor = breakCss
+          , text = id.volumeText(true)
+          , text_color = volumeTextCss
+          , text_size = size.tiny
+          , text_halign = text.align_left
+          , text_valign = text.align_center
+          , extend = extend.right
+          , xloc = xloc.bar_time)
+
+        line.new(id.loc, id.top, id.break_loc, id.top, xloc.bar_time, color = css.notransp())
+        line.new(id.loc, id.btm, id.break_loc, id.btm, xloc.bar_time, color = css.notransp())
+        line.new(id.break_loc, id.top, time + 1, id.top, xloc.bar_time, extend.right, breakCss.notransp(), line.style_dashed)
+        line.new(id.break_loc, id.btm, time + 1, id.btm, xloc.bar_time, extend.right, breakCss.notransp(), line.style_dashed)
+    else
+        box.new(id.loc, id.top, time, id.btm, na
+          , bgcolor = css
+          , text = id.volumeText(false)
+          , text_color = volumeTextCss
+          , text_size = size.tiny
+          , text_halign = text.align_left
+          , text_valign = text.align_center
+          , extend = extend.right
+          , xloc = xloc.bar_time)
+
+        line.new(id.loc, id.top, time, id.top, xloc.bar_time, extend.right, css.notransp())
+        line.new(id.loc, id.btm, time, id.btm, xloc.bar_time, extend.right, css.notransp())
+
+//------------------------------------------------------------------------------
+// Detect Swings
+//------------------------------------------------------------------------------
+n = bar_index
+
+[top, btm] = swings(length)
+max = useBody ? math.max(close, open) : high
+min = useBody ? math.min(close, open) : low
+currentUpVolume = close >= open ? nz(volume, 0.0) : 0.0
+currentDownVolume = close < open ? nz(volume, 0.0) : 0.0
+
+//------------------------------------------------------------------------------
+// Bullish OB
+//------------------------------------------------------------------------------
+var bullishObArray = array.new<ob>(0)
+bullBreakConf = 0
+
+if close > top.y and not top.crossed
+    top.crossed := true
+
+    minima = max[1]
+    maxima = min[1]
+    loc = time[1]
+
+    for i = 1 to (n - top.x) - 1
+        minima := math.min(min[i], minima)
+        maxima := minima == min[i] ? max[i] : maxima
+        loc := minima == min[i] ? time[i] : loc
+
+    buyVolume = 0.0
+    sellVolume = 0.0
+    for i = 1 to n - top.x
+        if time[i] >= loc
+            buyVolume += close[i] >= open[i] ? nz(volume[i], 0.0) : 0.0
+            sellVolume += close[i] < open[i] ? nz(volume[i], 0.0) : 0.0
+
+    bullishObArray.unshift(ob.new(maxima, minima, loc, false, na, buyVolume, sellVolume))
+
+if bullishObArray.size() > 0
+    for i = bullishObArray.size() - 1 to 0
+        element = bullishObArray.get(i)
+
+        if not element.breaker
+            element.buyVolume += currentUpVolume
+            element.sellVolume += currentDownVolume
+
+            if math.min(close, open) < element.btm
+                element.breaker := true
+                element.break_loc := time
+                element.breakerBuyVolume := currentUpVolume
+                element.breakerSellVolume := currentDownVolume
+        else
+            element.breakerBuyVolume += currentUpVolume
+            element.breakerSellVolume += currentDownVolume
+
+            if close > element.top
+                bullishObArray.remove(i)
+            else if i < showBull and top.y < element.top and top.y > element.btm
+                bullBreakConf := 1
+
+if bullBreakConf > bullBreakConf[1] and showLabels
+    label.new(top.x, top.y, "▼", color = na
+      , textcolor = bearCss.notransp()
+      , style = label.style_label_down
+      , size = size.tiny)
+
+//------------------------------------------------------------------------------
+// Bearish OB
+//------------------------------------------------------------------------------
+var bearishObArray = array.new<ob>(0)
+bearBreakConf = 0
+
+if close < btm.y and not btm.crossed
+    btm.crossed := true
+
+    minima = min[1]
+    maxima = max[1]
+    loc = time[1]
+
+    for i = 1 to (n - btm.x) - 1
+        maxima := math.max(max[i], maxima)
+        minima := maxima == max[i] ? min[i] : minima
+        loc := maxima == max[i] ? time[i] : loc
+
+    buyVolume = 0.0
+    sellVolume = 0.0
+    for i = 1 to n - btm.x
+        if time[i] >= loc
+            buyVolume += close[i] >= open[i] ? nz(volume[i], 0.0) : 0.0
+            sellVolume += close[i] < open[i] ? nz(volume[i], 0.0) : 0.0
+
+    bearishObArray.unshift(ob.new(maxima, minima, loc, false, na, buyVolume, sellVolume))
+
+if bearishObArray.size() > 0
+    for i = bearishObArray.size() - 1 to 0
+        element = bearishObArray.get(i)
+
+        if not element.breaker
+            element.buyVolume += currentUpVolume
+            element.sellVolume += currentDownVolume
+
+            if math.max(close, open) > element.top
+                element.breaker := true
+                element.break_loc := time
+                element.breakerBuyVolume := currentUpVolume
+                element.breakerSellVolume := currentDownVolume
+        else
+            element.breakerBuyVolume += currentUpVolume
+            element.breakerSellVolume += currentDownVolume
+
+            if close < element.btm
+                bearishObArray.remove(i)
+            else if i < showBear and btm.y > element.btm and btm.y < element.top
+                bearBreakConf := 1
+
+if bearBreakConf > bearBreakConf[1] and showLabels
+    label.new(btm.x, btm.y, "▲", color = na
+      , textcolor = bullCss.notransp()
+      , style = label.style_label_up
+      , size = size.tiny)
+
+//------------------------------------------------------------------------------
+// Set Order Blocks
+//------------------------------------------------------------------------------
+for bx in box.all
+    bx.delete()
+
+for lineId in line.all
+    lineId.delete()
+
+if barstate.islast
+    if showBull > 0 and bullishObArray.size() > 0
+        for i = 0 to math.min(showBull - 1, bullishObArray.size() - 1)
+            getOb = bullishObArray.get(i)
+            getOb.display(bullCss, bullBreakCss)
+
+    if showBear > 0 and bearishObArray.size() > 0
+        for i = 0 to math.min(showBear - 1, bearishObArray.size() - 1)
+            getOb = bearishObArray.get(i)
+            getOb.display(bearCss, bearBreakCss)
+
+//------------------------------------------------------------------------------

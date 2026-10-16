@@ -1,0 +1,168 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Quant
+
+//@version=6
+indicator("Absorption Levels & VWAP Reversal", overlay=true, max_lines_count=500, max_boxes_count=500)
+
+// --- Inputs ---
+// EMA Settings
+emaLen = input.int(21, "EMA Length", group="Moving Averages", tooltip="Short-term momentum filter.")
+
+// VWAP Settings
+mult1 = input.float(1.0, "VWAP Band 1 Multiplier", group="VWAP & Bands")
+mult2 = input.float(2.0, "VWAP Band 2 Multiplier", group="VWAP & Bands")
+
+// Absorption Settings
+volSpikeMult = input.float(1.5, "Volume Spike Multiplier", group="Absorption Logic", tooltip="Current volume must be this many times the SMA of volume.")
+volSmaLen = input.int(14, "Volume SMA Length", group="Absorption Logic")
+ltf = input.timeframe("1", "Lower Timeframe for Intrabar Volume", group="Absorption Logic", tooltip="Used to calculate intrabar volume delta inside the wicks.")
+volThreshold = input.float(0.4, "Wick Volume Threshold", minval=0.1, maxval=1.0, group="Absorption Logic", tooltip="Fraction (e.g., 0.4 = 40%) of total volume that must occur within the wick zone to trigger absorption.")
+maxZoneBars = input.int(20, "Max Zone Length (Bars)", group="Absorption Logic", tooltip="Maximum number of bars the zone will extend if not broken.")
+breakLogic = input.string("Past Midline", "Zone Breakout Logic", options=["Past Midline", "Past Full Zone"], group="Absorption Logic", tooltip="Determines what constitutes breaking the zone.")
+
+// Style Settings
+bullAbsColor = input.color(#089981, "Bullish Absorption Color", group="Style")
+bearAbsColor = input.color(#e91e63, "Bearish Absorption Color", group="Style")
+emaUpColor = input.color(#089981, "EMA Up Color", group="Style")
+emaDownColor = input.color(#9c27b0, "EMA Down Color", group="Style")
+upperBandColor = input.color(#089981, "Upper Bands Color", group="Style")
+lowerBandColor = input.color(#f23645, "Lower Bands Color", group="Style")
+
+// --- Moving Average ---
+ema = ta.ema(close, emaLen)
+emaColor = ema > ema[1] ? emaUpColor : ema < ema[1] ? emaDownColor : emaUpColor
+plot(ema, "EMA", color=emaColor, linewidth=2)
+
+// --- Daily Anchored VWAP & Standard Deviations ---
+var float sumVol = 0.0
+var float sumSrcVol = 0.0
+var float sumSrc2Vol = 0.0
+
+isNewDay = ta.change(time("D")) != 0
+
+if isNewDay
+    sumVol := 0.0
+    sumSrcVol := 0.0
+    sumSrc2Vol := 0.0
+
+src = hlc3
+sumVol += volume
+sumSrcVol += src * volume
+sumSrc2Vol += src * src * volume
+
+vwapVal = sumSrcVol / math.max(sumVol, 1)
+variance = (sumSrc2Vol / math.max(sumVol, 1)) - (vwapVal * vwapVal)
+// Ensure variance is not negative due to floating point inaccuracies
+stdev = math.sqrt(math.max(0, variance))
+
+// We plot 'na' on the first bar of the new day to break the continuous line from the previous day
+plotVwap = isNewDay ? na : vwapVal
+plotUpper1 = isNewDay ? na : vwapVal + stdev * mult1
+plotLower1 = isNewDay ? na : vwapVal - stdev * mult1
+plotUpper2 = isNewDay ? na : vwapVal + stdev * mult2
+plotLower2 = isNewDay ? na : vwapVal - stdev * mult2
+
+plot(plotVwap, "Daily VWAP", color=color.new(color.yellow, 0), linewidth=1, style=plot.style_linebr)
+plot(plotUpper1, "Upper Band 1", color=color.new(upperBandColor, 40), style=plot.style_linebr, linestyle=plot.linestyle_dashed, linewidth=1)
+plot(plotLower1, "Lower Band 1", color=color.new(lowerBandColor, 40), style=plot.style_linebr, linestyle=plot.linestyle_dashed, linewidth=1)
+plot(plotUpper2, "Upper Band 2", color=color.new(upperBandColor, 60), style=plot.style_linebr, linestyle=plot.linestyle_dashed, linewidth=1)
+plot(plotLower2, "Lower Band 2", color=color.new(lowerBandColor, 60), style=plot.style_linebr, linestyle=plot.linestyle_dashed, linewidth=1)
+
+// --- Multi-Timeframe Volume Delta Logic ---
+isVolSpike = volume > ta.sma(volume, volSmaLen) * volSpikeMult
+
+bodySize = math.abs(close - open)
+rangeSize = high - low
+isCompression = bodySize < rangeSize * 0.4 // Wick dominance / spread compression
+
+// Retrieve lower timeframe data arrays
+ltfVols = request.security_lower_tf(syminfo.tickerid, ltf, volume)
+ltfHighs = request.security_lower_tf(syminfo.tickerid, ltf, high)
+ltfLows = request.security_lower_tf(syminfo.tickerid, ltf, low)
+
+float bearishWickVol = 0.0
+float bullishWickVol = 0.0
+
+// Define the "wick zones" where we look for massive execution
+topZone = high - rangeSize * 0.3
+botZone = low + rangeSize * 0.3
+
+if array.size(ltfVols) > 0
+    for i = 0 to array.size(ltfVols) - 1
+        ltfH = array.get(ltfHighs, i)
+        ltfL = array.get(ltfLows, i)
+        ltfV = array.get(ltfVols, i)
+        // Approximate execution price for the LTF candle
+        ltfMid = (ltfH + ltfL) / 2.0
+        
+        if ltfMid >= topZone
+            bearishWickVol += ltfV
+        if ltfMid <= botZone
+            bullishWickVol += ltfV
+
+// Bullish Absorption (Buying exhaustion by passive buyers)
+// Surges into support, closes near top, high volume in bottom wick
+isBullishAbs = isVolSpike and isCompression and (bullishWickVol >= volume * volThreshold) and (close > high - rangeSize * 0.5)
+
+// Bearish Absorption (Selling exhaustion by passive sellers)
+// Surges into resistance, closes near bottom, high volume in top wick
+isBearishAbs = isVolSpike and isCompression and (bearishWickVol >= volume * volThreshold) and (close < low + rangeSize * 0.5)
+
+// --- Visualizing Absorption Levels ---
+type AbsZone
+    box bx
+    float topVal
+    float botVal
+    bool isBullish
+
+var zones = array.new<AbsZone>()
+
+if isBearishAbs
+    // Mark the upper wick area where passive sellers absorbed aggressive buyers
+    topVal = high
+    botVal = math.max(open, close)
+    bx = box.new(bar_index, topVal, bar_index + 1, botVal, border_color=na, bgcolor=color.new(bearAbsColor, 40))
+    array.push(zones, AbsZone.new(bx, topVal, botVal, false))
+
+if isBullishAbs
+    // Mark the lower wick area where passive buyers absorbed aggressive sellers
+    botVal = low
+    topVal = math.min(open, close)
+    bx = box.new(bar_index, topVal, bar_index + 1, botVal, border_color=na, bgcolor=color.new(bullAbsColor, 40))
+    array.push(zones, AbsZone.new(bx, topVal, botVal, true))
+
+// Manage dynamic extending boxes (stop extending when price closes past them)
+if array.size(zones) > 0
+    for i = array.size(zones) - 1 to 0
+        z = array.get(zones, i)
+        broken = false
+        
+        // Check how many bars the zone has been extending
+        barsActive = bar_index - box.get_left(z.bx)
+        if barsActive >= maxZoneBars
+            broken := true
+        
+        if not broken
+            // Extend the right side of the box to the current bar
+            box.set_right(z.bx, bar_index + 1)
+            
+            midline = (z.topVal + z.botVal) / 2.0
+            
+            if z.isBullish
+                if breakLogic == "Past Midline"
+                    if close < midline
+                        broken := true
+                else
+                    if close < z.botVal
+                        broken := true
+            else
+                if breakLogic == "Past Midline"
+                    if close > midline
+                        broken := true
+                else
+                    if close > z.topVal
+                        broken := true
+                    
+        if broken
+            // Stop extending by removing from active array
+            array.remove(zones, i)

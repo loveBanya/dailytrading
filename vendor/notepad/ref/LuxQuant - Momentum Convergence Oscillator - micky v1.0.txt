@@ -1,0 +1,143 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LuxAlgo
+
+//@version=6
+indicator("LuxQuant - Momentum Convergence Oscillator - micky v1.0", shorttitle="LuxQuant - Momentum Convergence Oscillator - micky v1.0", overlay=false)
+
+// --- Groups & Constants ---
+string G_MAIN    = "Main Settings"
+string G_VISUAL  = "Visuals"
+string G_DIV     = "Divergence Settings"
+color  C_GREEN   = #089981
+color  C_RED     = #f23645
+
+// --- Inputs ---
+int   lenRsiInput    = input.int(14, "RSI Length", minval=1, group=G_MAIN, tooltip="Length for the Momentum component.")
+int   lenTrendInput  = input.int(24, "Trend Length", minval=1, group=G_MAIN, tooltip="Length for the Trend component.")
+float trendMultInput = input.float(2.0, "Trend Sensitivity", minval=0.1, step=0.1, group=G_MAIN, tooltip="Multiplies the trend component to balance it with momentum.")
+int   smoothInput    = input.int(3, "Oscillator Smoothing", minval=1, group=G_MAIN, tooltip="Smooths the final oscillator line.")
+
+bool  showSignals    = input.bool(true, "Show Alignment Signals", group=G_VISUAL, tooltip="Highlights the background when trend and momentum align.")
+color bullColor      = input.color(C_GREEN, "Bullish Color", group=G_VISUAL, inline="Colors")
+color bearColor      = input.color(C_RED, "Bearish Color", group=G_VISUAL, inline="Colors")
+bool  colorBars      = input.bool(true, "Color Bars", group=G_VISUAL, tooltip="Colors the chart bars based on the oscillator state.")
+
+
+bool showRegDiv    = input.bool(true, "Show Regular Divergence", group=G_DIV)
+bool showHidDiv    = input.bool(false, "Show Hidden Divergence", group=G_DIV)
+int divLookback    = input.int(5, "Pivot Lookback", minval=1, group=G_DIV)
+color bullDivColor = input.color(C_GREEN, "Bullish Div Color", group=G_DIV, inline="Div Colors")
+color bearDivColor = input.color(C_RED, "Bearish Div Color", group=G_DIV, inline="Div Colors")
+
+// --- Calculations ---
+// 1. Momentum Component (Normalized RSI)
+float rsiValue = ta.rsi(close, lenRsiInput)
+float mom      = rsiValue - 50 
+
+// 2. Trend Component (Linear Regression Slope normalized)
+float linreg      = ta.linreg(close, lenTrendInput, 0)
+float linregPrev  = ta.linreg(close, lenTrendInput, 1)
+float slope       = (linreg - linregPrev)
+float atr         = ta.atr(lenTrendInput)
+float trend       = (slope / (atr > 0 ? atr : 1.0)) * 100 * trendMultInput
+
+// 3. Combined Oscillator
+float rawOsc = mom + trend
+float osc    = ta.ema(rawOsc, smoothInput)
+
+// Essential for variable indexing/historical access in logic
+max_bars_back(low, 500)
+max_bars_back(high, 500)
+max_bars_back(osc, 500)
+
+// --- Logic ---
+bool isBullish = osc > 0
+bool isBearish = osc < 0
+
+// Alignment Signals (Convergence)
+bool bullAlign = trend > 0 and mom > 0
+bool bearAlign = trend < 0 and mom < 0
+bool bullSignal = bullAlign and not bullAlign[1]
+bool bearSignal = bearAlign and not bearAlign[1]
+
+// --- Divergence Logic (Persistent State) ---
+float ph = ta.pivothigh(osc, divLookback, divLookback)
+float pl = ta.pivotlow(osc, divLookback, divLookback)
+
+var int   lastPlIdx = na
+var float lastPlOsc = na
+var float lastPlLow = na
+
+var int   lastPhIdx = na
+var float lastPhOsc = na
+var float lastPhHigh = na
+
+bool bullDiv    = false
+bool bullHidDiv = false
+bool bearDiv    = false
+bool bearHidDiv = false
+
+if not na(pl)
+    if not na(lastPlIdx)
+        if low[divLookback] < lastPlLow and osc[divLookback] > lastPlOsc
+            bullDiv := true
+        if low[divLookback] > lastPlLow and osc[divLookback] < lastPlOsc
+            bullHidDiv := true
+    lastPlIdx  := bar_index[divLookback]
+    lastPlOsc  := osc[divLookback]
+    lastPlLow  := low[divLookback]
+
+if not na(ph)
+    if not na(lastPhIdx)
+        if high[divLookback] > lastPhHigh and osc[divLookback] < lastPhOsc
+            bearDiv := true
+        if high[divLookback] < lastPhHigh and osc[divLookback] > lastPhOsc
+            bearHidDiv := true
+    lastPhIdx  := bar_index[divLookback]
+    lastPhOsc  := osc[divLookback]
+    lastPhHigh := high[divLookback]
+
+// --- Visuals ---
+hline(0, "Zero Line", color=chart.fg_color, linestyle=hline.style_dashed)
+plotColor = isBullish ? bullColor : bearColor
+oscPlot   = plot(osc, "Oscillator", color=plotColor, linewidth=2)
+zeroPlot  = plot(0, "Zero Reference", color=color.new(chart.fg_color, 100))
+
+// Vertical Gradient Fills
+fill(oscPlot, zeroPlot, top_value = math.max(0, osc), bottom_value = 0, top_color = color.new(bullColor, 50), bottom_color = color.new(bullColor, 100), title = "Bullish Fill")
+fill(oscPlot, zeroPlot, top_value = 0, bottom_value = math.min(0, osc), top_color = color.new(bearColor, 100), bottom_color = color.new(bearColor, 50), title = "Bearish Fill")
+
+// Highlights
+bgcolor(showSignals and bullAlign ? color.new(bullColor, 90) : showSignals and bearAlign ? color.new(bearColor, 90) : na, title="Alignment Background")
+hline(60, "OB Level", color=color.new(bearColor, 50), linestyle=hline.style_dotted)
+hline(-60, "OS Level", color=color.new(bullColor, 50), linestyle=hline.style_dotted)
+
+// Alignment Markers
+plotshape(showSignals and bullSignal ? 0 : na, "Bullish Alignment", shape.circle, location.absolute, color=bullColor, size=size.tiny)
+plotshape(showSignals and bearSignal ? 0 : na, "Bearish Alignment", shape.circle, location.absolute, color=bearColor, size=size.tiny)
+
+// Divergence Visuals
+plotshape(showRegDiv and bullDiv ? osc[divLookback] : na, "Regular Bullish Div", shape.labelup, location.absolute, bullDivColor, -divLookback, "Bull", color.white, size=size.tiny)
+plotshape(showRegDiv and bearDiv ? osc[divLookback] : na, "Regular Bearish Div", shape.labeldown, location.absolute, bearDivColor, -divLookback, "Bear", color.white, size=size.tiny)
+plotshape(showHidDiv and bullHidDiv ? osc[divLookback] : na, "Hidden Bullish Div", shape.labelup, location.absolute, bullDivColor, -divLookback, "H-Bull", color.white, size=size.tiny)
+plotshape(showHidDiv and bearHidDiv ? osc[divLookback] : na, "Hidden Bearish Div", shape.labeldown, location.absolute, bearDivColor, -divLookback, "H-Bear", color.white, size=size.tiny)
+
+// Divergence Lines (on Oscillator)
+if showRegDiv and bullDiv
+    line.new(lastPlIdx, lastPlOsc, bar_index - divLookback, osc[divLookback], color=bullDivColor, width=2)
+if showRegDiv and bearDiv
+    line.new(lastPhIdx, lastPhOsc, bar_index - divLookback, osc[divLookback], color=bearDivColor, width=2)
+if showHidDiv and bullHidDiv
+    line.new(lastPlIdx, lastPlOsc, bar_index - divLookback, osc[divLookback], color=bullDivColor, width=1, style=line.style_dashed)
+if showHidDiv and bearHidDiv
+    line.new(lastPhIdx, lastPhOsc, bar_index - divLookback, osc[divLookback], color=bearDivColor, width=1, style=line.style_dashed)
+
+// Bar Coloring
+barcolor(colorBars ? (isBullish ? bullColor : bearColor) : na, title="Bar Color")
+
+
+// --- Alerts ---
+alertcondition(bullSignal, "Bullish Alignment", "Trend and Momentum aligned bullishly.")
+alertcondition(bearSignal, "Bearish Alignment", "Trend and Momentum aligned bearishly.")
+alertcondition(bullDiv, "Bullish Divergence", "Regular Bullish Divergence detected.")
+alertcondition(bearDiv, "Bearish Divergence", "Regular Bearish Divergence detected.")

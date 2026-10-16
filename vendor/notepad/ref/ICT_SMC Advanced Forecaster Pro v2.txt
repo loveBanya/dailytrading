@@ -1,0 +1,166 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LuxAlgo (Converted, Debugged & Enhanced Strategy)
+
+//@version=6
+strategy("ICT/SMC Advanced Forecaster Pro v2", "ICT Forecaster Pro", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, initial_capital = 100000, default_qty_type = strategy.cash, default_qty_value = 0, pyramiding = 5, process_orders_on_close = true)
+
+// --- Constants ---
+string G_SESS  = "Sessions"
+string G_MA    = "Moving Averages"
+string G_VIS   = "Visuals & Strategy"
+color C_GREEN  = #089981
+color C_RED    = #f23645
+color C_BLUE   = #2196f3
+color C_BG     = #131722
+
+// --- Inputs ---
+asiaSessInput   = input.session("0000-0600", "Asian Session", group = G_SESS)
+londonSessInput = input.session("0800-1200", "London Session", group = G_SESS)
+nySessInput     = input.session("1300-1700", "New York Session", group = G_SESS)
+timeZoneInput   = input.string("UTC", "Timezone", options = ["UTC", "America/New_York", "Europe/London"], group = G_SESS)
+
+tightThresholdInput = input.float(20.0, "Asian 'Tight' Threshold (Pips)", minval = 0, group = G_SESS)
+
+fastMaLenInput = input.int(20, "Fast MA Length", minval = 1, group = G_MA)
+slowMaLenInput = input.int(50, "Slow MA Length", minval = 1, group = G_MA)
+
+rrInput        = input.float(2.0, "Risk/Reward Ratio", minval = 0.1, group = G_VIS)
+stopLossPips   = input.float(12.0, "Stop Loss (Pips)", minval = 1, group = G_VIS)
+useFixedQty    = input.bool(true, "Use Fixed Order Quantity (1 Lot)", group = G_VIS)
+fixedUnits     = input.float(100000, "Fixed Unit Size (1 Lot = 100k)", group = G_VIS)
+riskAmount     = input.float(750.0, "Risk Amount ($) [If Fixed Qty Off]", minval = 1, group = G_VIS)
+trendFilter    = input.bool(true, "Trend Filter (EMA Cross)", group = G_VIS)
+
+// Visualization Inputs
+inputGroupVisual = "=== ACTIVE POSITION VISUALIZATION ==="
+showEntryLines = input.bool(true, "Show Entry Lines", group=inputGroupVisual)
+showSLLines    = input.bool(true, "Show SL Lines", group=inputGroupVisual)
+showTPLines    = input.bool(true, "Show TP Lines", group=inputGroupVisual)
+
+// --- Helper Functions ---
+is_in_session(sess, tz) => not na(time(timeframe.period, sess, tz))
+
+// --- Logic ---
+inAsia   = is_in_session(asiaSessInput, timeZoneInput)
+inLondon = is_in_session(londonSessInput, timeZoneInput)
+inNY     = is_in_session(nySessInput, timeZoneInput)
+
+var float asiaHigh = na
+var float asiaLow  = na
+
+if inAsia and not inAsia[1]
+    asiaHigh  := high
+    asiaLow   := low
+else if inAsia
+    asiaHigh  := math.max(asiaHigh, high)
+    asiaLow   := math.min(asiaLow, low)
+
+// EMA Trend
+fastMa = ta.ema(close, fastMaLenInput)
+slowMa = ta.ema(close, slowMaLenInput)
+plot(fastMa, "Fast EMA", color.new(C_RED, 20))
+plot(slowMa, "Slow EMA", color.new(C_BLUE, 20))
+
+// --- Active Level Tracking Variables ---
+var float actLongEntry  = na
+var float actLongSL     = na
+var float actLongTP     = na
+var float actShortEntry = na
+var float actShortSL    = na
+var float actShortTP    = na
+
+// --- Strategy Tracking & Orders ---
+var bool asiaHighSwept = false
+var bool asiaLowSwept  = false
+
+if inAsia and not inAsia[1]
+    asiaHighSwept := false
+    asiaLowSwept  := false
+
+if (inLondon or inNY) and not na(asiaHigh)
+    float slDist = stopLossPips * syminfo.mintick * 10
+    
+    // Long Setup
+    if low < asiaLow and close > asiaLow and not asiaLowSwept
+        if not trendFilter or fastMa > slowMa
+            float sl = close - slDist
+            float tp = close + (close - sl) * rrInput
+            float tradeQty = useFixedQty ? fixedUnits : math.floor(riskAmount / slDist)
+            
+            actLongEntry := close
+            actLongSL    := sl
+            actLongTP    := tp
+            
+            strategy.entry("Long", strategy.long, qty = tradeQty)
+            strategy.exit("Exit Long", "Long", stop = sl, limit = tp)
+            
+            asiaLowSwept := true
+
+    // Short Setup
+    else if high > asiaHigh and close < asiaHigh and not asiaHighSwept
+        if not trendFilter or fastMa < slowMa
+            float sl = close + slDist
+            float tp = close - (sl - close) * rrInput
+            float tradeQty = useFixedQty ? fixedUnits : math.floor(riskAmount / slDist)
+            
+            actShortEntry := close
+            actShortSL    := sl
+            actShortTP    := tp
+            
+            strategy.entry("Short", strategy.short, qty = tradeQty)
+            strategy.exit("Exit Short", "Short", stop = sl, limit = tp)
+            
+            asiaHighSwept := true
+
+// Clean up state when positions close
+curPos  = strategy.position_size
+prevPos = nz(strategy.position_size[1])
+
+if prevPos > 0 and curPos <= 0
+    actLongEntry := na
+    actLongSL    := na
+    actLongTP    := na
+
+if prevPos < 0 and curPos >= 0
+    actShortEntry := na
+    actShortSL    := na
+    actShortTP    := na
+
+// --- VISUALIZATION SUITE ---
+l_en = plot(showEntryLines and curPos > 0  ? actLongEntry : na, "Long Entry",  color=color.gray,  style=plot.style_linebr)
+l_sl = plot(showSLLines   and curPos > 0  ? actLongSL    : na, "Long SL",     color=color.red,   style=plot.style_linebr)
+l_tp = plot(showTPLines   and curPos > 0  ? actLongTP    : na, "Long TP",     color=color.green, style=plot.style_linebr)
+
+s_en = plot(showEntryLines and curPos < 0 ? actShortEntry: na, "Short Entry", color=color.gray,  style=plot.style_linebr)
+s_sl = plot(showSLLines   and curPos < 0 ? actShortSL   : na, "Short SL",    color=color.red,   style=plot.style_linebr)
+s_tp = plot(showTPLines   and curPos < 0 ? actShortTP   : na, "Short TP",    color=color.green, style=plot.style_linebr)
+
+fill(l_en, l_tp, color=color.new(color.green, 85))
+fill(l_en, l_sl, color=color.new(color.red,   90))
+fill(s_en, s_tp, color=color.new(color.green, 85))
+fill(s_en, s_sl, color=color.new(color.red,   90))
+
+// --- Performance Dashboard ---
+var table perfTable = table.new(position.top_right, 2, 3, bgcolor = C_BG, border_color = color.gray, border_width = 1)
+if barstate.islast
+    int totalTrades = strategy.closedtrades
+    int wins        = strategy.wintrades
+    int losses      = strategy.losstrades
+    float winRate   = totalTrades > 0 ? (wins / totalTrades) * 100 : 0.0
+
+    table.cell(perfTable, 0, 0, "PERFORMANCE", text_color = color.white, text_size = size.small)
+    table.cell(perfTable, 1, 0, "STATS", text_color = color.white, text_size = size.small)
+    table.cell(perfTable, 0, 1, "Win Rate", text_color = color.white)
+    table.cell(perfTable, 1, 1, str.tostring(winRate, "0.0") + "%", text_color = winRate > 50 ? C_GREEN : C_RED)
+    table.cell(perfTable, 0, 2, "W/L Ratio", text_color = color.white)
+    table.cell(perfTable, 1, 2, str.tostring(wins) + "W / " + str.tostring(losses) + "L", text_color = color.white)
+
+// --- Session Box ---
+if inAsia
+    var box aBox = na
+    if not inAsia[1]
+        aBox := box.new(bar_index, asiaHigh, bar_index, asiaLow, bgcolor = color.new(color.gray, 90), border_color = color.gray, text = "Asia", text_size = size.tiny)
+    else
+        box.set_top(aBox, asiaHigh)
+        box.set_bottom(aBox, asiaLow)
+        box.set_right(aBox, bar_index)

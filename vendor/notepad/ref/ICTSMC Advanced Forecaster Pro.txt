@@ -1,0 +1,316 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Uno_Mas
+
+//@version=6
+
+// ============================================================================
+// VWAP SESSION AND NY CASH (Multi-Session Expansion)
+// ============================================================================
+
+indicator("NYVWAP IB Multi-Session", overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+const string TIMEZONE = "America/New_York"
+transparent = color.rgb(0, 0, 0, 100)
+
+// ============================================================================
+// USER INPUTS
+// ============================================================================
+
+// Calculation Settings
+CALC_GROUP = "Calculation"
+i_enableHD = input.bool(true, title = "Use 5-min data for precision", group = CALC_GROUP)
+
+// NY Session Settings
+NY_GROUP = "NY Session (09:30 - 16:00)"
+i_ny_on             = input.bool(true, "Enable NY Session", group = NY_GROUP)
+i_NY_color          = input.color(color.new(#4caf50, 0), title = "VWAP Color", group = NY_GROUP, inline = "line")
+i_NY_width          = input.int(1, title = "Width", group = NY_GROUP, inline = "line")
+i_NY_style          = input.string("Solid", title = "Style", options = ["Solid", "Dashed", "Dotted"], group = NY_GROUP, inline = "line")
+i_NY_label          = input.string("NYVWAP", title = "Label", group = NY_GROUP)
+i_ny_ib_color       = input.color(color.new(#5b9cf6, 0), "IB Color", group = NY_GROUP)
+i_NY_open_label     = input.string("NY Open", title = "Open Label", group = NY_GROUP)
+i_NY_open_color     = input.color(color.gray, title = "Open Color", group = NY_GROUP)
+
+// Asia Session Settings
+ASIA_GROUP = "Asia Session (18:00 - 03:00)"
+i_as_on             = input.bool(false, "Enable Asia Session", group = ASIA_GROUP)
+i_as_sess           = input.session("1800-0300", "Session Time", group = ASIA_GROUP)
+i_as_ib_sess        = input.session("1800-1900", "IB Time", group = ASIA_GROUP)
+i_AS_color          = input.color(color.new(#ff9800, 0), title = "VWAP Color", group = ASIA_GROUP, inline = "asv")
+i_AS_width          = input.int(1, title = "Width", group = ASIA_GROUP, inline = "asv")
+i_AS_style          = input.string("Solid", title = "Style", options = ["Solid", "Dashed", "Dotted"], group = ASIA_GROUP, inline = "asv")
+i_AS_label          = input.string("AsiaVWAP", title = "Label", group = ASIA_GROUP)
+i_as_ib_color       = input.color(color.new(#ffeb3b, 0), "IB Color", group = ASIA_GROUP)
+i_AS_open_label     = input.string("Asia Open", title = "Open Label", group = ASIA_GROUP)
+i_AS_open_color     = input.color(color.gray, title = "Open Color", group = ASIA_GROUP)
+
+// London Session Settings
+LON_GROUP = "London Session (03:00 - 09:30)"
+i_ln_on             = input.bool(false, "Enable London Session", group = LON_GROUP)
+i_ln_sess           = input.session("0300-0930", "Session Time", group = LON_GROUP)
+i_ln_ib_sess        = input.session("0300-0400", "IB Time", group = LON_GROUP)
+i_LN_color          = input.color(color.new(#2196f3, 0), title = "VWAP Color", group = LON_GROUP, inline = "lnv")
+i_LN_width          = input.int(1, title = "Width", group = LON_GROUP, inline = "lnv")
+i_LN_style          = input.string("Solid", title = "Style", options = ["Solid", "Dashed", "Dotted"], group = LON_GROUP, inline = "lnv")
+i_LN_label          = input.string("LonVWAP", title = "Label", group = LON_GROUP)
+i_ln_ib_color       = input.color(color.new(#00bcd4, 0), "IB Color", group = LON_GROUP)
+i_LN_open_label     = input.string("Lon Open", title = "Open Label", group = LON_GROUP)
+i_LN_open_color     = input.color(color.gray, title = "Open Color", group = LON_GROUP)
+
+// Shared IB & Fib Settings
+IB_FIB_GROUP = "IB Fibonacci Levels (Shared)"
+i_fibStyle    = input.string("Dotted", "Fib Line Style", options = ["Solid", "Dashed", "Dotted"], group = IB_FIB_GROUP)
+i_showFibLabs = input.bool(true, "Show Fib Labels", group = IB_FIB_GROUP)
+i_fibLabType  = input.string("Level", "Label Content", options = ["Level", "Price"], group = IB_FIB_GROUP)
+i_openIBLabOffset = input.int(0, "Label Offset", group = IB_FIB_GROUP)
+
+// Fib Slots 1-12
+i_f1_on  = input.bool(false, "Slot 1",  group = IB_FIB_GROUP, inline = "f1"),  i_f1_val  = input.float(0.236, "", group = IB_FIB_GROUP, inline = "f1"),  i_f1_col  = input.color(color.new(#787b86, 50), "", group = IB_FIB_GROUP, inline = "f1")
+i_f2_on  = input.bool(false, "Slot 2",  group = IB_FIB_GROUP, inline = "f2"),  i_f2_val  = input.float(0.382, "", group = IB_FIB_GROUP, inline = "f2"),  i_f2_col  = input.color(color.new(#f23645, 50), "", group = IB_FIB_GROUP, inline = "f2")
+i_f3_on  = input.bool(false, "Slot 3",  group = IB_FIB_GROUP, inline = "f3"),  i_f3_val  = input.float(0.500, "", group = IB_FIB_GROUP, inline = "f3"),  i_f3_col  = input.color(color.new(#4caf50, 50), "", group = IB_FIB_GROUP, inline = "f3")
+i_f4_on  = input.bool(false, "Slot 4",  group = IB_FIB_GROUP, inline = "f4"),  i_f4_val  = input.float(0.618, "", group = IB_FIB_GROUP, inline = "f4"),  i_f4_col  = input.color(color.new(#2962ff, 50), "", group = IB_FIB_GROUP, inline = "f4")
+i_f5_on  = input.bool(false, "Slot 5",  group = IB_FIB_GROUP, inline = "f5"),  i_f5_val  = input.float(0.786, "", group = IB_FIB_GROUP, inline = "f5"),  i_f5_col  = input.color(color.new(#9c27b0, 50), "", group = IB_FIB_GROUP, inline = "f5")
+i_f6_on  = input.bool(false, "Slot 6",  group = IB_FIB_GROUP, inline = "f6"),  i_f6_val  = input.float(1.000, "", group = IB_FIB_GROUP, inline = "f6"),  i_f6_col  = input.color(color.new(#787b86, 50), "", group = IB_FIB_GROUP, inline = "f6")
+i_f7_on  = input.bool(false, "Slot 7",  group = IB_FIB_GROUP, inline = "f7"),  i_f7_val  = input.float(1.272, "", group = IB_FIB_GROUP, inline = "f7"),  i_f7_col  = input.color(color.new(#e91e63, 50), "", group = IB_FIB_GROUP, inline = "f7")
+i_f8_on  = input.bool(false, "Slot 8",  group = IB_FIB_GROUP, inline = "f8"),  i_f8_val  = input.float(1.618, "", group = IB_FIB_GROUP, inline = "f8"),  i_f8_col  = input.color(color.new(#ff5722, 50), "", group = IB_FIB_GROUP, inline = "f8")
+i_f9_on  = input.bool(false, "Slot 9",  group = IB_FIB_GROUP, inline = "f9"),  i_f9_val  = input.float(2.000, "", group = IB_FIB_GROUP, inline = "f9"),  i_f9_col  = input.color(color.new(#00bcd4, 50), "", group = IB_FIB_GROUP, inline = "f9")
+i_f10_on = input.bool(false, "Slot 10", group = IB_FIB_GROUP, inline = "f10"), i_f10_val = input.float(2.618, "", group = IB_FIB_GROUP, inline = "f10"), i_f10_col = input.color(color.new(#ffeb3b, 50), "", group = IB_FIB_GROUP, inline = "f10")
+i_f11_on = input.bool(false, "Slot 11", group = IB_FIB_GROUP, inline = "f11"), i_f11_val = input.float(3.000, "", group = IB_FIB_GROUP, inline = "f11"), i_f11_col = input.color(color.new(#8bc34a, 50), "", group = IB_FIB_GROUP, inline = "f11")
+i_f12_on = input.bool(false, "Slot 12", group = IB_FIB_GROUP, inline = "f12"), i_f12_val = input.float(4.236, "", group = IB_FIB_GROUP, inline = "f12"), i_f12_col = input.color(color.new(#607d8b, 50), "", group = IB_FIB_GROUP, inline = "f12")
+
+// Session VWAP
+SESSION_GROUP = "Session VWAP (Full Day)"
+i_Session_enabled        = input.bool(true, title = "Enabled", group = SESSION_GROUP)
+i_Session_color          = input.color(color.new(#04eb85, 0), title = "Color", group = SESSION_GROUP)
+i_Session_width          = input.int(2, title = "Width", group = SESSION_GROUP)
+i_Session_style          = input.string("Dashed", title = "Style", options = ["Solid", "Dashed", "Dotted"], group = SESSION_GROUP)
+
+// ============================================================================
+// USER DEFINED TYPE
+// ============================================================================
+type myVWAP
+    label lab
+    bool isActive = true
+    float cumPV = 0.0
+    float cumVol = 0.0
+    float vwap = na
+
+// ============================================================================
+// STATE VARIABLES
+// ============================================================================
+var myVWAP sessionVWAP = myVWAP.new(label.new(bar_index, 0.0, "", style = label.style_label_left, color = transparent, textcolor = i_Session_color))
+
+var myVWAP nyV1 = myVWAP.new(label.new(bar_index, 0.0, "", style = label.style_label_left, color = transparent, textcolor = i_NY_color))
+var myVWAP nyV2 = myVWAP.new(label.new(bar_index, 0.0, "", style = label.style_label_left, color = transparent, textcolor = i_NY_color), isActive = false)
+
+var myVWAP asV1 = myVWAP.new(label.new(bar_index, 0.0, "", style = label.style_label_left, color = transparent, textcolor = i_AS_color))
+var myVWAP asV2 = myVWAP.new(label.new(bar_index, 0.0, "", style = label.style_label_left, color = transparent, textcolor = i_AS_color), isActive = false)
+
+var myVWAP lnV1 = myVWAP.new(label.new(bar_index, 0.0, "", style = label.style_label_left, color = transparent, textcolor = i_LN_color))
+var myVWAP lnV2 = myVWAP.new(label.new(bar_index, 0.0, "", style = label.style_label_left, color = transparent, textcolor = i_LN_color), isActive = false)
+
+var float nyHigh = na, var float nyLow = na, var float nyOp = na
+var float asHigh = na, var float asLow = na, var float asOp = na
+var float lnHigh = na, var float lnLow = na, var float lnOp = na
+
+var label nyOpenLab = label.new(bar_index, 0.0, "", style = label.style_label_left, color = transparent, textcolor = i_NY_open_color, size = size.small)
+var label asOpenLab = label.new(bar_index, 0.0, "", style = label.style_label_left, color = transparent, textcolor = i_AS_open_color, size = size.small)
+var label lnOpenLab = label.new(bar_index, 0.0, "", style = label.style_label_left, color = transparent, textcolor = i_LN_open_color, size = size.small)
+
+var int FIB_COUNT = 12
+
+var label[] nyFibLabs = array.new_label(FIB_COUNT, na)
+var label[] asFibLabs = array.new_label(FIB_COUNT, na)
+var label[] lnFibLabs = array.new_label(FIB_COUNT, na)
+
+var line[] nyFibLines = array.new_line(FIB_COUNT, na)
+var line[] asFibLines = array.new_line(FIB_COUNT, na)
+var line[] lnFibLines = array.new_line(FIB_COUNT, na)
+
+var bool nyIBset = false
+var bool asIBset = false
+var bool lnIBset = false
+
+if barstate.isfirst
+    for i = 0 to FIB_COUNT - 1
+        array.set(nyFibLabs, i, label.new(bar_index, 0, "", style = label.style_label_left, color = transparent, size = size.small))
+        array.set(asFibLabs, i, label.new(bar_index, 0, "", style = label.style_label_left, color = transparent, size = size.small))
+        array.set(lnFibLabs, i, label.new(bar_index, 0, "", style = label.style_label_left, color = transparent, size = size.small))
+
+// ============================================================================
+// FUNCTIONS
+// ============================================================================
+resetVWAP(myVWAP v) => v.cumPV := 0.0, v.cumVol := 0.0, v.vwap := na
+
+// ============================================================================
+// MAIN LOGIC
+// ============================================================================
+chartMin = timeframe.in_seconds() / 60
+useHD = i_enableHD and timeframe.isintraday and chartMin > 5
+
+var float[] pvNY = array.new_float(0), var float[] volNY = array.new_float(0), var int lastNY = -1
+var float[] pvAS = array.new_float(0), var float[] volAS = array.new_float(0), var int lastAS = -1
+var float[] pvLN = array.new_float(0), var float[] volLN = array.new_float(0), var int lastLN = -1
+float hdNY = na, float hdAS = na, float hdLN = na
+
+if useHD
+    [h, v, t] = request.security_lower_tf(syminfo.tickerid, "5", [hlc3, volume, time])
+    if array.size(h) > 0
+        for i = 0 to array.size(h) - 1
+            bt = t.get(i), bh = h.get(i), bv = v.get(i), d = dayofmonth(bt, TIMEZONE), hr = hour(bt, TIMEZONE), m = minute(bt, TIMEZONE)
+            if bv > 0
+                if hr == 9 and m == 30 and d != lastNY
+                    array.clear(pvNY), array.clear(volNY), lastNY := d
+                array.push(pvNY, bh * bv), array.push(volNY, bv)
+                if hr == 18 and m == 0 and d != lastAS
+                    array.clear(pvAS), array.clear(volAS), lastAS := d
+                array.push(pvAS, bh * bv), array.push(volAS, bv)
+                if hr == 3 and m == 0 and d != lastLN
+                    array.clear(pvLN), array.clear(volLN), lastLN := d
+                array.push(pvLN, bh * bv), array.push(volLN, bv)
+        hdNY := array.sum(volNY) > 0 ? array.sum(pvNY) / array.sum(volNY) : na
+        hdAS := array.sum(volAS) > 0 ? array.sum(pvAS) / array.sum(volAS) : na
+        hdLN := array.sum(volLN) > 0 ? array.sum(pvLN) / array.sum(volLN) : na
+
+f_process(bool on, string sess, string ibSess, float hdV, myVWAP v1, myVWAP v2, float op, float hi, float lo, string name, label openLab, string openLabText) =>
+    float rOp = op, float rHi = hi, float rLo = lo
+    if on
+        isOp = not na(time(timeframe.period, sess, TIMEZONE)) and na(time(timeframe.period, sess, TIMEZONE)[1])
+        isIB = not na(time(timeframe.period, ibSess, TIMEZONE))
+        isInSessPlot = not na(time(timeframe.period, sess, TIMEZONE))
+        if isOp
+            rOp := open, rHi := high, rLo := low
+            if v1.isActive
+                v1.isActive := false, v2.isActive := true, v1.lab.set_text(""), resetVWAP(v2)
+            else
+                v1.isActive := true, v2.isActive := false, v2.lab.set_text(""), resetVWAP(v1)
+        else if isIB
+            rHi := math.max(nz(rHi, -1e10), high), rLo := math.min(nz(rLo, 1e10), low)
+        
+        cur = v1.isActive ? v1 : v2
+        if useHD and not na(hdV)
+            cur.vwap := hdV
+        else if cur.isActive
+            cur.cumPV += hlc3 * volume, cur.cumVol += volume
+            cur.vwap := cur.cumVol > 0 ? cur.cumPV / cur.cumVol : na
+        
+        cur.lab.set_xy(bar_index + i_openIBLabOffset, cur.vwap)
+        cur.lab.set_text(isInSessPlot or name == "VWAP" ? name : "")
+
+        // Update open label
+        if isInSessPlot and not na(rOp)
+            openLab.set_xy(bar_index + i_openIBLabOffset, rOp)
+            openLab.set_text(openLabText)
+        else
+            openLab.set_text("")
+    else
+        openLab.set_text("")
+    [rOp, rHi, rLo]
+
+[nyOp_new, nyHi_new, nyLo_new] = f_process(i_ny_on, "0930-1600", "0930-1030", hdNY, nyV1, nyV2, nyOp, nyHigh, nyLow, i_NY_label, nyOpenLab, i_NY_open_label)
+nyOp := nyOp_new, nyHigh := nyHi_new, nyLow := nyLo_new
+
+[asOp_new, asHi_new, asLo_new] = f_process(i_as_on, i_as_sess, i_as_ib_sess, hdAS, asV1, asV2, asOp, asHigh, asLow, i_AS_label, asOpenLab, i_AS_open_label)
+asOp := asOp_new, asHigh := asHi_new, asLow := asLo_new
+
+[lnOp_new, lnHi_new, lnLow_new] = f_process(i_ln_on, i_ln_sess, i_ln_ib_sess, hdLN, lnV1, lnV2, lnOp, lnHigh, lnLow, i_LN_label, lnOpenLab, i_LN_open_label)
+lnOp := lnOp_new, lnHigh := lnHi_new, lnLow := lnLow_new
+
+// ============================================================================
+// IB END DETECTION & FIB LINE DRAWING
+// ============================================================================
+nyIBend = i_ny_on and na(time(timeframe.period, "0930-1030", TIMEZONE)) and not na(time(timeframe.period, "0930-1030", TIMEZONE))[1]
+asIBend = i_as_on and na(time(timeframe.period, i_as_ib_sess, TIMEZONE)) and not na(time(timeframe.period, i_as_ib_sess, TIMEZONE))[1]
+lnIBend = i_ln_on and na(time(timeframe.period, i_ln_ib_sess, TIMEZONE)) and not na(time(timeframe.period, i_ln_ib_sess, TIMEZONE))[1]
+
+// Visibility Flags for Plots
+isNyPlot = not na(time(timeframe.period, "0930-1600", TIMEZONE))
+isAsPlot = not na(time(timeframe.period, i_as_sess, TIMEZONE))
+isLnPlot = not na(time(timeframe.period, i_ln_sess, TIMEZONE))
+
+nyIBset := nyIBend ? true : (isNyPlot ? nyIBset : false)
+asIBset := asIBend ? true : (isAsPlot ? asIBset : false)
+lnIBset := lnIBend ? true : (isLnPlot ? lnIBset : false)
+
+f_drawFibs(bool ibEnd, bool ibSet, bool inSess, float hi, float lo, line[] fibLines, label[] fibLabs) =>
+    vals = array.from(i_f1_val, i_f2_val, i_f3_val, i_f4_val, i_f5_val, i_f6_val, i_f7_val, i_f8_val, i_f9_val, i_f10_val, i_f11_val, i_f12_val)
+    ons  = array.from(i_f1_on, i_f2_on, i_f3_on, i_f4_on, i_f5_on, i_f6_on, i_f7_on, i_f8_on, i_f9_on, i_f10_on, i_f11_on, i_f12_on)
+    cols = array.from(i_f1_col, i_f2_col, i_f3_col, i_f4_col, i_f5_col, i_f6_col, i_f7_col, i_f8_col, i_f9_col, i_f10_col, i_f11_col, i_f12_col)
+    fLS  = i_fibStyle == "Solid" ? line.style_solid : i_fibStyle == "Dashed" ? line.style_dashed : line.style_dotted
+
+    if ibEnd and not na(hi) and not na(lo)
+        r = hi - lo
+        for i = 0 to FIB_COUNT - 1
+            old = fibLines.get(i)
+            if not na(old)
+                line.delete(old)
+            fibLabs.get(i).set_text("")
+            if ons.get(i)
+                lev = lo + r * vals.get(i)
+                fibLines.set(i, line.new(bar_index, lev, bar_index + 1, lev, color = cols.get(i), style = fLS, width = 1))
+                if i_showFibLabs
+                    fibLabs.get(i).set_xy(bar_index + i_openIBLabOffset, lev)
+                    fibLabs.get(i).set_textcolor(cols.get(i))
+                    fibLabs.get(i).set_text(i_fibLabType == "Level" ? str.tostring(vals.get(i), "#.###") : str.tostring(lev, format.mintick))
+
+    if ibSet and inSess and not ibEnd
+        for i = 0 to FIB_COUNT - 1
+            ln = fibLines.get(i)
+            if not na(ln)
+                line.set_x2(ln, bar_index)
+            if i_showFibLabs and fibLabs.get(i).get_text() != ""
+                fibLabs.get(i).set_x(bar_index + i_openIBLabOffset)
+
+    if not inSess
+        for i = 0 to FIB_COUNT - 1
+            ln = fibLines.get(i)
+            if not na(ln)
+                line.set_x2(ln, bar_index)
+                fibLines.set(i, na)
+            fibLabs.get(i).set_text("")
+
+f_drawFibs(nyIBend, nyIBset, isNyPlot, nyHigh, nyLow, nyFibLines, nyFibLabs)
+f_drawFibs(asIBend, asIBset, isAsPlot, asHigh, asLow, asFibLines, asFibLabs)
+f_drawFibs(lnIBend, lnIBset, isLnPlot, lnHigh, lnLow, lnFibLines, lnFibLabs)
+
+// ============================================================================
+// SESSION VWAP
+// ============================================================================
+isNewDay = timeframe.change("1D")
+vVal = ta.vwap(hlc3, isNewDay)
+if useHD
+    vH = request.security_lower_tf(syminfo.tickerid, "5", ta.vwap(hlc3, timeframe.change("1D")))
+    vVal := array.size(vH) > 0 ? array.last(vH) : na
+
+if i_Session_enabled
+    sessionVWAP.vwap := vVal
+    sessionVWAP.lab.set_xy(bar_index, vVal), sessionVWAP.lab.set_text("VWAP")
+
+// ============================================================================
+// PLOTTING
+// ============================================================================
+f_st(s) => s == "Solid" ? plot.linestyle_solid : s == "Dashed" ? plot.linestyle_dashed : plot.linestyle_dotted
+
+// NY
+plot(i_ny_on and isNyPlot ? nyOp : na, "NY Open", i_NY_open_color, style = plot.style_linebr, linestyle = plot.linestyle_dashed)
+plot(i_ny_on and isNyPlot ? nyHigh : na, "NY IB High", i_ny_ib_color, style = plot.style_linebr)
+plot(i_ny_on and isNyPlot ? nyLow : na, "NY IB Low", i_ny_ib_color, style = plot.style_linebr)
+plot(i_ny_on and isNyPlot ? (nyV1.isActive ? nyV1.vwap : nyV2.vwap) : na, "NY VWAP", i_NY_color, i_NY_width, style = plot.style_linebr, linestyle = f_st(i_NY_style))
+
+// Asia
+plot(i_as_on and isAsPlot ? asOp : na, "Asia Open", i_AS_open_color, style = plot.style_linebr, linestyle = plot.linestyle_dashed)
+plot(i_as_on and isAsPlot ? asHigh : na, "Asia IB High", i_as_ib_color, style = plot.style_linebr)
+plot(i_as_on and isAsPlot ? asLow : na, "Asia IB Low", i_as_ib_color, style = plot.style_linebr)
+plot(i_as_on and isAsPlot ? (asV1.isActive ? asV1.vwap : asV2.vwap) : na, "Asia VWAP", i_AS_color, i_AS_width, style = plot.style_linebr, linestyle = f_st(i_AS_style))
+
+// London
+plot(i_ln_on and isLnPlot ? lnOp : na, "Lon Open", i_LN_open_color, style = plot.style_linebr, linestyle = plot.linestyle_dashed)
+plot(i_ln_on and isLnPlot ? lnHigh : na, "Lon IB High", i_ln_ib_color, style = plot.style_linebr)
+plot(i_ln_on and isLnPlot ? lnLow : na, "Lon IB Low", i_ln_ib_color, style = plot.style_linebr)
+plot(i_ln_on and isLnPlot ? (lnV1.isActive ? lnV1.vwap : lnV2.vwap) : na, "Lon VWAP", i_LN_color, i_LN_width, style = plot.style_linebr, linestyle = f_st(i_LN_style))
+
+// Session VWAP
+plot(i_Session_enabled ? sessionVWAP.vwap : na, "Session VWAP", i_Session_color, i_Session_width, style = plot.style_linebr, linestyle = f_st(i_Session_style))

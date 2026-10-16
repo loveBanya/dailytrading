@@ -1,0 +1,177 @@
+//@version=6
+indicator("얼티밋 RSI 다이버전스 [HWR URSI]", shorttitle="HWR URSI", max_labels_count=500, max_lines_count=200)
+
+// ─────────────────────────────────────────────
+// 가격과 RSI가 어긋나면 그 종목을 보기 위한 신호.
+// 고점·저점은 오른쪽 봉이 지나야 확정된다. 그 봉 수가 지연이다.
+// 기본 2봉. 1이면 다음 봉 마감에 나온다. 줄일수록 가짜가 늘어난다.
+// 개념만 재구성. 원본 복제 아님. 다른 HWR과 같이 켜지 말 것.
+// ─────────────────────────────────────────────
+
+grpR = "1. RSI"
+length = input.int(14, "기간", minval=2, group=grpR)
+smoType = input.string("RMA", "계산", options=["EMA", "SMA", "RMA", "TMA"], group=grpR)
+src = input.source(close, "가격", group=grpR)
+sigLen = input.int(14, "시그널 기간", minval=1, group=grpR)
+sigType = input.string("EMA", "시그널 계산", options=["EMA", "SMA", "RMA", "TMA"], group=grpR)
+
+grpLv = "2. 구간"
+obValue = input.float(80.0, "과매수", minval=50, maxval=100, step=1, group=grpLv)
+osValue = input.float(20.0, "과매도", minval=0, maxval=50, step=1, group=grpLv)
+zoneOnly = input.bool(true, "일반 다이버전스는 구간 근처만", group=grpLv, tooltip="켜면 불리시는 과매도 근처, 베어리시는 과매수 근처만. 히든은 구간을 보지 않습니다.")
+bullMax = input.float(40.0, "불리시 RSI 상한", minval=10, maxval=60, step=1, group=grpLv, tooltip="일반 불리시 다이버전스의 RSI가 이 값 아래일 때만.")
+bearMin = input.float(60.0, "베어리시 RSI 하한", minval=40, maxval=90, step=1, group=grpLv)
+
+grpDv = "3. 다이버전스"
+lagBars = input.int(2, "확정 대기 봉", minval=1, maxval=15, group=grpDv, tooltip="오른쪽에서 고점·저점을 확인하는 봉. 신호가 이 봉 수만큼 늦습니다. 1이 가장 빠릅니다.")
+leftBars = input.int(3, "왼쪽 비교 봉", minval=1, maxval=20, group=grpDv, tooltip="왼쪽으로 얼마나 뚜렷한 고점·저점인지. 지연 봉 수는 확정 대기가 결정합니다.")
+minSep = input.int(5, "피벗 최소 간격", minval=1, maxval=40, group=grpDv)
+showReg = input.bool(true, "일반 다이버전스", group=grpDv)
+showHid = input.bool(false, "히든 다이버전스", group=grpDv)
+
+grpAl = "4. 알림"
+alertDiv = input.bool(true, "다이버전스 알림", group=grpAl, tooltip="일반 롱·숏 다이버전스. 알림은 'alert() 함수 호출'로 만드세요.")
+alertHid = input.bool(false, "히든 알림", group=grpAl, tooltip="끄면 히든 다이버전스 알림은 나가지 않습니다. 차트 표시와는 별개입니다.")
+alertLevel = input.bool(true, "수치 돌파 알림", group=grpAl, tooltip="RSI가 아래 값을 위로 뚫거나, 아래로 뚫을 때 한 번.")
+alertHi = input.float(80.0, "이상", minval=50, maxval=100, step=1, group=grpAl, tooltip="이 값 위로 올라갈 때.")
+alertLo = input.float(20.0, "이하", minval=0, maxval=50, step=1, group=grpAl, tooltip="이 값 아래로 내려갈 때.")
+
+grpUi = "5. 표시"
+showDash = input.bool(true, "표", group=grpUi)
+rsiCol = input.color(color.new(#c8cdd8, 0), "RSI", group=grpUi)
+sigCol = input.color(color.new(#ff5d00, 0), "시그널", group=grpUi)
+bullCol = input.color(color.new(#089981, 0), "불리시", group=grpUi)
+bearCol = input.color(color.new(#f23645, 0), "베어리시", group=grpUi)
+
+f_ma(float x, int len, string kind) =>
+    switch kind
+        "EMA" => ta.ema(x, len)
+        "SMA" => ta.sma(x, len)
+        "RMA" => ta.rma(x, len)
+        => ta.sma(ta.sma(x, len), len)
+
+float upper = ta.highest(src, length)
+float lower = ta.lowest(src, length)
+float span = upper - lower
+float step = src - src[1]
+float diff = upper > upper[1] ? span : lower < lower[1] ? -span : step
+float num = f_ma(diff, length, smoType)
+float den = f_ma(math.abs(diff), length, smoType)
+float arsi = den == 0 ? 50.0 : num / den * 50.0 + 50.0
+float signal = f_ma(arsi, sigLen, sigType)
+
+float pLow = ta.pivotlow(arsi, leftBars, lagBars)
+float pHigh = ta.pivothigh(arsi, leftBars, lagBars)
+
+var int prevLoBar = na
+var float prevLoPx = na
+var float prevLoRsi = na
+var int prevHiBar = na
+var float prevHiPx = na
+var float prevHiRsi = na
+
+bool bullReg = false
+bool bearReg = false
+bool bullHid = false
+bool bearHid = false
+
+if barstate.isconfirmed and not na(pLow)
+    int barAt = bar_index - lagBars
+    float pxAt = low[lagBars]
+    float rsiAt = arsi[lagBars]
+    bool gapOk = na(prevLoBar) or barAt - prevLoBar >= minSep
+    bool reg = gapOk and not na(prevLoBar) and pxAt < prevLoPx and rsiAt > prevLoRsi
+    bool hid = gapOk and not na(prevLoBar) and pxAt > prevLoPx and rsiAt < prevLoRsi
+    bool zoneOk = not zoneOnly or rsiAt <= bullMax
+    if showReg and reg and zoneOk
+        bullReg := true
+        line.new(prevLoBar, prevLoRsi, barAt, rsiAt, xloc=xloc.bar_index, color=bullCol, width=2)
+        label.new(barAt, rsiAt, "롱 보기", xloc=xloc.bar_index, style=label.style_label_up, color=bullCol, textcolor=color.white, size=size.small)
+    if hid
+        bullHid := true
+        if showHid
+            line.new(prevLoBar, prevLoRsi, barAt, rsiAt, xloc=xloc.bar_index, color=color.new(bullCol, 35), width=1, style=line.style_dashed)
+            label.new(barAt, rsiAt, "히든 롱", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(bullCol, 35), textcolor=color.white, size=size.tiny)
+    prevLoBar := barAt
+    prevLoPx := pxAt
+    prevLoRsi := rsiAt
+
+if barstate.isconfirmed and not na(pHigh)
+    int barAt = bar_index - lagBars
+    float pxAt = high[lagBars]
+    float rsiAt = arsi[lagBars]
+    bool gapOk = na(prevHiBar) or barAt - prevHiBar >= minSep
+    bool reg = gapOk and not na(prevHiBar) and pxAt > prevHiPx and rsiAt < prevHiRsi
+    bool hid = gapOk and not na(prevHiBar) and pxAt < prevHiPx and rsiAt > prevHiRsi
+    bool zoneOk = not zoneOnly or rsiAt >= bearMin
+    if showReg and reg and zoneOk
+        bearReg := true
+        line.new(prevHiBar, prevHiRsi, barAt, rsiAt, xloc=xloc.bar_index, color=bearCol, width=2)
+        label.new(barAt, rsiAt, "숏 보기", xloc=xloc.bar_index, style=label.style_label_down, color=bearCol, textcolor=color.white, size=size.small)
+    if hid
+        bearHid := true
+        if showHid
+            line.new(prevHiBar, prevHiRsi, barAt, rsiAt, xloc=xloc.bar_index, color=color.new(bearCol, 35), width=1, style=line.style_dashed)
+            label.new(barAt, rsiAt, "히든 숏", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(bearCol, 35), textcolor=color.white, size=size.tiny)
+    prevHiBar := barAt
+    prevHiPx := pxAt
+    prevHiRsi := rsiAt
+
+bool levelUp = barstate.isconfirmed and ta.crossover(arsi, alertHi)
+bool levelDn = barstate.isconfirmed and ta.crossunder(arsi, alertLo)
+bool divLongAlert = alertDiv and bullReg
+bool divShortAlert = alertDiv and bearReg
+bool hidLongAlert = alertHid and bullHid
+bool hidShortAlert = alertHid and bearHid
+bool hiAlert = alertLevel and levelUp
+bool loAlert = alertLevel and levelDn
+bool anySig = bullReg or bearReg or (showHid and bullHid) or (showHid and bearHid) or hiAlert or loAlert
+string sigName = bullReg ? "롱 다이버전스" : bearReg ? "숏 다이버전스" : showHid and bullHid ? "히든 롱" : showHid and bearHid ? "히든 숏" : hiAlert ? str.tostring(alertHi, "#") + " 이상" : loAlert ? str.tostring(alertLo, "#") + " 이하" : ""
+var string lastSig = "-"
+var int lastSigBar = na
+if anySig
+    lastSig := sigName
+    lastSigBar := bar_index
+if divLongAlert
+    alert(syminfo.ticker + "  롱 다이버전스", alert.freq_once_per_bar_close)
+if divShortAlert
+    alert(syminfo.ticker + "  숏 다이버전스", alert.freq_once_per_bar_close)
+if hidLongAlert
+    alert(syminfo.ticker + "  히든 롱", alert.freq_once_per_bar_close)
+if hidShortAlert
+    alert(syminfo.ticker + "  히든 숏", alert.freq_once_per_bar_close)
+if hiAlert
+    alert(syminfo.ticker + "  RSI " + str.tostring(alertHi, "#") + " 이상", alert.freq_once_per_bar_close)
+if loAlert
+    alert(syminfo.ticker + "  RSI " + str.tostring(alertLo, "#") + " 이하", alert.freq_once_per_bar_close)
+
+color rsiPaint = arsi >= obValue ? color.new(#089981, 0) : arsi <= osValue ? color.new(#f23645, 0) : rsiCol
+plot(arsi, "RSI", rsiPaint, 2)
+plot(signal, "시그널", sigCol, 1)
+hline(obValue, "과매수", color=color.new(#089981, 40))
+hline(50, "중간", color=color.new(#8b95a8, 60))
+hline(osValue, "과매도", color=color.new(#f23645, 40))
+bgcolor(bullReg ? color.new(bullCol, 85) : bearReg ? color.new(bearCol, 85) : na)
+
+var table dash = table.new(position.top_right, 2, 5, bgcolor=color.new(#12141c, 8), border_color=color.new(#2a2e3a, 0), border_width=1)
+if showDash and barstate.islast
+    string zoneTxt = arsi >= obValue ? "과매수" : arsi <= osValue ? "과매도" : "중립"
+    color zoneC = arsi >= obValue ? color.new(#089981, 0) : arsi <= osValue ? color.new(#f23645, 0) : color.new(#c8cdd8, 0)
+    string ago = na(lastSigBar) ? "-" : str.tostring(bar_index - lastSigBar) + "봉 전"
+    table.cell(dash, 0, 0, "HWR URSI", text_color=color.white, text_size=size.small, bgcolor=color.new(#1b1f2a, 0))
+    table.cell(dash, 1, 0, syminfo.ticker, text_color=color.new(#8b95a8, 0), text_halign=text.align_right, text_size=size.small, bgcolor=color.new(#1b1f2a, 0))
+    table.cell(dash, 0, 1, "RSI", text_color=color.new(#c8cdd8, 0), text_size=size.small)
+    table.cell(dash, 1, 1, str.tostring(arsi, "#.0") + "  " + zoneTxt, text_color=zoneC, text_halign=text.align_right, text_size=size.small)
+    table.cell(dash, 0, 2, "대기", text_color=color.new(#c8cdd8, 0), text_size=size.small)
+    table.cell(dash, 1, 2, str.tostring(lagBars) + "봉 뒤 확정", text_color=color.new(#c8cdd8, 0), text_halign=text.align_right, text_size=size.small)
+    table.cell(dash, 0, 3, "최근", text_color=color.new(#c8cdd8, 0), text_size=size.small)
+    table.cell(dash, 1, 3, lastSig, text_color=str.contains(lastSig, "롱") ? bullCol : str.contains(lastSig, "숏") ? bearCol : color.gray, text_halign=text.align_right, text_size=size.small)
+    table.cell(dash, 0, 4, "시점", text_color=color.new(#c8cdd8, 0), text_size=size.small)
+    table.cell(dash, 1, 4, ago, text_color=color.new(#c8cdd8, 0), text_halign=text.align_right, text_size=size.small)
+
+alertcondition(divLongAlert, title="롱 다이버전스", message="HWR URSI 롱 다이버전스")
+alertcondition(divShortAlert, title="숏 다이버전스", message="HWR URSI 숏 다이버전스")
+alertcondition(hidLongAlert, title="히든 롱", message="HWR URSI 히든 롱")
+alertcondition(hidShortAlert, title="히든 숏", message="HWR URSI 히든 숏")
+alertcondition(hiAlert, title="RSI 이상", message="HWR URSI RSI 상단")
+alertcondition(loAlert, title="RSI 이하", message="HWR URSI RSI 하단")

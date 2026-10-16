@@ -1,0 +1,477 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/ MPL-2.0
+//@version=6
+strategy("Asia + NY Positive Delta Strategy - Test Copy", "Asia + NY Delta Test", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed, default_qty_value = 1, pyramiding = 0, margin_long = 50, commission_type = strategy.commission.percent, commission_value = 0.041, process_orders_on_close = true, max_lines_count = 500)
+
+// --- Constants ---
+string TIMEZONE = "UTC"
+int ASIA_OPEN_HOUR = 0
+int DEFAULT_NY_OPEN_HOUR = 13
+int HOLD_HOURS = 24
+int HOUR_MS = 60 * 60 * 1000
+float RISK_PER_TRADE_PCT = 3.0
+float STOP_LOSS_PCT = 2.0
+float FEE_PER_SIDE_PCT = 0.041
+float INITIAL_CAPITAL = 100000.0
+float DEFAULT_RETRACE_THRESHOLD_PCT = 2.5
+int PERIOD_A_START = timestamp("27 Apr 2023 00:00 +0000")
+int PERIOD_A_END = timestamp("05 Oct 2025 00:00 +0000")
+int PERIOD_B_START = timestamp("06 Oct 2025 00:00 +0000")
+int PERIOD_B_END = timestamp("30 Jun 2026 00:00 +0000")
+
+// --- Inputs ---
+measurementHoursInput = input.int(2, "Entry window (hours)", minval = 1, maxval = 23, tooltip = "Both Asia and NY signals are measured during this many hours after their session open.", group = "Strategy")
+gainPctInput = input.float(1.5, "Positive delta trigger (%)", minval = 0.01, step = 0.1, tooltip = "Enter long when the session high reaches this percentage above that session's UTC open.", group = "Strategy")
+nyOpenHourInput = input.int(DEFAULT_NY_OPEN_HOUR, "NY open hour (UTC)", minval = 1, maxval = 22, tooltip = "UTC hour used as the NY session open. NY trades exit at the next UTC midnight.", group = "Strategy")
+volumeLengthInput = input.int(50, "Volume average length", minval = 1, tooltip = "The trigger bar volume must be at least this many bars' average volume.", group = "Volume Filter")
+retraceThresholdInput = input.float(DEFAULT_RETRACE_THRESHOLD_PCT, "Maximum 2h retracement (%)", options = [1.5, 2.0, 2.5, 3.0], tooltip = "At the end of the two-hour window, the trigger is rejected when the close has retraced at least this percentage from the two-hour peak.", group = "Retracement Filter")
+startDateInput = input.time(timestamp("01 Jan 1970 00:00 +0000"), "Start date", tooltip = "Uses the earliest available chart history when left at the default.", group = "Date Range")
+endDateInput = input.time(timestamp("31 Dec 2099 23:59 +0000"), "End date", tooltip = "The strategy can open trades up to and including this date and time.", group = "Date Range")
+closeAtEndInput = input.bool(true, "Close at end of range", tooltip = "Closes any open position once the selected end date has passed.", group = "Date Range")
+manualDateRangeInput = input.bool(false, "Enable manual date range", tooltip = "Off runs from the earliest available chart bar through the current live chart bar. Turn on to use the Start date and End date inputs.", group = "Date Range")
+showStatsInput = input.bool(true, "Show strategy statistics", tooltip = "Displays statistics from the native strategy orders.", group = "Display")
+
+// --- Risk-based sizing ---
+calculatePositionSize(entryPrice, stopPrice, equity) =>
+    riskCapital = math.max(equity, 0.0) * RISK_PER_TRADE_PCT / 100.0
+    commissionRiskPerUnit = (entryPrice + stopPrice) * FEE_PER_SIDE_PCT / 100.0
+    priceRiskPerUnit = entryPrice - stopPrice
+    riskPerUnit = priceRiskPerUnit + commissionRiskPerUnit
+    riskPerUnit > 0.0 ? riskCapital / riskPerUnit : 0.0
+
+calculatePeriodTradeCount(startTime, endTime) =>
+    int tradeCount = 0
+    if strategy.closedtrades > 0
+        for tradeNumber = 0 to strategy.closedtrades - 1
+            tradeEntryTime = strategy.closedtrades.entry_time(tradeNumber)
+            if tradeEntryTime >= startTime and tradeEntryTime < endTime
+                tradeCount += 1
+    tradeCount
+
+calculatePeriodWinCount(startTime, endTime) =>
+    int winCount = 0
+    if strategy.closedtrades > 0
+        for tradeNumber = 0 to strategy.closedtrades - 1
+            tradeEntryTime = strategy.closedtrades.entry_time(tradeNumber)
+            tradeEntryPrice = strategy.closedtrades.entry_price(tradeNumber)
+            tradeExitPrice = strategy.closedtrades.exit_price(tradeNumber)
+            tradeSize = strategy.closedtrades.size(tradeNumber)
+            tradeCommission = strategy.closedtrades.commission(tradeNumber)
+            tradeNetProfit = (tradeExitPrice - tradeEntryPrice) * tradeSize - tradeCommission
+            if tradeEntryTime >= startTime and tradeEntryTime < endTime and tradeNetProfit > 0.0
+                winCount += 1
+    winCount
+
+// --- Date range ---
+dateRangeValid = not manualDateRangeInput or startDateInput <= endDateInput
+inDateRange = not manualDateRangeInput or (dateRangeValid and time >= startDateInput and time <= endDateInput)
+dateRangeEnded = manualDateRangeInput and dateRangeValid and time > endDateInput
+
+// --- UTC sessions ---
+dayId = year(time, TIMEZONE) * 10000 + month(time, TIMEZONE) * 100 + dayofmonth(time, TIMEZONE)
+newDay = na(dayId[1]) or dayId != dayId[1]
+barHour = hour(time, TIMEZONE)
+asiaWindowActive = barHour >= ASIA_OPEN_HOUR and barHour < ASIA_OPEN_HOUR + measurementHoursInput
+nyWindowActive = barHour >= nyOpenHourInput and barHour < nyOpenHourInput + measurementHoursInput
+
+var float asiaOpen = na
+var int asiaStartTime = na
+var float asiaMeasurementHigh = na
+var bool asiaTriggerReached = false
+var bool asiaTradeTakenToday = false
+var int asiaRawSignalCount = 0
+var int asiaSignalCount = 0
+var int asiaSkippedVolumeCount = 0
+var int asiaEntryCount = 0
+var bool asiaPendingTrigger = false
+var bool asiaTriggerVolumeConfirmed = false
+var int asiaMatrixPass15 = 0
+var int asiaMatrixPass20 = 0
+var int asiaMatrixPass25 = 0
+var int asiaMatrixPass30 = 0
+
+var float nyOpen = na
+var int nyStartTime = na
+var float nyMeasurementHigh = na
+var bool nyTriggerReached = false
+var bool nyTradeTakenToday = false
+var int nyRawSignalCount = 0
+var int nySignalCount = 0
+var int nySkippedVolumeCount = 0
+var int nyEntryCount = 0
+var bool nyPendingTrigger = false
+var bool nyTriggerVolumeConfirmed = false
+var int nyMatrixPass15 = 0
+var int nyMatrixPass20 = 0
+var int nyMatrixPass25 = 0
+var int nyMatrixPass30 = 0
+
+var int entryTime = na
+var int activeSession = 0
+var string activeEntryId = ""
+var float activeStopPrice = na
+var float lastOrderQty = na
+var line liveAsiaOpenLine = na
+var line liveNyOpenLine = na
+var line triggeredAsiaOpenLine = na
+var line triggeredNyOpenLine = na
+
+var simEquityArray = array.new_float(4, INITIAL_CAPITAL)
+var simQtyArray = array.new_float(4, 0.0)
+var simEntryPriceArray = array.new_float(4, na)
+var simStopPriceArray = array.new_float(4, na)
+var simEntryTimeArray = array.new_int(4, na)
+var simSessionArray = array.new_int(4, 0)
+var simClosedPnlArray = array.new_float(4, 0.0)
+var simClosedCountArray = array.new_int(4, 0)
+var simWinCountArray = array.new_int(4, 0)
+
+if newDay
+    asiaOpen := open
+    asiaStartTime := time
+    asiaMeasurementHigh := na
+    asiaTriggerReached := false
+    asiaTradeTakenToday := false
+    asiaPendingTrigger := false
+    asiaTriggerVolumeConfirmed := false
+    nyOpen := na
+    nyStartTime := na
+    nyMeasurementHigh := na
+    nyTriggerReached := false
+    nyTradeTakenToday := false
+    nyPendingTrigger := false
+    nyTriggerVolumeConfirmed := false
+    if not na(liveAsiaOpenLine)
+        line.delete(liveAsiaOpenLine)
+    liveAsiaOpenLine := line.new(x1 = asiaStartTime, y1 = asiaOpen, x2 = time_close, y2 = asiaOpen, xloc = xloc.bar_time, color = color.new(chart.fg_color, 0), style = line.style_solid, width = 2)
+    if not na(liveNyOpenLine)
+        line.delete(liveNyOpenLine)
+    liveNyOpenLine := na
+else if not na(liveAsiaOpenLine)
+    line.set_xy2(liveAsiaOpenLine, time_close, asiaOpen)
+
+if barHour == nyOpenHourInput
+    nyOpen := open
+    nyStartTime := time
+    nyMeasurementHigh := na
+    nyTriggerReached := false
+    nyPendingTrigger := false
+    nyTriggerVolumeConfirmed := false
+    if not na(liveNyOpenLine)
+        line.delete(liveNyOpenLine)
+    liveNyOpenLine := line.new(x1 = nyStartTime, y1 = nyOpen, x2 = time_close, y2 = nyOpen, xloc = xloc.bar_time, color = color.new(#f59e0b, 0), style = line.style_solid, width = 2)
+else if not na(liveNyOpenLine)
+    line.set_xy2(liveNyOpenLine, time_close, nyOpen)
+
+// --- Session signals, volume filter, and two-hour retracement filter ---
+volumeAverage = ta.sma(volume, volumeLengthInput)
+volumeConfirmed = not na(volumeAverage) and volume >= volumeAverage
+asiaWindowClosing = not na(asiaStartTime) and time < asiaStartTime + measurementHoursInput * HOUR_MS and time_close >= asiaStartTime + measurementHoursInput * HOUR_MS
+nyWindowClosing = not na(nyStartTime) and time < nyStartTime + measurementHoursInput * HOUR_MS and time_close >= nyStartTime + measurementHoursInput * HOUR_MS
+
+bool asiaRawTrigger = false
+if asiaWindowActive and not na(asiaOpen)
+    asiaMeasurementHigh := na(asiaMeasurementHigh) ? high : math.max(asiaMeasurementHigh, high)
+    asiaRawTrigger := inDateRange and not asiaTriggerReached and asiaMeasurementHigh >= asiaOpen * (1.0 + gainPctInput / 100.0)
+    if asiaRawTrigger
+        asiaPendingTrigger := true
+        asiaTriggerVolumeConfirmed := volumeConfirmed
+        asiaRawSignalCount += 1
+    asiaTriggerReached := asiaTriggerReached or asiaRawTrigger
+
+bool nyRawTrigger = false
+if nyWindowActive and not na(nyOpen)
+    nyMeasurementHigh := na(nyMeasurementHigh) ? high : math.max(nyMeasurementHigh, high)
+    nyRawTrigger := inDateRange and not nyTriggerReached and nyMeasurementHigh >= nyOpen * (1.0 + gainPctInput / 100.0)
+    if nyRawTrigger
+        nyPendingTrigger := true
+        nyTriggerVolumeConfirmed := volumeConfirmed
+        nyRawSignalCount += 1
+    nyTriggerReached := nyTriggerReached or nyRawTrigger
+
+bool asiaTrigger = false
+asiaRetracementPct = not na(asiaMeasurementHigh) ? 100.0 * (asiaMeasurementHigh - close) / asiaMeasurementHigh : na
+if asiaWindowClosing and asiaPendingTrigger
+    asiaTrigger := asiaTriggerVolumeConfirmed and asiaRetracementPct < retraceThresholdInput
+    if asiaTrigger
+        asiaSignalCount += 1
+    else if not asiaTriggerVolumeConfirmed
+        asiaSkippedVolumeCount += 1
+    if asiaTriggerVolumeConfirmed
+        if asiaRetracementPct < 1.5
+            asiaMatrixPass15 += 1
+        if asiaRetracementPct < 2.0
+            asiaMatrixPass20 += 1
+        if asiaRetracementPct < 2.5
+            asiaMatrixPass25 += 1
+        if asiaRetracementPct < 3.0
+            asiaMatrixPass30 += 1
+
+bool nyTrigger = false
+nyRetracementPct = not na(nyMeasurementHigh) ? 100.0 * (nyMeasurementHigh - close) / nyMeasurementHigh : na
+if nyWindowClosing and nyPendingTrigger
+    nyTrigger := nyTriggerVolumeConfirmed and nyRetracementPct < retraceThresholdInput
+    if nyTrigger
+        nySignalCount += 1
+    else if not nyTriggerVolumeConfirmed
+        nySkippedVolumeCount += 1
+    if nyTriggerVolumeConfirmed
+        if nyRetracementPct < 1.5
+            nyMatrixPass15 += 1
+        if nyRetracementPct < 2.0
+            nyMatrixPass20 += 1
+        if nyRetracementPct < 2.5
+            nyMatrixPass25 += 1
+        if nyRetracementPct < 3.0
+            nyMatrixPass30 += 1
+
+// --- Virtual threshold simulations ---
+asiaCandidateAtClose = asiaWindowClosing and asiaPendingTrigger and asiaTriggerVolumeConfirmed
+nyCandidateAtClose = nyWindowClosing and nyPendingTrigger and nyTriggerVolumeConfirmed
+
+for simIndex = 0 to 3
+    simThreshold = simIndex == 0 ? 1.5 : simIndex == 1 ? 2.0 : simIndex == 2 ? 2.5 : 3.0
+    simQty = array.get(simQtyArray, simIndex)
+    simHadPosition = simQty != 0.0
+    simClosedThisBar = false
+    if simHadPosition
+        simEntryPrice = array.get(simEntryPriceArray, simIndex)
+        simStopPrice = array.get(simStopPriceArray, simIndex)
+        simSession = array.get(simSessionArray, simIndex)
+        simEntryTime = array.get(simEntryTimeArray, simIndex)
+        simStopExit = low <= simStopPrice
+        simTimeExit = (simSession == 1 and time_close >= simEntryTime + HOLD_HOURS * HOUR_MS) or (simSession == 2 and newDay)
+        if simStopExit or simTimeExit
+            simExitPrice = simStopExit ? simStopPrice : close
+            simCommission = (math.abs(simEntryPrice * simQty) + math.abs(simExitPrice * simQty)) * FEE_PER_SIDE_PCT / 100.0
+            simProfit = (simExitPrice - simEntryPrice) * simQty - simCommission
+            array.set(simEquityArray, simIndex, array.get(simEquityArray, simIndex) + simProfit)
+            array.set(simClosedPnlArray, simIndex, array.get(simClosedPnlArray, simIndex) + simProfit)
+            array.set(simClosedCountArray, simIndex, array.get(simClosedCountArray, simIndex) + 1)
+            if simProfit > 0.0
+                array.set(simWinCountArray, simIndex, array.get(simWinCountArray, simIndex) + 1)
+            array.set(simQtyArray, simIndex, 0.0)
+            array.set(simEntryPriceArray, simIndex, na)
+            array.set(simStopPriceArray, simIndex, na)
+            array.set(simEntryTimeArray, simIndex, na)
+            array.set(simSessionArray, simIndex, 0)
+            simClosedThisBar := true
+    simEntrySignal = not simHadPosition and not simClosedThisBar and ((asiaCandidateAtClose and asiaRetracementPct < simThreshold) or (nyCandidateAtClose and nyRetracementPct < simThreshold))
+    if simEntrySignal
+        simEntrySession = asiaCandidateAtClose ? 1 : 2
+        simEntryPrice = close
+        simStopPrice = simEntryPrice * (1.0 - STOP_LOSS_PCT / 100.0)
+        simRiskCapital = math.max(array.get(simEquityArray, simIndex), 0.0) * RISK_PER_TRADE_PCT / 100.0
+        simCommissionRiskPerUnit = (simEntryPrice + simStopPrice) * FEE_PER_SIDE_PCT / 100.0
+        simRiskPerUnit = (simEntryPrice - simStopPrice) + simCommissionRiskPerUnit
+        simOrderQty = simRiskPerUnit > 0.0 ? simRiskCapital / simRiskPerUnit : 0.0
+        if simOrderQty > 0.0
+            array.set(simQtyArray, simIndex, simOrderQty)
+            array.set(simEntryPriceArray, simIndex, simEntryPrice)
+            array.set(simStopPriceArray, simIndex, simStopPrice)
+            array.set(simEntryTimeArray, simIndex, time_close)
+            array.set(simSessionArray, simIndex, simEntrySession)
+
+if asiaWindowClosing and asiaPendingTrigger
+    asiaPendingTrigger := false
+    asiaTriggerVolumeConfirmed := false
+if nyWindowClosing and nyPendingTrigger
+    nyPendingTrigger := false
+    nyTriggerVolumeConfirmed := false
+
+// --- Native strategy orders ---
+if asiaTrigger and not asiaTradeTakenToday and strategy.position_size == 0
+    stopPrice = close * (1.0 - STOP_LOSS_PCT / 100.0)
+    orderQty = calculatePositionSize(close, stopPrice, strategy.equity)
+    if orderQty > 0.0
+        strategy.entry("Asia Long", strategy.long, qty = orderQty, comment = "Asia positive delta trigger")
+        strategy.exit("Asia SL", from_entry = "Asia Long", stop = stopPrice, comment = "2% stop")
+        entryTime := time_close
+        activeSession := 1
+        activeEntryId := "Asia Long"
+        activeStopPrice := stopPrice
+        lastOrderQty := orderQty
+        asiaEntryCount += 1
+        asiaTradeTakenToday := true
+        triggeredAsiaOpenLine := line.new(x1 = asiaStartTime, y1 = asiaOpen, x2 = time_close, y2 = asiaOpen, xloc = xloc.bar_time, color = color.new(chart.fg_color, 25), style = line.style_dotted, width = 1)
+
+if nyTrigger and not nyTradeTakenToday and strategy.position_size == 0
+    stopPrice = close * (1.0 - STOP_LOSS_PCT / 100.0)
+    orderQty = calculatePositionSize(close, stopPrice, strategy.equity)
+    if orderQty > 0.0
+        strategy.entry("NY Long", strategy.long, qty = orderQty, comment = "NY positive delta trigger")
+        strategy.exit("NY SL", from_entry = "NY Long", stop = stopPrice, comment = "2% stop")
+        entryTime := time_close
+        activeSession := 2
+        activeEntryId := "NY Long"
+        activeStopPrice := stopPrice
+        lastOrderQty := orderQty
+        nyEntryCount += 1
+        nyTradeTakenToday := true
+        triggeredNyOpenLine := line.new(x1 = nyStartTime, y1 = nyOpen, x2 = time_close, y2 = nyOpen, xloc = xloc.bar_time, color = color.new(#f59e0b, 25), style = line.style_dotted, width = 1)
+
+// --- Exit detection ---
+stopExitThisBar = strategy.position_size > 0 and not na(activeStopPrice) and low <= activeStopPrice
+asiaTimeExitDue = strategy.position_size > 0 and activeSession == 1 and not na(entryTime) and time_close >= entryTime + HOLD_HOURS * HOUR_MS
+nyMidnightExitDue = strategy.position_size > 0 and activeSession == 2 and newDay
+timeExitDue = asiaTimeExitDue or nyMidnightExitDue
+timeExitThisBar = timeExitDue and not stopExitThisBar
+profitableTimeExitThisBar = timeExitThisBar and close > strategy.position_avg_price
+dateRangeExitDue = closeAtEndInput and dateRangeEnded and strategy.position_size > 0
+dateRangeExitThisBar = dateRangeExitDue and not timeExitDue and not stopExitThisBar
+
+if timeExitThisBar
+    strategy.cancel("Asia SL")
+    strategy.cancel("NY SL")
+    strategy.close(activeEntryId, comment = activeSession == 2 ? "NY UTC daily exit" : "24h time exit", immediately = nyMidnightExitDue)
+else if dateRangeExitThisBar
+    strategy.cancel("Asia SL")
+    strategy.cancel("NY SL")
+    strategy.close(activeEntryId, comment = "Date range exit")
+
+if stopExitThisBar or timeExitThisBar or dateRangeExitThisBar
+    if activeSession == 1 and not na(triggeredAsiaOpenLine)
+        line.set_xy2(triggeredAsiaOpenLine, time_close, asiaOpen)
+        triggeredAsiaOpenLine := na
+    if activeSession == 2 and not na(triggeredNyOpenLine)
+        line.set_xy2(triggeredNyOpenLine, time_close, nyOpen)
+        triggeredNyOpenLine := na
+
+positionClosedThisBar = strategy.position_size == 0 and strategy.position_size[1] > 0
+if positionClosedThisBar
+    entryTime := na
+    activeSession := 0
+    activeEntryId := ""
+    activeStopPrice := na
+
+// --- Entry and exit markers ---
+plotshape(asiaTrigger, title = "Asia entry signal", style = shape.triangleup, location = location.belowbar, color = #089981, text = "A", textcolor = chart.fg_color, size = size.tiny)
+plotshape(nyTrigger, title = "NY entry signal", style = shape.triangleup, location = location.belowbar, color = #f59e0b, text = "N", textcolor = chart.fg_color, size = size.tiny)
+plotshape(stopExitThisBar, title = "Stop-loss exit", style = shape.triangledown, location = location.abovebar, color = #f23645, text = "SL", textcolor = chart.fg_color, size = size.tiny)
+plotshape(profitableTimeExitThisBar, title = "Profit exit", style = shape.triangledown, location = location.abovebar, color = #089981, text = "TP", textcolor = chart.fg_color, size = size.tiny)
+plotshape(timeExitThisBar and not profitableTimeExitThisBar, title = "Time exit", style = shape.triangledown, location = location.abovebar, color = #f59e0b, text = "X", textcolor = chart.fg_color, size = size.tiny)
+
+// --- Native strategy statistics ---
+closedTrades = strategy.closedtrades
+rawSignals = asiaRawSignalCount + nyRawSignalCount
+totalSignals = asiaSignalCount + nySignalCount
+skippedVolumeSignals = asiaSkippedVolumeCount + nySkippedVolumeCount
+winRate = closedTrades > 0 ? 100.0 * strategy.wintrades / closedTrades : na
+avgTrade = closedTrades > 0 ? strategy.netprofit / closedTrades : na
+netReturn = 100.0 * strategy.netprofit / INITIAL_CAPITAL
+profitFactor = strategy.grossloss != 0.0 ? strategy.grossprofit / math.abs(strategy.grossloss) : na
+
+var int periodATradeCount = 0
+var int periodAWins = 0
+var int periodBTradeCount = 0
+var int periodBWins = 0
+periodStatsNeedUpdate = barstate.isfirst or strategy.closedtrades != strategy.closedtrades[1] or barstate.islast
+if periodStatsNeedUpdate
+    periodATradeCount := calculatePeriodTradeCount(PERIOD_A_START, PERIOD_A_END)
+    periodAWins := calculatePeriodWinCount(PERIOD_A_START, PERIOD_A_END)
+    periodBTradeCount := calculatePeriodTradeCount(PERIOD_B_START, PERIOD_B_END)
+    periodBWins := calculatePeriodWinCount(PERIOD_B_START, PERIOD_B_END)
+periodAWinRate = periodATradeCount > 0 ? 100.0 * periodAWins / periodATradeCount : na
+periodBWinRate = periodBTradeCount > 0 ? 100.0 * periodBWins / periodBTradeCount : na
+selectedMatrixIndex = retraceThresholdInput == 1.5 ? 0 : retraceThresholdInput == 2.0 ? 1 : retraceThresholdInput == 2.5 ? 2 : 3
+matrixClosed15 = selectedMatrixIndex == 0 ? closedTrades : array.get(simClosedCountArray, 0)
+matrixClosed20 = selectedMatrixIndex == 1 ? closedTrades : array.get(simClosedCountArray, 1)
+matrixClosed25 = selectedMatrixIndex == 2 ? closedTrades : array.get(simClosedCountArray, 2)
+matrixClosed30 = selectedMatrixIndex == 3 ? closedTrades : array.get(simClosedCountArray, 3)
+matrixWins15 = selectedMatrixIndex == 0 ? strategy.wintrades : array.get(simWinCountArray, 0)
+matrixWins20 = selectedMatrixIndex == 1 ? strategy.wintrades : array.get(simWinCountArray, 1)
+matrixWins25 = selectedMatrixIndex == 2 ? strategy.wintrades : array.get(simWinCountArray, 2)
+matrixWins30 = selectedMatrixIndex == 3 ? strategy.wintrades : array.get(simWinCountArray, 3)
+matrixPnl15 = selectedMatrixIndex == 0 ? strategy.netprofit : array.get(simClosedPnlArray, 0)
+matrixPnl20 = selectedMatrixIndex == 1 ? strategy.netprofit : array.get(simClosedPnlArray, 1)
+matrixPnl25 = selectedMatrixIndex == 2 ? strategy.netprofit : array.get(simClosedPnlArray, 2)
+matrixPnl30 = selectedMatrixIndex == 3 ? strategy.netprofit : array.get(simClosedPnlArray, 3)
+
+var table statsTable = table.new(position.top_right, 2, 18, bgcolor = color.new(chart.bg_color, 5), frame_color = color.new(chart.fg_color, 70), frame_width = 1)
+var table periodTable = table.new(position.top_left, 2, 4, bgcolor = color.new(chart.bg_color, 5), frame_color = color.new(chart.fg_color, 70), frame_width = 1)
+var table matrixTable = table.new(position.bottom_left, 7, 5, bgcolor = color.new(chart.bg_color, 5), frame_color = color.new(chart.fg_color, 70), frame_width = 1)
+
+if barstate.islast and showStatsInput
+    table.cell(statsTable, 0, 0, "Asia + NY strategy", text_color = chart.fg_color, text_size = size.small, bgcolor = color.new(#5b9cf6, 75))
+    table.cell(statsTable, 1, 0, "Native Strategy Tester", text_color = chart.fg_color, text_size = size.small, bgcolor = color.new(#5b9cf6, 75))
+    table.cell(statsTable, 0, 1, "Entry", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 1, "+" + str.tostring(gainPctInput, "#.##") + "% within first " + str.tostring(measurementHoursInput) + "h + volume", text_color = #089981, text_size = size.small)
+    table.cell(statsTable, 0, 2, "Exit", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 2, "Asia 24h / NY UTC midnight / 2% SL", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 0, 3, "Raw signals", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 3, str.tostring(rawSignals), text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 0, 4, "Eligible signals", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 4, str.tostring(totalSignals), text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 0, 5, "Skipped by volume", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 5, str.tostring(skippedVolumeSignals), text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 0, 6, "Asia / NY eligible", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 6, str.tostring(asiaSignalCount) + " / " + str.tostring(nySignalCount), text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 0, 7, "Closed trades", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 7, str.tostring(closedTrades), text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 0, 8, "Win rate", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 8, na(winRate) ? "n/a" : str.tostring(winRate, "#.##") + "%", text_color = winRate >= 50.0 ? #089981 : #f23645, text_size = size.small)
+    table.cell(statsTable, 0, 9, "Net PnL", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 9, str.tostring(strategy.netprofit, "#,##0.##"), text_color = strategy.netprofit >= 0.0 ? #089981 : #f23645, text_size = size.small)
+    table.cell(statsTable, 0, 10, "Net return", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 10, str.tostring(netReturn, "#.##") + "%", text_color = netReturn >= 0.0 ? #089981 : #f23645, text_size = size.small)
+    table.cell(statsTable, 0, 11, "Avg trade", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 11, na(avgTrade) ? "n/a" : str.tostring(avgTrade, "#,##0.##"), text_color = avgTrade >= 0.0 ? #089981 : #f23645, text_size = size.small)
+    table.cell(statsTable, 0, 12, "Profit factor", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 12, na(profitFactor) ? "n/a" : str.tostring(profitFactor, "#.##"), text_color = profitFactor >= 1.0 ? #089981 : #f23645, text_size = size.small)
+    table.cell(statsTable, 0, 13, "Asia / NY entries", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 13, str.tostring(asiaEntryCount) + " / " + str.tostring(nyEntryCount), text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 0, 14, "Sizing", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 14, "3% current equity; uncapped notional", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 0, 15, "Volume filter", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 15, "Trigger volume >= SMA(" + str.tostring(volumeLengthInput) + ")", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 0, 16, "Latest quantity", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 16, na(lastOrderQty) ? "n/a" : str.tostring(lastOrderQty, "#.####") + " BTC", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 0, 17, "Commission", text_color = chart.fg_color, text_size = size.small)
+    table.cell(statsTable, 1, 17, str.tostring(FEE_PER_SIDE_PCT, "#.###") + "% per side", text_color = chart.fg_color, text_size = size.small)
+    table.cell(periodTable, 0, 0, "Win-rate comparison", text_color = chart.fg_color, text_size = size.small, bgcolor = color.new(#5b9cf6, 75))
+    table.cell(periodTable, 1, 0, "Wins / closed", text_color = chart.fg_color, text_size = size.small, bgcolor = color.new(#5b9cf6, 75))
+    table.cell(periodTable, 0, 1, "27 Apr 2023 - 4 Oct 2025", text_color = chart.fg_color, text_size = size.small)
+    table.cell(periodTable, 1, 1, na(periodAWinRate) ? "n/a" : str.tostring(periodAWinRate, "#.##") + "% (" + str.tostring(periodAWins) + "/" + str.tostring(periodATradeCount) + ")", text_color = periodAWinRate >= 50.0 ? #089981 : #f23645, text_size = size.small)
+    table.cell(periodTable, 0, 2, "6 Oct 2025 - 29 Jun 2026", text_color = chart.fg_color, text_size = size.small)
+    table.cell(periodTable, 1, 2, na(periodBWinRate) ? "n/a" : str.tostring(periodBWinRate, "#.##") + "% (" + str.tostring(periodBWins) + "/" + str.tostring(periodBTradeCount) + ")", text_color = periodBWinRate >= 50.0 ? #089981 : #f23645, text_size = size.small)
+    table.cell(periodTable, 0, 3, "Basis", text_color = chart.fg_color, text_size = size.small)
+    table.cell(periodTable, 1, 3, "Closed trades by UTC entry date", text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 0, 0, "Retracement", text_color = chart.fg_color, text_size = size.small, bgcolor = color.new(#5b9cf6, 75))
+    table.cell(matrixTable, 1, 0, "Asia", text_color = chart.fg_color, text_size = size.small, bgcolor = color.new(#5b9cf6, 75))
+    table.cell(matrixTable, 2, 0, "NY", text_color = chart.fg_color, text_size = size.small, bgcolor = color.new(#5b9cf6, 75))
+    table.cell(matrixTable, 3, 0, "Eligible", text_color = chart.fg_color, text_size = size.small, bgcolor = color.new(#5b9cf6, 75))
+    table.cell(matrixTable, 4, 0, "Closed", text_color = chart.fg_color, text_size = size.small, bgcolor = color.new(#5b9cf6, 75))
+    table.cell(matrixTable, 5, 0, "Win rate", text_color = chart.fg_color, text_size = size.small, bgcolor = color.new(#5b9cf6, 75))
+    table.cell(matrixTable, 6, 0, "Net PnL", text_color = chart.fg_color, text_size = size.small, bgcolor = color.new(#5b9cf6, 75))
+    table.cell(matrixTable, 0, 1, "1.5% (net zero)", text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 1, 1, str.tostring(asiaMatrixPass15), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 2, 1, str.tostring(nyMatrixPass15), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 3, 1, str.tostring(asiaMatrixPass15 + nyMatrixPass15), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 4, 1, str.tostring(matrixClosed15), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 5, 1, matrixClosed15 > 0 ? str.tostring(100.0 * matrixWins15 / matrixClosed15, "#.##") + "%" : "n/a", text_color = matrixWins15 * 2 >= matrixClosed15 ? #089981 : #f23645, text_size = size.small)
+    table.cell(matrixTable, 6, 1, str.tostring(matrixPnl15, "#,##0.##"), text_color = matrixPnl15 >= 0.0 ? #089981 : #f23645, text_size = size.small)
+    table.cell(matrixTable, 0, 2, "2.0%", text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 1, 2, str.tostring(asiaMatrixPass20), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 2, 2, str.tostring(nyMatrixPass20), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 3, 2, str.tostring(asiaMatrixPass20 + nyMatrixPass20), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 4, 2, str.tostring(matrixClosed20), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 5, 2, matrixClosed20 > 0 ? str.tostring(100.0 * matrixWins20 / matrixClosed20, "#.##") + "%" : "n/a", text_color = matrixWins20 * 2 >= matrixClosed20 ? #089981 : #f23645, text_size = size.small)
+    table.cell(matrixTable, 6, 2, str.tostring(matrixPnl20, "#,##0.##"), text_color = matrixPnl20 >= 0.0 ? #089981 : #f23645, text_size = size.small)
+    table.cell(matrixTable, 0, 3, "2.5%", text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 1, 3, str.tostring(asiaMatrixPass25), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 2, 3, str.tostring(nyMatrixPass25), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 3, 3, str.tostring(asiaMatrixPass25 + nyMatrixPass25), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 4, 3, str.tostring(matrixClosed25), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 5, 3, matrixClosed25 > 0 ? str.tostring(100.0 * matrixWins25 / matrixClosed25, "#.##") + "%" : "n/a", text_color = matrixWins25 * 2 >= matrixClosed25 ? #089981 : #f23645, text_size = size.small)
+    table.cell(matrixTable, 6, 3, str.tostring(matrixPnl25, "#,##0.##"), text_color = matrixPnl25 >= 0.0 ? #089981 : #f23645, text_size = size.small)
+    table.cell(matrixTable, 0, 4, "3.0%", text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 1, 4, str.tostring(asiaMatrixPass30), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 2, 4, str.tostring(nyMatrixPass30), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 3, 4, str.tostring(asiaMatrixPass30 + nyMatrixPass30), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 4, 4, str.tostring(matrixClosed30), text_color = chart.fg_color, text_size = size.small)
+    table.cell(matrixTable, 5, 4, matrixClosed30 > 0 ? str.tostring(100.0 * matrixWins30 / matrixClosed30, "#.##") + "%" : "n/a", text_color = matrixWins30 * 2 >= matrixClosed30 ? #089981 : #f23645, text_size = size.small)
+    table.cell(matrixTable, 6, 4, str.tostring(matrixPnl30, "#,##0.##"), text_color = matrixPnl30 >= 0.0 ? #089981 : #f23645, text_size = size.small)
+
+if barstate.islast and not showStatsInput
+    table.clear(statsTable, 0, 0, 1, 17)
+    table.clear(periodTable, 0, 0, 1, 3)
+    table.clear(matrixTable, 0, 0, 6, 4)

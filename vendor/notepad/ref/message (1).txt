@@ -1,0 +1,102 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Quant
+
+//@version=6
+indicator("LuxQuant - Premium & Discount Zones - micky v1.0", shorttitle="LuxQuant - Premium & Discount Zones - micky v1.0", overlay = true, max_boxes_count = 500, max_labels_count = 500)
+
+// --- Inputs ---
+int pivotLeft = input.int(15, "Pivot Left", minval = 1, group = "Settings")
+int pivotRight = input.int(15, "Pivot Right", minval = 1, group = "Settings")
+
+// Colors & Style
+color premiumColor = input.color(#f23645, "Premium Color", group = "Style")
+color discountColor = input.color(#089981, "Discount Color", group = "Style")
+int currentTransp = input.int(80, "Current Zone Transparency", minval = 0, maxval = 100, group = "Style")
+int histTransp = input.int(95, "Historical Zone Transparency", minval = 0, maxval = 100, group = "Style")
+
+// --- Calculations ---
+float ph = ta.pivothigh(high, pivotLeft, pivotRight)
+float pl = ta.pivotlow(low, pivotLeft, pivotRight)
+
+var float topLevel = na
+var float botLevel = na
+var int topIndex = na
+var int botIndex = na
+var int startIndex = na
+
+var box currentPremiumBox = na
+var box currentDiscountBox = na
+
+var label currentPremiumLabel = na
+var label currentDiscountLabel = na
+
+// Plotting Swing Labels
+if not na(ph)
+    label.new(bar_index - pivotRight, ph, "HH", color = color.new(premiumColor, 50), textcolor = color.white, style = label.style_label_down, size = size.small)
+
+if not na(pl)
+    label.new(bar_index - pivotRight, pl, "LL", color = color.new(discountColor, 50), textcolor = color.white, style = label.style_label_up, size = size.small)
+
+float highestHigh = ta.highest(high, pivotLeft + pivotRight)
+float lowestLow = ta.lowest(low, pivotLeft + pivotRight)
+
+// Updating Zones
+if not na(ph) or not na(pl)
+    // Set new levels and track their indices
+    if not na(ph)
+        topLevel := ph
+        topIndex := bar_index - pivotRight
+    if not na(pl)
+        botLevel := pl
+        botIndex := bar_index - pivotRight
+        
+    if na(topLevel)
+        topLevel := highestHigh
+        topIndex := bar_index - pivotRight
+    if na(botLevel)
+        botLevel := lowestLow
+        botIndex := bar_index - pivotRight
+        
+    // Calculate the start index to encompass BOTH the current top and bottom pivots
+    startIndex := math.min(topIndex, botIndex)
+
+    // Update historical transparency and end them right before the new box starts to prevent overlap
+    if not na(currentPremiumBox)
+        box.set_bgcolor(currentPremiumBox, color.new(premiumColor, histTransp))
+        box.set_border_color(currentPremiumBox, color.new(premiumColor, histTransp + 5))
+        box.set_right(currentPremiumBox, startIndex)
+    if not na(currentDiscountBox)
+        box.set_bgcolor(currentDiscountBox, color.new(discountColor, histTransp))
+        box.set_border_color(currentDiscountBox, color.new(discountColor, histTransp + 5))
+        box.set_right(currentDiscountBox, startIndex)
+        
+    // Delete old text labels
+    if not na(currentPremiumLabel)
+        label.delete(currentPremiumLabel)
+    if not na(currentDiscountLabel)
+        label.delete(currentDiscountLabel)
+
+    float midLevel = math.avg(topLevel, botLevel)
+    
+    // Draw New Boxes
+    currentPremiumBox := box.new(left = startIndex, top = topLevel, right = bar_index, bottom = midLevel, 
+      border_color = color.new(premiumColor, 50), 
+      bgcolor = color.new(premiumColor, currentTransp))
+      
+    currentDiscountBox := box.new(left = startIndex, top = midLevel, right = bar_index, bottom = botLevel, 
+      border_color = color.new(discountColor, 50), 
+      bgcolor = color.new(discountColor, currentTransp))
+      
+    // Draw New Labels
+    currentPremiumLabel := label.new(bar_index, topLevel, "Premium", color = color.new(color.black, 100), textcolor = premiumColor, style = label.style_label_left, size = size.small)
+    currentDiscountLabel := label.new(bar_index, botLevel, "Discount", color = color.new(color.black, 100), textcolor = discountColor, style = label.style_label_left, size = size.small)
+else
+    // Extend current boxes and labels
+    if not na(currentPremiumBox)
+        box.set_right(currentPremiumBox, bar_index)
+        label.set_x(currentPremiumLabel, bar_index)
+        label.set_y(currentPremiumLabel, topLevel)
+    if not na(currentDiscountBox)
+        box.set_right(currentDiscountBox, bar_index)
+        label.set_x(currentDiscountLabel, bar_index)
+        label.set_y(currentDiscountLabel, botLevel)

@@ -1,0 +1,263 @@
+//@version=5
+strategy("하이킨 스토캐 [HWR HA]", shorttitle="HWR HA", overlay=true, scale=scale.right, pyramiding=0, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.04, process_orders_on_close=true, calc_on_every_tick=false, max_labels_count=500, max_boxes_count=50)
+
+// ─────────────────────────────────────────────
+// 전략. 차트는 일반 캔들. 신호는 하이킨아시 + 스토캐 RSI.
+// 200 EMA 위 = 롱만, 아래 = 숏만.
+// 롱: K가 D를 상향 돌파 + 하이킨 양봉(이전보다 몸통 길고 아래꼬리 없음)
+// 숏: K가 D를 하향 돌파 + 하이킨 음봉(이전보다 몸통 길고 위꼬리 없음)
+// 익절 3%, 손절 1.5%. 봉 마감 체결. 콤보와 같이 켜지 마세요.
+// ─────────────────────────────────────────────
+
+grpEma = "1. 200 EMA"
+emaLen = input.int(200, "EMA 기간", minval=2, group=grpEma)
+emaOnHa = input.bool(false, "EMA를 하이킨 종가로", group=grpEma, tooltip="끄면 차트에 보이는 일반 종가 EMA와 같습니다. 켜면 하이킨 종가 기준입니다.")
+
+grpHa = "2. 하이킨아시"
+wickPct = input.float(2.0, "꼬리 허용 % (몸통 대비)", minval=0, maxval=20, step=0.5, group=grpHa, tooltip="0이면 꼬리가 거의 없는 봉만. 하이킨은 소수점 때문에 2% 정도가 실전에 맞습니다.")
+needHa = input.bool(true, "하이킨 확장봉 필수", group=grpHa)
+
+grpSt = "3. 스토캐스틱 RSI"
+rsiLen = input.int(14, "RSI 기간", minval=2, group=grpSt)
+stochLen = input.int(14, "스토캐 기간", minval=2, group=grpSt)
+kSmooth = input.int(3, "K 평활", minval=1, group=grpSt)
+dSmooth = input.int(3, "D 평활", minval=1, group=grpSt)
+stochHold = input.int(3, "교차 유효 봉", minval=0, maxval=20, group=grpSt, tooltip="0이면 교차와 하이킨 봉이 같은 봉이어야 합니다. 3이면 교차 후 3봉 안에 하이킨 조건이 오면 진입.")
+needStoch = input.bool(true, "스토캐 교차 필수", group=grpSt)
+stochOnHa = input.bool(true, "스토캐를 하이킨 종가로", group=grpSt)
+
+grpEx = "4. 손절·익절"
+tpPct = input.float(3.0, "익절 %", minval=0.1, step=0.1, group=grpEx)
+slPct = input.float(1.5, "손절 %", minval=0.1, step=0.1, group=grpEx)
+minHoldBars = input.int(1, "최소 보유 봉", minval=1, group=grpEx)
+flipOnOpp = input.bool(false, "반대 신호면 뒤집기", group=grpEx)
+cooldownBars = input.int(4, "신호 쿨다운(봉)", minval=1, group=grpEx)
+
+grpStat = "5. 측정기간"
+statMode = input.string("최근 N일", "측정 방식", options=["전체", "최근 N일", "기간 지정"], group=grpStat)
+statDays = input.int(60, "최근 N일", minval=1, maxval=3650, group=grpStat)
+statFrom = input.time(timestamp("01 Jan 2026 00:00"), "시작", group=grpStat)
+statTo   = input.time(timestamp("12 Sep 2026 23:59"), "종료", group=grpStat)
+
+grpUi = "6. 표시"
+showEma   = input.bool(true, "200 EMA 표시", group=grpUi)
+showBoxes = input.bool(true, "TP/SL 구간 표시", group=grpUi)
+showDash  = input.bool(true, "대시보드 표시", group=grpUi)
+alertEntry = input.bool(false, "진입 알림", group=grpUi)
+alertExit  = input.bool(false, "청산 알림", group=grpUi)
+dashPosIn = input.string("오른쪽 위", "테이블 위치", options=["오른쪽 위", "오른쪽 아래", "왼쪽 위", "왼쪽 아래", "가운데 위", "가운데 아래", "오른쪽 중간", "왼쪽 중간"], group=grpUi)
+bullCol = input.color(color.new(#26a69a, 0), "롱 색", group=grpUi)
+bearCol = input.color(color.new(#ef5350, 0), "숏 색", group=grpUi)
+emaCol  = input.color(color.new(#f0c14a, 0), "EMA 색", group=grpUi)
+
+// ===== 하이킨아시 (차트는 일반봉, 계산만) =====
+haClose = (open + high + low + close) / 4.0
+var float haOpen = na
+haOpen := na(haOpen[1]) ? (open + close) / 2.0 : (nz(haOpen[1]) + nz(haClose[1])) / 2.0
+haHigh = math.max(high, math.max(haOpen, haClose))
+haLow  = math.min(low, math.min(haOpen, haClose))
+haBody = math.abs(haClose - haOpen)
+haBodyPrev = math.abs(haClose[1] - haOpen[1])
+haBull = haClose > haOpen
+haBear = haClose < haOpen
+lowWick = math.min(haOpen, haClose) - haLow
+upWick  = haHigh - math.max(haOpen, haClose)
+wickTol = math.max(syminfo.mintick, haBody * wickPct * 0.01)
+haLongBar  = haBull and haBody > haBodyPrev and lowWick <= wickTol
+haShortBar = haBear and haBody > haBodyPrev and upWick <= wickTol
+
+// ===== 200 EMA =====
+emaSrc = emaOnHa ? haClose : close
+emaVal = ta.ema(emaSrc, emaLen)
+pxNow  = emaOnHa ? haClose : close
+longSide  = pxNow > emaVal
+shortSide = pxNow < emaVal
+
+// ===== 스토캐 RSI =====
+stSrc = stochOnHa ? haClose : close
+rsiVal = ta.rsi(stSrc, rsiLen)
+stRaw = ta.stoch(rsiVal, rsiVal, rsiVal, stochLen)
+kLine = ta.sma(stRaw, kSmooth)
+dLine = ta.sma(kLine, dSmooth)
+crossUp = ta.crossover(kLine, dLine)
+crossDn = ta.crossunder(kLine, dLine)
+var int lastUpBar = na
+var int lastDnBar = na
+if crossUp
+    lastUpBar := bar_index
+if crossDn
+    lastDnBar := bar_index
+stochLong  = stochHold <= 0 ? crossUp : (not na(lastUpBar) and bar_index - lastUpBar <= stochHold)
+stochShort = stochHold <= 0 ? crossDn : (not na(lastDnBar) and bar_index - lastDnBar <= stochHold)
+
+int lookFrom = timenow - statDays * 24 * 60 * 60 * 1000
+inRange = statMode == "전체" ? true : statMode == "최근 N일" ? (time >= lookFrom and time <= timenow) : (time >= statFrom and time <= statTo)
+
+var int lastSigBar = na
+cooled = na(lastSigBar) or (bar_index - lastSigBar >= cooldownBars)
+baseOk = barstate.isconfirmed and cooled and inRange
+
+longSetup  = (not needStoch or stochLong) and (not needHa or haLongBar)
+shortSetup = (not needStoch or stochShort) and (not needHa or haShortBar)
+longSignal  = baseOk and longSide and longSetup and not shortSetup
+shortSignal = baseOk and shortSide and shortSetup and not longSetup
+
+plot(close, "축고정", color=color.new(color.white, 100), linewidth=1, editable=false)
+plot(showEma ? emaVal : na, "EMA", color=emaCol, linewidth=2)
+bgcolor(longSignal ? color.new(bullCol, 92) : shortSignal ? color.new(bearCol, 92) : na)
+alertcondition(alertEntry and longSignal, title="HA 롱", message="HWR HA LONG")
+alertcondition(alertEntry and shortSignal, title="HA 숏", message="HWR HA SHORT")
+
+f_tp(bool isLong, float px) =>
+    isLong ? px * (1.0 + tpPct * 0.01) : px * (1.0 - tpPct * 0.01)
+f_sl(bool isLong, float px) =>
+    isLong ? px * (1.0 - slPct * 0.01) : px * (1.0 + slPct * 0.01)
+
+flat = strategy.position_size == 0
+inLong = strategy.position_size > 0
+inShort = strategy.position_size < 0
+heldBars = strategy.opentrades > 0 ? bar_index - strategy.opentrades.entry_bar_index(strategy.opentrades - 1) : 0
+canExit = heldBars >= minHoldBars
+
+canLong = longSignal and (flat or (flipOnOpp and inShort))
+canShort = shortSignal and (flat or (flipOnOpp and inLong))
+
+if canLong
+    strategy.entry("Long", strategy.long, comment="HA 롱")
+    lastSigBar := bar_index
+    if alertEntry
+        alert("HWR HA LONG  close=" + str.tostring(close), alert.freq_once_per_bar_close)
+if canShort
+    strategy.entry("Short", strategy.short, comment="HA 숏")
+    lastSigBar := bar_index
+    if alertEntry
+        alert("HWR HA SHORT  close=" + str.tostring(close), alert.freq_once_per_bar_close)
+
+if inLong and canExit
+    strategy.exit("Long TP/SL", from_entry="Long", stop=f_sl(true, strategy.position_avg_price), limit=f_tp(true, strategy.position_avg_price), comment_profit="TP", comment_loss="SL")
+if inShort and canExit
+    strategy.exit("Short TP/SL", from_entry="Short", stop=f_sl(false, strategy.position_avg_price), limit=f_tp(false, strategy.position_avg_price), comment_profit="TP", comment_loss="SL")
+
+closedNow = strategy.position_size == 0 and strategy.position_size[1] != 0
+openedNow = strategy.position_size != 0 and (strategy.position_size[1] == 0 or (strategy.position_size[1] * strategy.position_size < 0))
+if alertExit and closedNow
+    alert("HWR HA EXIT", alert.freq_once_per_bar_close)
+alertcondition(alertExit and closedNow, title="HA 청산", message="HWR HA EXIT")
+
+var box bTp = na
+var box bSl = na
+var box bAvg = na
+var label tTp = na
+var label tSl = na
+var label tAvg = na
+
+f_zone(float p1, float p2, color bg, color bd) =>
+    box.new(bar_index, math.max(p1, p2), bar_index, math.min(p1, p2), xloc=xloc.bar_index, border_color=bd, border_width=1, bgcolor=bg)
+f_tag(float y, color c, string name, float px) =>
+    label.new(bar_index, y, name + "  " + str.tostring(px, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(c, 20), textcolor=color.white, size=size.tiny)
+f_wipeBoxes() =>
+    box.delete(bTp)
+    box.delete(bSl)
+    box.delete(bAvg)
+    label.delete(tTp)
+    label.delete(tSl)
+    label.delete(tAvg)
+    true
+
+if (openedNow or closedNow) and showBoxes
+    f_wipeBoxes()
+    bTp := na
+    bSl := na
+    bAvg := na
+    tTp := na
+    tSl := na
+    tAvg := na
+
+if openedNow
+    bool isL = strategy.position_size > 0
+    float px = strategy.position_avg_price
+    string side = isL ? "롱" : "숏"
+    string why = not flat and strategy.position_size[1] != 0 ? "뒤집기 " : ""
+    string haTxt = isL ? "하이킨 양봉" : "하이킨 음봉"
+    if isL
+        label.new(bar_index, low, why + side + "  K↑D  " + haTxt, xloc=xloc.bar_index, style=label.style_label_up, color=bullCol, textcolor=color.white, size=size.tiny)
+    else
+        label.new(bar_index, high, why + side + "  K↓D  " + haTxt, xloc=xloc.bar_index, style=label.style_label_down, color=bearCol, textcolor=color.white, size=size.tiny)
+    if showBoxes
+        float tpPx = f_tp(isL, px)
+        float slPx = f_sl(isL, px)
+        float avgPad = math.max(syminfo.mintick * 4, px * 0.0004)
+        bTp := f_zone(px, tpPx, color.new(#26a69a, 78), color.new(#26a69a, 25))
+        bSl := f_zone(px, slPx, color.new(#ab47bc, 72), color.new(#ab47bc, 18))
+        bAvg := f_zone(px + avgPad, px - avgPad, color.new(#e8ecf4, 70), color.new(#c8cdd8, 15))
+        tTp := f_tag(tpPx, #26a69a, "TP " + str.tostring(tpPct, "#.##") + "%", tpPx)
+        tSl := f_tag(slPx, #ab47bc, "SL " + str.tostring(slPct, "#.##") + "%", slPx)
+        tAvg := f_tag(px, #c8cdd8, side + " 진입", px)
+
+if closedNow
+    float lastPnl = strategy.closedtrades.profit(strategy.closedtrades - 1)
+    float lastPnlPct = strategy.position_avg_price[1] != 0 ? lastPnl / math.abs(strategy.position_size[1] * strategy.position_avg_price[1]) * 100.0 : na
+    bool wrWin = lastPnl > 0
+    string resTxt = (wrWin ? "익절 +" : "손절 ") + str.tostring(lastPnlPct, "#.##") + "%"
+    color resCol = wrWin ? bullCol : bearCol
+    bool below = (strategy.position_size[1] > 0 and not wrWin) or (strategy.position_size[1] < 0 and wrWin)
+    label.new(bar_index, below ? low : high, resTxt, xloc=xloc.bar_index, style=below ? label.style_label_up : label.style_label_down, color=resCol, textcolor=color.white, size=size.tiny)
+
+if strategy.position_size != 0 and showBoxes and not openedNow and not closedNow
+    if not na(bTp)
+        box.set_right(bTp, bar_index)
+    if not na(bSl)
+        box.set_right(bSl, bar_index)
+    if not na(bAvg)
+        box.set_right(bAvg, bar_index)
+    if not na(tTp)
+        label.set_x(tTp, bar_index)
+    if not na(tSl)
+        label.set_x(tSl, bar_index)
+    if not na(tAvg)
+        label.set_x(tAvg, bar_index)
+
+closedTrades = strategy.closedtrades
+wins = strategy.wintrades
+losses = strategy.losstrades
+winRate = closedTrades > 0 ? wins / closedTrades * 100.0 : na
+netPnl = strategy.netprofit
+eqNow = strategy.equity
+pf = strategy.grossloss != 0 ? math.abs(strategy.grossprofit / strategy.grossloss) : na
+rrPlan = slPct > 0 ? tpPct / slPct : na
+avgPx = strategy.position_avg_price
+liveTp = strategy.position_size > 0 ? f_tp(true, avgPx) : strategy.position_size < 0 ? f_tp(false, avgPx) : na
+liveSl = strategy.position_size > 0 ? f_sl(true, avgPx) : strategy.position_size < 0 ? f_sl(false, avgPx) : na
+
+dashPos = dashPosIn == "오른쪽 아래" ? position.bottom_right : dashPosIn == "왼쪽 위" ? position.top_left : dashPosIn == "왼쪽 아래" ? position.bottom_left : dashPosIn == "가운데 위" ? position.top_center : dashPosIn == "가운데 아래" ? position.bottom_center : dashPosIn == "오른쪽 중간" ? position.middle_right : dashPosIn == "왼쪽 중간" ? position.middle_left : position.top_right
+var table dash = table.new(position.top_right, 2, 15, bgcolor=color.new(#12141c, 12), border_color=color.new(#2a2e3a, 0), border_width=1)
+if barstate.islast
+    table.set_position(dash, dashPos)
+f_cell(int r, string a, string b, color bc) =>
+    table.cell(dash, 0, r, a, text_color=color.new(#c8cdd8, 0), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, r, b, text_color=bc, text_halign=text.align_right, text_size=size.small)
+
+if showDash and barstate.islast
+    wrTxt = closedTrades > 0 ? str.tostring(wins) + "/" + str.tostring(losses) + "  " + str.tostring(winRate, "#.0") + "%" : "-"
+    if not flat
+        wrTxt := wrTxt + "  진행"
+    string posTxt = flat ? "없음" : (inLong ? "롱" : "숏") + "  " + str.tostring(avgPx, format.mintick)
+    string boxTxt = flat ? "-" : "SL " + str.tostring(liveSl, format.mintick) + "  TP " + str.tostring(liveTp, format.mintick)
+    string haState = haLongBar ? "양봉 확장·무하단" : haShortBar ? "음봉 확장·무상단" : haBull ? "양봉" : haBear ? "음봉" : "도지"
+    string kTxt = str.tostring(kLine, "#.0") + " / " + str.tostring(dLine, "#.0") + (kLine > dLine ? "  K>D" : "  K<D")
+    table.cell(dash, 0, 0, "HWR HA 전략", text_color=color.white, text_halign=text.align_left, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    table.cell(dash, 1, 0, timeframe.period, text_color=color.new(#8b95a8, 0), text_halign=text.align_right, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    f_cell(1, "EMA" + str.tostring(emaLen), longSide ? "위 · 롱만" : shortSide ? "아래 · 숏만" : "접촉", longSide ? bullCol : shortSide ? bearCol : color.gray)
+    f_cell(2, "하이킨", haState, haLongBar ? bullCol : haShortBar ? bearCol : color.gray)
+    f_cell(3, "스토캐 K/D", kTxt, kLine > dLine ? bullCol : bearCol)
+    f_cell(4, "교차", stochLong ? "상향 유효" : stochShort ? "하향 유효" : "대기", stochLong ? bullCol : stochShort ? bearCol : color.gray)
+    f_cell(5, "포지션", posTxt, flat ? color.gray : inLong ? bullCol : bearCol)
+    f_cell(6, "실시간 박스", boxTxt, not flat ? color.new(#c8cdd8, 0) : color.gray)
+    f_cell(7, "계획", "TP " + str.tostring(tpPct, "#.##") + "%  /  SL " + str.tostring(slPct, "#.##") + "%  (1:" + str.tostring(rrPlan, "#.##") + ")", color.new(#c8cdd8, 0))
+    f_cell(8, "승/패", wrTxt, not na(winRate) and winRate >= 40 ? bullCol : not na(winRate) and winRate < 30 ? bearCol : color.gray)
+    f_cell(9, "순손익", str.tostring(netPnl, "#.##") + "  자산 " + str.tostring(eqNow, "#.##"), netPnl >= 0 ? bullCol : bearCol)
+    f_cell(10, "PF", na(pf) ? "-" : str.tostring(pf, "#.##"), na(pf) ? color.gray : pf >= 1 ? bullCol : bearCol)
+    f_cell(11, "측정", statMode == "최근 N일" ? str.tostring(statDays) + "일" : statMode, color.new(#c8cdd8, 0))
+    f_cell(12, "체결", "봉 마감 종가. 하이킨은 계산만", color.new(#8b95a8, 0))
+    f_cell(13, "청산", "전략 지정가 TP/SL", color.new(#8b95a8, 0))
+    f_cell(14, "주의", "콤보와 같이 쓰지 말 것 · 속성에서 시드 변경", color.new(#8b95a8, 0))

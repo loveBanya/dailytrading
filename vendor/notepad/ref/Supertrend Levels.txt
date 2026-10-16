@@ -1,0 +1,231 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/ MPL-2.0
+//@version=6
+indicator("Supertrend mit Entry, TP1, TP2 und TP3", "Supertrend Levels", overlay = true)
+
+// --- Inputs ---
+factorInput = input.float(2.5, "Faktor", minval = 0.01, step = 0.01, tooltip = "Multiplikator für die ATR-basierte Distanz des Supertrends.", group = "Berechnung")
+atrPeriodInput = input.int(14, "ATR-Periode", minval = 1, tooltip = "Anzahl der Kerzen für die ATR-Berechnung.", group = "Berechnung")
+showSignalsInput = input.bool(true, "Signale anzeigen", tooltip = "Zeigt Kauf- und Verkaufssignale bei einem Trendwechsel an.", group = "Anzeige")
+showFillInput = input.bool(true, "Trendbereich füllen", tooltip = "Füllt den Bereich zwischen Kurs und Supertrend farblich.", group = "Anzeige")
+showLevelsInput = input.bool(true, "Entry, TP1, TP2, TP3 und SL anzeigen", tooltip = "Zeigt die zuletzt berechneten Trade-Level als Linien an.", group = "Anzeige")
+showBoxesInput = input.bool(true, "Trade-Kästchen anzeigen", tooltip = "Zeigt die Gewinn- und Verlustbereiche als Kästchen bis zum rechten Chart-Rand an.", group = "Anzeige")
+showTpMarksInput = input.bool(true, "Erreichte TP markieren", tooltip = "Markiert TP1, TP2 und TP3 mit einem Haken, sobald der Kurs das jeweilige Level erreicht.", group = "Anzeige")
+showPriceLabelsInput = input.bool(true, "Preisschilder anzeigen", tooltip = "Zeigt die exakten Preise von Entry, TP1, TP2, TP3 und SL am rechten Rand des aktuellen Setups an.", group = "Anzeige")
+showTrendLinesInput = input.bool(true, "Supertrend-Linien anzeigen", tooltip = "Zeigt die Aufwärts- und Abwärtstrendlinien des Supertrends deutlich im Chart an.", group = "Anzeige")
+slAtrMultiplierInput = input.float(1.5, "SL ATR-Multiplikator", minval = 0.1, step = 0.1, tooltip = "ATR-Abstand des Stop-Loss vom Entry-Level.", group = "Trade-Level")
+tp1RiskRewardInput = input.float(1.0, "TP1 Chance-Risiko", minval = 0.1, step = 0.1, tooltip = "TP1-Abstand als Vielfaches des Stop-Loss-Risikos.", group = "Trade-Level")
+tp2RiskRewardInput = input.float(2.0, "TP2 Chance-Risiko", minval = 0.1, step = 0.1, tooltip = "TP2-Abstand als Vielfaches des Stop-Loss-Risikos.", group = "Trade-Level")
+tp3RiskRewardInput = input.float(3.0, "TP3 Chance-Risiko", minval = 0.1, step = 0.1, tooltip = "TP3-Abstand als Vielfaches des Stop-Loss-Risikos.", group = "Trade-Level")
+upColorInput = input.color(#089981, "Aufwärtstrend", tooltip = "Farbe des Supertrends in einem Aufwärtstrend.", group = "Style")
+downColorInput = input.color(#f23645, "Abwärtstrend", tooltip = "Farbe des Supertrends in einem Abwärtstrend.", group = "Style")
+entryColorInput = input.color(#5b9cf6, "Entry", tooltip = "Farbe des Entry-Levels.", group = "Style")
+takeProfit1ColorInput = input.color(#26a69a, "TP1", tooltip = "Farbe des ersten Take-Profit-Levels.", group = "Style")
+takeProfit2ColorInput = input.color(#089981, "TP2", tooltip = "Farbe des zweiten Take-Profit-Levels.", group = "Style")
+takeProfit3ColorInput = input.color(#00695c, "TP3", tooltip = "Farbe des dritten Take-Profit-Levels.", group = "Style")
+stopLossColorInput = input.color(#f23645, "Stop Loss", tooltip = "Farbe des Stop-Loss-Levels.", group = "Style")
+candleUpColorInput = input.color(#00ff00, "Grüne Kerzen", tooltip = "Farbe der Kerzen im Aufwärtstrend.", group = "Style")
+candleDownColorInput = input.color(#ff0000, "Rote Kerzen", tooltip = "Farbe der Kerzen im Abwärtstrend.", group = "Style")
+candleTransparencyInput = input.int(0, "Kerzen-Transparenz", minval = 0, maxval = 100, tooltip = "Transparenz der Trendkerzen. 0 bedeutet volle, kräftige Farbe.", group = "Style")
+
+// --- Funktionen ---
+createPriceLabel(int x, float price, string title, color labelColor) =>
+    label.new(x = x, y = price, text = title + "  " + str.tostring(price, format.mintick), style = label.style_label_left, color = labelColor, textcolor = color.white, size = size.small)
+
+// --- Berechnung ---
+[supertrend, direction] = ta.supertrend(factorInput, atrPeriodInput)
+atrValue = ta.atr(atrPeriodInput)
+isUpTrend = direction < 0
+isDownTrend = direction > 0
+
+upTrend = isUpTrend ? supertrend : na
+downTrend = isDownTrend ? supertrend : na
+
+buySignal = ta.crossunder(direction, 0)
+sellSignal = ta.crossover(direction, 0)
+
+// --- Trade-Level ---
+var float entryLevel = na
+var float takeProfit1Level = na
+var float takeProfit2Level = na
+var float takeProfit3Level = na
+var float stopLossLevel = na
+var int tradeDirection = 0
+var bool takeProfit1Reached = false
+var bool takeProfit2Reached = false
+var bool takeProfit3Reached = false
+
+bool takeProfit1HitEvent = false
+bool takeProfit2HitEvent = false
+bool takeProfit3HitEvent = false
+
+if buySignal
+    entryLevel := close
+    stopLossLevel := entryLevel - atrValue * slAtrMultiplierInput
+    riskDistance = entryLevel - stopLossLevel
+    takeProfit1Level := entryLevel + riskDistance * tp1RiskRewardInput
+    takeProfit2Level := entryLevel + riskDistance * tp2RiskRewardInput
+    takeProfit3Level := entryLevel + riskDistance * tp3RiskRewardInput
+    tradeDirection := 1
+    takeProfit1Reached := false
+    takeProfit2Reached := false
+    takeProfit3Reached := false
+
+if sellSignal
+    entryLevel := close
+    stopLossLevel := entryLevel + atrValue * slAtrMultiplierInput
+    riskDistance = stopLossLevel - entryLevel
+    takeProfit1Level := entryLevel - riskDistance * tp1RiskRewardInput
+    takeProfit2Level := entryLevel - riskDistance * tp2RiskRewardInput
+    takeProfit3Level := entryLevel - riskDistance * tp3RiskRewardInput
+    tradeDirection := -1
+    takeProfit1Reached := false
+    takeProfit2Reached := false
+    takeProfit3Reached := false
+
+if not (buySignal or sellSignal)
+    if tradeDirection == 1 and not takeProfit1Reached and high >= takeProfit1Level
+        takeProfit1Reached := true
+        takeProfit1HitEvent := true
+    if tradeDirection == 1 and not takeProfit2Reached and high >= takeProfit2Level
+        takeProfit2Reached := true
+        takeProfit2HitEvent := true
+    if tradeDirection == 1 and not takeProfit3Reached and high >= takeProfit3Level
+        takeProfit3Reached := true
+        takeProfit3HitEvent := true
+    if tradeDirection == -1 and not takeProfit1Reached and low <= takeProfit1Level
+        takeProfit1Reached := true
+        takeProfit1HitEvent := true
+    if tradeDirection == -1 and not takeProfit2Reached and low <= takeProfit2Level
+        takeProfit2Reached := true
+        takeProfit2HitEvent := true
+    if tradeDirection == -1 and not takeProfit3Reached and low <= takeProfit3Level
+        takeProfit3Reached := true
+        takeProfit3HitEvent := true
+
+// --- Trade-Kästchen ---
+var box profitBox1 = na
+var box profitBox2 = na
+var box profitBox3 = na
+var box lossBox = na
+
+if buySignal or sellSignal
+    if not na(profitBox1)
+        box.delete(profitBox1)
+    if not na(profitBox2)
+        box.delete(profitBox2)
+    if not na(profitBox3)
+        box.delete(profitBox3)
+    if not na(lossBox)
+        box.delete(lossBox)
+
+    if showBoxesInput
+        profitBox1 := box.new(left = bar_index, top = math.max(entryLevel, takeProfit1Level), right = bar_index + 1, bottom = math.min(entryLevel, takeProfit1Level), extend = extend.right, border_color = color.new(takeProfit1ColorInput, 15), bgcolor = color.new(takeProfit1ColorInput, 82), text = "TP1", text_color = color.white, text_halign = text.align_center, text_valign = text.align_center, text_size = size.small)
+        profitBox2 := box.new(left = bar_index, top = math.max(takeProfit1Level, takeProfit2Level), right = bar_index + 1, bottom = math.min(takeProfit1Level, takeProfit2Level), extend = extend.right, border_color = color.new(takeProfit2ColorInput, 15), bgcolor = color.new(takeProfit2ColorInput, 86), text = "TP2", text_color = color.white, text_halign = text.align_center, text_valign = text.align_center, text_size = size.small)
+        profitBox3 := box.new(left = bar_index, top = math.max(takeProfit2Level, takeProfit3Level), right = bar_index + 1, bottom = math.min(takeProfit2Level, takeProfit3Level), extend = extend.right, border_color = color.new(takeProfit3ColorInput, 15), bgcolor = color.new(takeProfit3ColorInput, 88), text = "TP3", text_color = color.white, text_halign = text.align_center, text_valign = text.align_center, text_size = size.small)
+        lossBox := box.new(left = bar_index, top = math.max(entryLevel, stopLossLevel), right = bar_index + 1, bottom = math.min(entryLevel, stopLossLevel), extend = extend.right, border_color = color.new(stopLossColorInput, 15), bgcolor = color.new(stopLossColorInput, 84), text = "SL", text_color = color.white, text_halign = text.align_center, text_valign = text.align_center, text_size = size.small)
+
+// --- Preisbeschriftungen ---
+var label entryPriceLabel = na
+var label takeProfit1PriceLabel = na
+var label takeProfit2PriceLabel = na
+var label takeProfit3PriceLabel = na
+var label stopLossPriceLabel = na
+
+if buySignal or sellSignal
+    if not na(entryPriceLabel)
+        label.delete(entryPriceLabel)
+    if not na(takeProfit1PriceLabel)
+        label.delete(takeProfit1PriceLabel)
+    if not na(takeProfit2PriceLabel)
+        label.delete(takeProfit2PriceLabel)
+    if not na(takeProfit3PriceLabel)
+        label.delete(takeProfit3PriceLabel)
+    if not na(stopLossPriceLabel)
+        label.delete(stopLossPriceLabel)
+
+    if showPriceLabelsInput
+        entryPriceLabel := createPriceLabel(bar_index, entryLevel, "Entry", entryColorInput)
+        takeProfit1PriceLabel := createPriceLabel(bar_index, takeProfit1Level, "TP1", takeProfit1ColorInput)
+        takeProfit2PriceLabel := createPriceLabel(bar_index, takeProfit2Level, "TP2", takeProfit2ColorInput)
+        takeProfit3PriceLabel := createPriceLabel(bar_index, takeProfit3Level, "TP3", takeProfit3ColorInput)
+        stopLossPriceLabel := createPriceLabel(bar_index, stopLossLevel, "SL", stopLossColorInput)
+
+if showPriceLabelsInput and na(entryPriceLabel) and not na(entryLevel)
+    entryPriceLabel := createPriceLabel(bar_index, entryLevel, "Entry", entryColorInput)
+    takeProfit1PriceLabel := createPriceLabel(bar_index, takeProfit1Level, "TP1", takeProfit1ColorInput)
+    takeProfit2PriceLabel := createPriceLabel(bar_index, takeProfit2Level, "TP2", takeProfit2ColorInput)
+    takeProfit3PriceLabel := createPriceLabel(bar_index, takeProfit3Level, "TP3", takeProfit3ColorInput)
+    stopLossPriceLabel := createPriceLabel(bar_index, stopLossLevel, "SL", stopLossColorInput)
+
+if not showPriceLabelsInput
+    if not na(entryPriceLabel)
+        label.delete(entryPriceLabel)
+        entryPriceLabel := na
+    if not na(takeProfit1PriceLabel)
+        label.delete(takeProfit1PriceLabel)
+        takeProfit1PriceLabel := na
+    if not na(takeProfit2PriceLabel)
+        label.delete(takeProfit2PriceLabel)
+        takeProfit2PriceLabel := na
+    if not na(takeProfit3PriceLabel)
+        label.delete(takeProfit3PriceLabel)
+        takeProfit3PriceLabel := na
+    if not na(stopLossPriceLabel)
+        label.delete(stopLossPriceLabel)
+        stopLossPriceLabel := na
+
+if showPriceLabelsInput and not na(entryPriceLabel)
+    label.set_x(entryPriceLabel, bar_index)
+    label.set_y(entryPriceLabel, entryLevel)
+    label.set_text(entryPriceLabel, "Entry  " + str.tostring(entryLevel, format.mintick))
+    label.set_x(takeProfit1PriceLabel, bar_index)
+    label.set_y(takeProfit1PriceLabel, takeProfit1Level)
+    label.set_text(takeProfit1PriceLabel, (takeProfit1Reached ? "TP1 ✓  " : "TP1  ") + str.tostring(takeProfit1Level, format.mintick))
+    label.set_x(takeProfit2PriceLabel, bar_index)
+    label.set_y(takeProfit2PriceLabel, takeProfit2Level)
+    label.set_text(takeProfit2PriceLabel, (takeProfit2Reached ? "TP2 ✓  " : "TP2  ") + str.tostring(takeProfit2Level, format.mintick))
+    label.set_x(takeProfit3PriceLabel, bar_index)
+    label.set_y(takeProfit3PriceLabel, takeProfit3Level)
+    label.set_text(takeProfit3PriceLabel, (takeProfit3Reached ? "TP3 ✓  " : "TP3  ") + str.tostring(takeProfit3Level, format.mintick))
+    label.set_x(stopLossPriceLabel, bar_index)
+    label.set_y(stopLossPriceLabel, stopLossLevel)
+    label.set_text(stopLossPriceLabel, "SL  " + str.tostring(stopLossLevel, format.mintick))
+
+visibleEntryLevel = showLevelsInput ? entryLevel : na
+visibleTakeProfit1Level = showLevelsInput ? takeProfit1Level : na
+visibleTakeProfit2Level = showLevelsInput ? takeProfit2Level : na
+visibleTakeProfit3Level = showLevelsInput ? takeProfit3Level : na
+visibleStopLossLevel = showLevelsInput ? stopLossLevel : na
+
+// --- Visualisierung ---
+upTrendPlot = plot(upTrend, "Aufwärts-Supertrend", color = showTrendLinesInput ? upColorInput : na, linewidth = 3, style = plot.style_linebr)
+downTrendPlot = plot(downTrend, "Abwärts-Supertrend", color = showTrendLinesInput ? downColorInput : na, linewidth = 3, style = plot.style_linebr)
+priceMiddlePlot = plot((open + close) / 2, "Kursmitte", display = display.none)
+
+fill(priceMiddlePlot, upTrendPlot, color = showFillInput ? color.new(upColorInput, 90) : na, fillgaps = false)
+fill(priceMiddlePlot, downTrendPlot, color = showFillInput ? color.new(downColorInput, 90) : na, fillgaps = false)
+
+plot(visibleEntryLevel, "Entry", color = entryColorInput, linewidth = 2, style = plot.style_linebr)
+plot(visibleTakeProfit1Level, "TP1", color = takeProfit1ColorInput, linewidth = 2, style = plot.style_linebr)
+plot(visibleTakeProfit2Level, "TP2", color = takeProfit2ColorInput, linewidth = 2, style = plot.style_linebr)
+plot(visibleTakeProfit3Level, "TP3", color = takeProfit3ColorInput, linewidth = 2, style = plot.style_linebr)
+plot(visibleStopLossLevel, "Stop Loss", color = stopLossColorInput, linewidth = 2, style = plot.style_linebr)
+
+plotshape(showSignalsInput and buySignal, title = "Kaufsignal", text = "K", style = shape.labelup, location = location.belowbar, color = upColorInput, textcolor = color.white, size = size.tiny)
+plotshape(showSignalsInput and sellSignal, title = "Verkaufssignal", text = "V", style = shape.labeldown, location = location.abovebar, color = downColorInput, textcolor = color.white, size = size.tiny)
+
+plotshape(showTpMarksInput and takeProfit1HitEvent and tradeDirection == 1 ? takeProfit1Level : na, title = "Long TP1 erreicht", text = "TP1 ✓", style = shape.labeldown, location = location.absolute, color = takeProfit1ColorInput, textcolor = color.white, size = size.tiny)
+plotshape(showTpMarksInput and takeProfit2HitEvent and tradeDirection == 1 ? takeProfit2Level : na, title = "Long TP2 erreicht", text = "TP2 ✓", style = shape.labeldown, location = location.absolute, color = takeProfit2ColorInput, textcolor = color.white, size = size.tiny)
+plotshape(showTpMarksInput and takeProfit3HitEvent and tradeDirection == 1 ? takeProfit3Level : na, title = "Long TP3 erreicht", text = "TP3 ✓", style = shape.labeldown, location = location.absolute, color = takeProfit3ColorInput, textcolor = color.white, size = size.tiny)
+plotshape(showTpMarksInput and takeProfit1HitEvent and tradeDirection == -1 ? takeProfit1Level : na, title = "Short TP1 erreicht", text = "TP1 ✓", style = shape.labelup, location = location.absolute, color = takeProfit1ColorInput, textcolor = color.white, size = size.tiny)
+plotshape(showTpMarksInput and takeProfit2HitEvent and tradeDirection == -1 ? takeProfit2Level : na, title = "Short TP2 erreicht", text = "TP2 ✓", style = shape.labelup, location = location.absolute, color = takeProfit2ColorInput, textcolor = color.white, size = size.tiny)
+plotshape(showTpMarksInput and takeProfit3HitEvent and tradeDirection == -1 ? takeProfit3Level : na, title = "Short TP3 erreicht", text = "TP3 ✓", style = shape.labelup, location = location.absolute, color = takeProfit3ColorInput, textcolor = color.white, size = size.tiny)
+
+barcolor(isUpTrend ? color.new(candleUpColorInput, candleTransparencyInput) : isDownTrend ? color.new(candleDownColorInput, candleTransparencyInput) : na)
+
+// --- Alerts ---
+alertcondition(buySignal, "Supertrend Kaufsignal", "Supertrend: Long-Entry auf {{ticker}}")
+alertcondition(sellSignal, "Supertrend Verkaufssignal", "Supertrend: Short-Entry auf {{ticker}}")
+alertcondition(takeProfit1HitEvent, "TP1 erreicht", "Supertrend: TP1 auf {{ticker}} erreicht")
+alertcondition(takeProfit2HitEvent, "TP2 erreicht", "Supertrend: TP2 auf {{ticker}} erreicht")
+alertcondition(takeProfit3HitEvent, "TP3 erreicht", "Supertrend: TP3 auf {{ticker}} erreicht")

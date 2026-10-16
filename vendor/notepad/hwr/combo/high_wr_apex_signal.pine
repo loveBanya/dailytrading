@@ -1,0 +1,558 @@
+//@version=5
+indicator("큰·작은 추세 눌림 [HWR Apex]", shorttitle="HWR Apex", overlay=true, scale=scale.right, max_labels_count=500, max_lines_count=20, max_boxes_count=50)
+
+// ─────────────────────────────────────────────
+// 생각 없이 따라가는 신호. 차트는 작은 타임프레임과 같거나 더 작은 봉.
+// 기본은 작은 1시간 · 큰 4시간, 차트 15분.
+// 알트처럼 변동이 크면 작은·큰 타임프레임을 직접 낮춘다.
+// 알트 단타 스캘핑은 설정에서 켜야만 동작한다. 끄면 이 추세 눌림 그대로다.
+//
+// 거래할 때
+// 1. 큰 타임프레임과 작은 타임프레임 추세가 같을 때만
+// 2. 차트에서 21이평 또는 VWAP을 꼬리로 찍고 종가가 선을 지키면 진입
+// 3. 라벨의 손절·TP1·TP2만 사용. 중간 청산 없음
+// 4. TP1에서 절반을 줄이고 손절을 진입가로. 나머지는 TP2
+//
+// 넣은 것: 큰·작은 이평·슈퍼트렌드·DI, 차트 삼중 슈퍼트렌드,
+// ATR 트레일, VWAP 꼬리 지지, 21/50 눌림, HMA 기울기, TRAMA 방향,
+// 스토캐스틱 RSI, 하이킨 양봉, ADX, 200이평.
+// 뺀 것: 8090·함정·변곡(역추세), 확장·추세선 돌파(추격),
+// SmartBand·Voltix(손익비 약함), 골드·세션·DXY.
+// 승률은 TP1에 손절보다 먼저 닿았는지. 수수료 전 숫자.
+// ─────────────────────────────────────────────
+
+grpRule = "1. 추세"
+tfBig = input.timeframe("240", "큰 타임프레임", group=grpRule, tooltip="상위 추세. 기본 4시간. 변동 큰 알트는 1시간처럼 더 짧게.")
+tfSml = input.timeframe("60", "작은 타임프레임", group=grpRule, tooltip="큰 것보다 짧아야 합니다. 기본 1시간. 차트는 이것과 같거나 더 작은 봉.")
+minConfirm = input.int(5, "최소 확인", minval=1, maxval=10, group=grpRule, tooltip="10개 중 이 개수. 5가 기본. 낮추면 신호는 늘고 자리는 헐거워집니다.")
+needTiming = input.bool(true, "반등 확인 필수", group=grpRule, tooltip="HMA가 방향을 다시 틀거나, 스토캐 교차 3봉 안, 하이킨 몸통이 커질 때.")
+
+grpScalp = "1b. 알트 단타"
+useScalp = input.bool(false, "알트 단타 스캘핑", group=grpScalp, tooltip="기본은 꺼짐. 켜야만 단타로 바뀝니다. 차트 1분 또는 5분, 작은 타임프레임 15분, 큰 타임프레임 1시간을 권합니다. 끄면 위의 추세 눌림이 그대로입니다.")
+
+grpEnt = "2. 진입 폭"
+adxMin = input.float(16.0, "차트 ADX", minval=1, step=0.5, group=grpEnt)
+htfAdxMin = input.float(16.0, "큰·작은 ADX", minval=1, step=0.5, group=grpEnt)
+rsiMin = input.float(42.0, "RSI 롱 하한", minval=20, maxval=50, step=1, group=grpEnt, tooltip="숏은 반대로 적용합니다.")
+rsiMax = input.float(64.0, "RSI 롱 상한", minval=55, maxval=80, step=1, group=grpEnt)
+touchAtr = input.float(0.30, "눌림 폭 ATR", minval=0.05, step=0.05, group=grpEnt)
+maxExtAtr = input.float(1.15, "추격 금지 ATR", minval=0.3, step=0.05, group=grpEnt, tooltip="종가가 21이평에서 이 거리보다 멀면 안 들어갑니다.")
+cooldownBars = input.int(8, "쿨다운 봉", minval=1, group=grpEnt)
+
+grpEx = "3. 손절·익절"
+tp1R = input.float(0.80, "TP1 (R)", minval=0.4, step=0.05, group=grpEx, tooltip="승률은 이 가격에 손절보다 먼저 닿았는지입니다.")
+tp2R = input.float(2.00, "TP2 (R)", minval=1.0, step=0.1, group=grpEx)
+q1Pct = input.float(55.0, "TP1 비중 %", minval=10, maxval=90, step=5, group=grpEx, tooltip="나머지는 TP2. TP1 체결 후 손절은 진입가.")
+slPad = 0.12
+slMinAtr = 0.85
+slMaxAtr = 2.00
+swingLen = 8
+
+grpMoney = "4. 테스트 금액"
+betAmt = input.float(100.0, "진입 금액 (달러)", minval=1, step=1, group=grpMoney, tooltip="주문마다 같은 증거금. 100이면 매번 100달러. 잔고가 늘어도 다음 주문은 같은 금액입니다.")
+lev = input.float(1.0, "배율", minval=1, maxval=125, step=0.5, group=grpMoney, tooltip="포지션 = 진입 금액 × 배율. 1이면 레버리지 없음. 한 주문의 손실은 진입 금액까지만.")
+
+grpStat = "5. 측정"
+statMode = input.string("최근 N일", "측정 방식", options=["전체", "최근 N일", "기간 지정"], group=grpStat)
+statDays = input.int(60, "최근 N일", minval=1, maxval=3650, group=grpStat)
+statFrom = input.time(timestamp("01 Jan 2026 00:00"), "시작", group=grpStat)
+statTo = input.time(timestamp("30 Sep 2026 23:59"), "종료", group=grpStat)
+sessTz = input.string("Asia/Seoul", "타임존", options=["Asia/Seoul", "America/New_York", "Europe/London", "UTC"], group=grpStat)
+
+grpUi = "6. 표시"
+showMa = input.bool(true, "21·50 이평", group=grpUi)
+showVwap = input.bool(true, "VWAP", group=grpUi)
+showTrail = input.bool(false, "ATR 트레일", group=grpUi)
+showDash = input.bool(true, "대시보드", group=grpUi)
+alertEntry = input.bool(false, "진입 알림", group=grpUi)
+alertExit = input.bool(false, "청산 알림", group=grpUi)
+dashPosIn = input.string("오른쪽 위", "테이블 위치", options=["오른쪽 위", "오른쪽 아래", "왼쪽 위", "왼쪽 아래"], group=grpUi)
+bullCol = input.color(color.new(#26a69a, 0), "롱", group=grpUi)
+bearCol = input.color(color.new(#ef5350, 0), "숏", group=grpUi)
+
+grpBot = "7. 봇"
+botJson = input.bool(true, "알림을 봇 JSON으로", group=grpBot)
+botSecret = input.string("", "웹훅 시크릿", group=grpBot)
+
+f_symBot() =>
+    str.replace_all(syminfo.ticker, ".P", "")
+f_botEntry(string action, float slPx, float tp1Px, float tp2Px) =>
+    string core = '{"action":"' + action + '","symbol":"' + f_symBot() + '","grade":"A","close":' + str.tostring(close) + ',"sl":' + str.tostring(slPx) + ',"tp1":' + str.tostring(tp1Px) + ',"tp2":' + str.tostring(tp2Px)
+    botSecret != "" ? core + ',"secret":"' + botSecret + '"}' : core + "}"
+f_botExit() =>
+    string core = '{"action":"EXIT","symbol":"' + f_symBot() + '","close":' + str.tostring(close)
+    botSecret != "" ? core + ',"secret":"' + botSecret + '"}' : core + "}"
+
+// 큰·작은 타임프레임은 닫힌 봉만. 지금 봉을 미리 보지 않음.
+f_tfTxt(string tf) =>
+    string t = str.upper(tf)
+    t == "1" ? "1분" : t == "3" ? "3분" : t == "5" ? "5분" : t == "15" ? "15분" : t == "30" ? "30분" : t == "45" ? "45분" : t == "60" or t == "1H" ? "1시간" : t == "120" or t == "2H" ? "2시간" : t == "180" or t == "3H" ? "3시간" : t == "240" or t == "4H" ? "4시간" : t == "360" ? "6시간" : t == "480" ? "8시간" : t == "720" ? "12시간" : t == "D" or t == "1D" ? "일봉" : t == "W" or t == "1W" ? "주봉" : t == "M" or t == "1M" ? "월봉" : tf
+
+int chartSec = timeframe.in_seconds()
+int bigSec = timeframe.in_seconds(tfBig)
+int smlSec = timeframe.in_seconds(tfSml)
+bool tfOrderOk = bigSec > smlSec and smlSec > 0
+bool tfOk = chartSec > 0 and tfOrderOk and chartSec <= smlSec
+string bigName = f_tfTxt(tfBig)
+string smlName = f_tfTxt(tfSml)
+float effTouch = useScalp ? 0.40 : touchAtr
+float effExt = useScalp ? 0.65 : maxExtAtr
+float effRsiMin = useScalp ? 36.0 : rsiMin
+float effRsiMax = useScalp ? 72.0 : rsiMax
+float effAdx = useScalp ? 14.0 : adxMin
+float effHtfAdx = useScalp ? 12.0 : htfAdxMin
+int effCool = useScalp ? 3 : cooldownBars
+int effConfirm = useScalp ? 3 : minConfirm
+float effTp1 = useScalp ? 0.60 : tp1R
+float effTp2 = useScalp ? 1.30 : tp2R
+float effQ1 = useScalp ? 70.0 : q1Pct
+float effSlPad = useScalp ? 0.06 : slPad
+float effSlMin = useScalp ? 0.40 : slMinAtr
+float effSlMax = useScalp ? 1.05 : slMaxAtr
+f_trend() =>
+    float e21 = ta.ema(close, 21)
+    float e50 = ta.ema(close, 50)
+    [stLine, stDir] = ta.supertrend(3.0, 10)
+    [diP, diM, adx] = ta.dmi(14, 14)
+    bool up = close > e21 and close > stLine and e21 > e50 and e21 > e21[3] and stDir < 0 and diP > diM
+    bool dn = close < e21 and close < stLine and e21 < e50 and e21 < e21[3] and stDir > 0 and diM > diP
+    float bias = up ? 1.0 : dn ? -1.0 : 0.0
+    [bias[1], adx[1]]
+
+[bigBias, bigAdx] = request.security(syminfo.tickerid, tfBig, f_trend(), barmerge.gaps_off, barmerge.lookahead_off)
+[smlBias, smlAdx] = request.security(syminfo.tickerid, tfSml, f_trend(), barmerge.gaps_off, barmerge.lookahead_off)
+
+atrVal = ta.atr(14)
+ema8 = ta.ema(close, 8)
+ema21 = ta.ema(close, 21)
+ema50 = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
+vwapV = ta.vwap(hlc3)
+[diPlus, diMinus, adxVal] = ta.dmi(14, 14)
+[stF, dF] = ta.supertrend(2.0, 7)
+[stM, dM] = ta.supertrend(3.0, 10)
+[stS, dS] = ta.supertrend(4.0, 14)
+rsiVal = ta.rsi(close, 14)
+float stRaw = ta.stoch(rsiVal, rsiVal, rsiVal, 14)
+float stochK = ta.sma(stRaw, 3)
+float stochD = ta.sma(stochK, 3)
+volAvg = ta.sma(volume, 20)
+volOk = not na(volume) and volume >= volAvg
+
+f_hma(float src, int len) =>
+    int half = int(math.max(math.round(len / 2.0), 1))
+    int root = int(math.max(math.round(math.sqrt(len)), 1))
+    ta.wma(2.0 * ta.wma(src, half) - ta.wma(src, len), root)
+hma = f_hma(close, 55)
+
+// TRAMA: 고점·저점이 갱신될 때만 빠르게 따라감
+hhHit = math.max(math.sign(ta.change(ta.highest(high, 99))), 0.0)
+llHit = math.max(math.sign(ta.change(ta.lowest(low, 99)) * -1), 0.0)
+amaReg = hhHit > 0 or llHit > 0 ? 1.0 : 0.0
+amaTc = math.pow(ta.sma(amaReg, 99), 2)
+float trama = 0.0
+trama := nz(trama[1] + amaTc * (close - trama[1]), close)
+
+nLoss = 1.20 * atrVal
+var float trail = na
+float prevTr = nz(trail, close)
+if close > prevTr and close[1] > prevTr
+    trail := math.max(prevTr, close - nLoss)
+else if close < prevTr and close[1] < prevTr
+    trail := math.min(prevTr, close + nLoss)
+else
+    trail := close > prevTr ? close - nLoss : close + nLoss
+
+float haC = (open + high + low + close) / 4.0
+var float haO = na
+haO := na(haO[1]) ? (open + close) / 2.0 : (nz(haO[1]) + nz(haC[1])) / 2.0
+float haBody = math.abs(haC - haO)
+float haBodyPrev = math.abs(nz(haC[1]) - nz(haO[1]))
+bool haBull = haC > haO and haBody >= haBodyPrev and haBody > 0
+bool haBear = haC < haO and haBody >= haBodyPrev and haBody > 0
+
+var int lastUpBar = na
+var int lastDnBar = na
+if ta.crossover(stochK, stochD)
+    lastUpBar := bar_index
+if ta.crossunder(stochK, stochD)
+    lastDnBar := bar_index
+bool stochL = not na(lastUpBar) and bar_index - lastUpBar <= 3 and stochK > stochD and stochK <= 70
+bool stochS = not na(lastDnBar) and bar_index - lastDnBar <= 3 and stochK < stochD and stochK >= 30
+bool timeL = hma > hma[1] or stochL or haBull
+bool timeS = hma < hma[1] or stochS or haBear
+
+bool alignL = bigBias > 0.5 and smlBias > 0.5
+bool alignS = bigBias < -0.5 and smlBias < -0.5
+bool aligned = alignL or alignS
+bool adxOk = adxVal >= effAdx
+bool htfAdxOk = bigAdx >= effHtfAdx and smlAdx >= effHtfAdx
+
+float rng = high - low
+float body = math.abs(close - open)
+float loWick = math.min(close, open) - low
+float upWick = high - math.max(close, open)
+float midPx = (high + low) * 0.5
+bool candleL = rng > 0 and close > open and (body >= rng * 0.25 or (loWick >= rng * 0.34 and close >= midPx))
+bool candleS = rng > 0 and close < open and (body >= rng * 0.25 or (upWick >= rng * 0.34 and close <= midPx))
+float band = math.max(atrVal * effTouch, syminfo.mintick * 2)
+float pierce = atrVal * (useScalp ? 0.55 : 0.80)
+bool holdEmaL = useScalp ? low <= ema8 + band and low >= ema8 - pierce and close > ema8 and close[1] >= ema8[1] and candleL and ema8 > ema21 : low <= ema21 + band and low >= ema21 - pierce and close > ema21 and close[1] >= ema21[1] and candleL
+bool holdVwapL = useScalp ? low <= vwapV + band and low >= vwapV - pierce and close > vwapV and close > ema8 and close[1] >= vwapV[1] and candleL : low <= vwapV + band and low >= vwapV - pierce and close > vwapV and close > ema21 and close[1] >= vwapV[1] and candleL
+bool holdEmaS = useScalp ? high >= ema8 - band and high <= ema8 + pierce and close < ema8 and close[1] <= ema8[1] and candleS and ema8 < ema21 : high >= ema21 - band and high <= ema21 + pierce and close < ema21 and close[1] <= ema21[1] and candleS
+bool holdVwapS = useScalp ? high >= vwapV - band and high <= vwapV + pierce and close < vwapV and close < ema8 and close[1] <= vwapV[1] and candleS : high >= vwapV - band and high <= vwapV + pierce and close < vwapV and close < ema21 and close[1] <= vwapV[1] and candleS
+bool triggerL = holdEmaL or holdVwapL
+bool triggerS = holdEmaS or holdVwapS
+bool nearL = useScalp ? close >= ema8 and (close - ema8) <= atrVal * effExt : close >= ema21 and (close - ema21) <= atrVal * effExt
+bool nearS = useScalp ? close <= ema8 and (ema8 - close) <= atrVal * effExt : close <= ema21 and (ema21 - close) <= atrVal * effExt
+bool rsiOkL = rsiVal >= effRsiMin and rsiVal <= effRsiMax
+bool rsiOkS = rsiVal <= (100.0 - effRsiMin) and rsiVal >= (100.0 - effRsiMax)
+bool chartStL = useScalp ? dF < 0 : dS < 0
+bool chartStS = useScalp ? dF > 0 : dS > 0
+bool structL = useScalp ? ema8 > ema21 : ema21 > ema50
+bool structS = useScalp ? ema8 < ema21 : ema21 < ema50
+
+float swingLoTrend = ta.lowest(low, swingLen)
+float swingHiTrend = ta.highest(high, swingLen)
+float swingLoScalp = ta.lowest(low, 5)
+float swingHiScalp = ta.highest(high, 5)
+float swingLo = useScalp ? swingLoScalp : swingLoTrend
+float swingHi = useScalp ? swingHiScalp : swingHiTrend
+float distL = close - (math.min(swingLo, low) - atrVal * effSlPad)
+float distS = (math.max(swingHi, high) + atrVal * effSlPad) - close
+bool roomL = distL > syminfo.mintick and distL <= atrVal * effSlMax
+bool roomS = distS > syminfo.mintick and distS <= atrVal * effSlMax
+
+bool vStackL = ema8 > ema21 and ema21 > ema50
+bool vStackS = ema8 < ema21 and ema21 < ema50
+bool vVwapL = close > vwapV
+bool vVwapS = close < vwapV
+bool vHmaL = hma > hma[1]
+bool vHmaS = hma < hma[1]
+bool vTrL = close > trama
+bool vTrS = close < trama
+bool vStL = dF < 0 and dM < 0
+bool vStS = dF > 0 and dM > 0
+bool vDiL = diPlus > diMinus
+bool vDiS = diMinus > diPlus
+bool v200L = close > ema200
+bool v200S = close < ema200
+bool vTrailL = close > trail
+bool vTrailS = close < trail
+
+int votesL = (vStackL ? 1 : 0) + (vVwapL ? 1 : 0) + (vHmaL ? 1 : 0) + (vTrL ? 1 : 0) + (vStL ? 1 : 0) + (timeL ? 1 : 0) + (volOk ? 1 : 0) + (vDiL ? 1 : 0) + (v200L ? 1 : 0) + (vTrailL ? 1 : 0)
+int votesS = (vStackS ? 1 : 0) + (vVwapS ? 1 : 0) + (vHmaS ? 1 : 0) + (vTrS ? 1 : 0) + (vStS ? 1 : 0) + (timeS ? 1 : 0) + (volOk ? 1 : 0) + (vDiS ? 1 : 0) + (v200S ? 1 : 0) + (vTrailS ? 1 : 0)
+string marksL = (vStackL ? "배열 " : "") + (vVwapL ? "VWAP " : "") + (vHmaL ? "HMA " : "") + (vTrL ? "TRAMA " : "") + (vStL ? "ST " : "") + (timeL ? "타이밍 " : "") + (volOk ? "거래량 " : "") + (vDiL ? "DI " : "") + (v200L ? "200 " : "") + (vTrailL ? "트레일" : "")
+string marksS = (vStackS ? "배열 " : "") + (vVwapS ? "VWAP " : "") + (vHmaS ? "HMA " : "") + (vTrS ? "TRAMA " : "") + (vStS ? "ST " : "") + (timeS ? "타이밍 " : "") + (volOk ? "거래량 " : "") + (vDiS ? "DI " : "") + (v200S ? "200 " : "") + (vTrailS ? "트레일" : "")
+
+var bool zLive = false
+var int lastSigBar = na
+bool cooled = na(lastSigBar) or bar_index - lastSigBar >= effCool
+bool gateL = tfOk and alignL and htfAdxOk and adxOk and chartStL and structL and rsiOkL and nearL and roomL and (not needTiming or timeL) and votesL >= effConfirm and triggerL and not triggerS and not zLive and cooled
+bool gateS = tfOk and alignS and htfAdxOk and adxOk and chartStS and structS and rsiOkS and nearS and roomS and (not needTiming or timeS) and votesS >= effConfirm and triggerS and not triggerL and not zLive and cooled
+bool longSignal = gateL and not gateS and barstate.isconfirmed
+bool shortSignal = gateS and not gateL and barstate.isconfirmed
+
+f_sl(bool isLong) =>
+    float dist = isLong ? distL : distS
+    float adj = math.max(atrVal * effSlMin, dist)
+    isLong ? close - adj : close + adj
+f_tp(bool isLong, float px, float sl, float rMult) =>
+    float risk = math.max(math.abs(px - sl), syminfo.mintick)
+    isLong ? px + risk * rMult : px - risk * rMult
+
+var int zDir = 0
+var int zBar = na
+var int zLock = na
+var int zTm = na
+var float zEnt = na
+var float zSl = na
+var float zTp1 = na
+var float zTp2 = na
+var bool zHit1 = false
+var bool zFull = false
+var box bTp1 = na
+var box bTp2 = na
+var box bSl = na
+var label tTp1 = na
+var label tTp2 = na
+var label tSl = na
+var label tEn = na
+
+var int wins = 0
+var int losses = 0
+var int nBe = 0
+var int nFull = 0
+var float sumWinR = 0.0
+var float sumLossR = 0.0
+var float sumUsd = 0.0
+var int firstTradeTime = na
+var int lastCloseTime = na
+int lookFrom = timenow - statDays * 24 * 60 * 60 * 1000
+f_inStat(int t) =>
+    na(t) ? false : statMode == "전체" ? true : statMode == "최근 N일" ? (t >= lookFrom and t <= timenow) : (t >= statFrom and t <= statTo)
+
+f_zone(float p1, float p2, color bg, color bd) =>
+    box.new(bar_index, math.max(p1, p2), bar_index, math.min(p1, p2), xloc=xloc.bar_index, border_color=bd, border_width=1, bgcolor=bg)
+f_tag(float y, color c, string name) =>
+    label.new(bar_index, y, name, xloc=xloc.bar_index, style=label.style_label_left, color=color.new(c, 15), textcolor=color.white, size=size.tiny)
+
+bool exitNow = false
+bool exitWin = false
+bool exitBe = false
+float exitR = 0.0
+
+if zLive and bar_index > zBar and barstate.isconfirmed
+    bool hitSl = zDir == 1 ? low <= zSl : high >= zSl
+    bool hitTp1 = zDir == 1 ? high >= zTp1 : low <= zTp1
+    bool hitTp2 = zDir == 1 ? high >= zTp2 : low <= zTp2
+    bool hitBe = zDir == 1 ? low <= zEnt : high >= zEnt
+    if not zHit1
+        if hitTp2 and not hitSl
+            exitNow := true
+            exitWin := true
+            zFull := true
+            exitR := effTp1 * effQ1 / 100.0 + effTp2 * (100.0 - effQ1) / 100.0
+        else if hitTp1 and not hitSl
+            zHit1 := true
+            zLock := bar_index
+            zSl := zEnt
+        else if hitSl
+            exitNow := true
+            exitWin := false
+            exitR := -1.0
+    else if bar_index > zLock
+        if hitTp2 and not hitBe
+            exitNow := true
+            exitWin := true
+            zFull := true
+            exitR := effTp1 * effQ1 / 100.0 + effTp2 * (100.0 - effQ1) / 100.0
+        else if hitTp2 and hitBe
+            bool kept = zDir == 1 ? close >= zEnt : close <= zEnt
+            exitNow := true
+            exitWin := true
+            zFull := kept
+            exitBe := not kept
+            exitR := kept ? effTp1 * effQ1 / 100.0 + effTp2 * (100.0 - effQ1) / 100.0 : effTp1 * effQ1 / 100.0
+        else if hitBe
+            exitNow := true
+            exitWin := true
+            exitBe := true
+            exitR := effTp1 * effQ1 / 100.0
+
+if exitNow
+    if f_inStat(zTm)
+        if exitWin
+            wins += 1
+            sumWinR += exitR
+            if exitBe
+                nBe += 1
+            if zFull
+                nFull += 1
+        else
+            losses += 1
+            sumLossR += 1.0
+        float leg1 = zDir == 1 ? (zTp1 - zEnt) / math.max(zEnt, syminfo.mintick) : (zEnt - zTp1) / math.max(zEnt, syminfo.mintick)
+        float leg2 = zDir == 1 ? (zTp2 - zEnt) / math.max(zEnt, syminfo.mintick) : (zEnt - zTp2) / math.max(zEnt, syminfo.mintick)
+        float legSl = zDir == 1 ? (zSl - zEnt) / math.max(zEnt, syminfo.mintick) : (zEnt - zSl) / math.max(zEnt, syminfo.mintick)
+        float move = not exitWin ? legSl : exitBe ? leg1 * effQ1 / 100.0 : leg1 * effQ1 / 100.0 + leg2 * (100.0 - effQ1) / 100.0
+        sumUsd += math.max(betAmt * lev * move, -betAmt)
+        if na(firstTradeTime)
+            firstTradeTime := zTm
+        lastCloseTime := time
+    box.delete(bTp1)
+    box.delete(bTp2)
+    box.delete(bSl)
+    label.delete(tTp1)
+    label.delete(tTp2)
+    label.delete(tSl)
+    label.delete(tEn)
+    bTp1 := na
+    bTp2 := na
+    bSl := na
+    tTp1 := na
+    tTp2 := na
+    tSl := na
+    tEn := na
+    string resTxt = zFull ? "TP2" : exitBe ? "본절" : "손절"
+    color resCol = zFull ? bullCol : exitBe ? color.new(#f0c14a, 0) : bearCol
+    bool resBelow = (zDir == 1 and not exitWin) or (zDir == -1 and exitWin)
+    label.new(bar_index, resBelow ? low : high, resTxt, xloc=xloc.bar_index, style=resBelow ? label.style_label_up : label.style_label_down, color=resCol, textcolor=color.white, size=size.tiny)
+    if alertExit
+        alert(botJson ? f_botExit() : "HWR Apex " + resTxt + "  close=" + str.tostring(close), alert.freq_once_per_bar_close)
+    zLive := false
+    zHit1 := false
+    zFull := false
+
+if longSignal or shortSignal
+    box.delete(bTp1)
+    box.delete(bTp2)
+    box.delete(bSl)
+    label.delete(tTp1)
+    label.delete(tTp2)
+    label.delete(tSl)
+    label.delete(tEn)
+    bool isL = longSignal
+    float px = close
+    float slv = f_sl(isL)
+    float tp1 = f_tp(isL, px, slv, effTp1)
+    float tp2 = f_tp(isL, px, slv, effTp2)
+    zLive := true
+    zDir := isL ? 1 : -1
+    zBar := bar_index
+    zLock := na
+    zTm := time
+    zEnt := px
+    zSl := slv
+    zTp1 := tp1
+    zTp2 := tp2
+    zHit1 := false
+    zFull := false
+    lastSigBar := bar_index
+    bTp1 := f_zone(px, tp1, color.new(#26a69a, 78), color.new(#26a69a, 25))
+    bTp2 := f_zone(tp1, tp2, color.new(#4db6ac, 82), color.new(#26a69a, 35))
+    bSl := f_zone(px, slv, color.new(#ab47bc, 72), color.new(#ab47bc, 18))
+    tEn := f_tag(px, #c8cdd8, "진입  " + str.tostring(px, format.mintick))
+    tTp1 := f_tag(tp1, #26a69a, "TP1 " + str.tostring(effQ1, "#") + "%  " + str.tostring(tp1, format.mintick))
+    tTp2 := f_tag(tp2, #4db6ac, "TP2 " + str.tostring(100.0 - effQ1, "#") + "%  " + str.tostring(tp2, format.mintick))
+    tSl := f_tag(slv, #ab47bc, "SL  " + str.tostring(slv, format.mintick))
+    string sideTxt = isL ? "롱" : "숏"
+    label.new(bar_index, isL ? low : high, sideTxt + "  SL " + str.tostring(slv, format.mintick) + "  TP1 " + str.tostring(tp1, format.mintick) + "  TP2 " + str.tostring(tp2, format.mintick), xloc=xloc.bar_index, style=isL ? label.style_label_up : label.style_label_down, color=isL ? bullCol : bearCol, textcolor=color.white, size=size.small)
+    if alertEntry
+        alert(botJson ? f_botEntry(isL ? "LONG" : "SHORT", slv, tp1, tp2) : "HWR Apex " + sideTxt + "  close=" + str.tostring(px) + "  SL=" + str.tostring(slv) + "  TP1=" + str.tostring(tp1) + "  TP2=" + str.tostring(tp2), alert.freq_once_per_bar_close)
+
+if zLive
+    if not na(bTp1)
+        box.set_right(bTp1, bar_index)
+    if not na(bTp2)
+        box.set_right(bTp2, bar_index)
+    if not na(bSl)
+        box.set_right(bSl, bar_index)
+    if zHit1 and not na(tSl)
+        label.set_y(tSl, zSl)
+        label.set_text(tSl, "본절  " + str.tostring(zSl, format.mintick))
+        label.set_color(tSl, color.new(#f0c14a, 15))
+        if not na(bSl)
+            float bePad = math.max(syminfo.mintick * 4, atrVal * 0.04)
+            box.set_top(bSl, zSl + bePad)
+            box.set_bottom(bSl, zSl - bePad)
+            box.set_bgcolor(bSl, color.new(#f0c14a, 70))
+            box.set_border_color(bSl, color.new(#f0c14a, 20))
+    if not na(tTp1)
+        label.set_x(tTp1, bar_index)
+    if not na(tTp2)
+        label.set_x(tTp2, bar_index)
+    if not na(tSl)
+        label.set_x(tSl, bar_index)
+    if not na(tEn)
+        label.set_x(tEn, bar_index)
+
+plot(showMa ? ema21 : na, "EMA 21", color=color.new(#f0c14a, 0), linewidth=2)
+plot(showMa ? ema50 : na, "EMA 50", color=color.new(#8b95a8, 0), linewidth=2)
+plot(showVwap ? vwapV : na, "VWAP", color=color.new(#4da3ff, 0), linewidth=2)
+plot(showTrail ? trail : na, "ATR Trail", color=close > trail ? bullCol : bearCol, linewidth=2)
+bgcolor(alignL ? color.new(bullCol, 92) : alignS ? color.new(bearCol, 92) : na)
+plotshape(longSignal, "롱", shape.triangleup, location.belowbar, bullCol, size=size.tiny)
+plotshape(shortSignal, "숏", shape.triangledown, location.abovebar, bearCol, size=size.tiny)
+
+int closedTrades = wins + losses
+float winRate = closedTrades > 0 ? wins / closedTrades * 100.0 : na
+float avgWinR = wins > 0 ? sumWinR / wins : 0.0
+float avgLossR = losses > 0 ? sumLossR / losses : 0.0
+float expR = closedTrades > 0 ? (sumWinR - sumLossR) / closedTrades : na
+float rrReal = avgLossR > 0 ? avgWinR / avgLossR : na
+
+bool sideShort = alignS or (not aligned and votesS > votesL)
+int liveVotes = sideShort ? votesS : votesL
+string liveMarks = sideShort ? marksS : marksL
+string bigTxt = bigBias > 0.5 ? "롱" : bigBias < -0.5 ? "숏" : "중립"
+string smlTxt = smlBias > 0.5 ? "롱" : smlBias < -0.5 ? "숏" : "중립"
+string job = "대기"
+color jobC = color.gray
+if not tfOrderOk
+    job := "큰 타임프레임이 작은 것보다 커야 합니다"
+else if chartSec > smlSec
+    job := "차트는 " + smlName + "과 같거나 더 작아야 합니다"
+else if longSignal
+    job := "지금 롱. 라벨 가격으로 주문"
+    jobC := bullCol
+else if shortSignal
+    job := "지금 숏. 라벨 가격으로 주문"
+    jobC := bearCol
+else if zLive
+    bool bent = (zDir == 1 and not alignL) or (zDir == -1 and not alignS)
+    job := bent ? "보유. 상위가 꺾여도 손절·익절만" : zHit1 ? "보유. 손절은 본절, 나머지는 TP2" : "보유. TP1에서 절반 후 본절"
+    jobC := zDir == 1 ? bullCol : bearCol
+else if not aligned
+    job := bigName + "과 " + smlName + "이 다름. 거래 없음"
+else if not htfAdxOk
+    job := bigName + "이나 " + smlName + " 추세가 약함"
+else if not adxOk
+    job := "차트는 횡보. 대기"
+else if not (alignL ? chartStL : chartStS)
+    job := "차트 슈퍼트렌드가 상위와 다름"
+else if not (alignL ? structL : structS)
+    job := useScalp ? "8이평이 21을 아직 못 넘음" : "21이평이 50을 아직 못 넘음"
+else if not (alignL ? rsiOkL : rsiOkS)
+    job := "RSI가 눌림 구간이 아님"
+else if not (alignL ? nearL : nearS)
+    job := "이평에서 멀다. 추격하지 않음"
+else if (alignL ? triggerL : triggerS) and not (alignL ? roomL : roomS)
+    job := "손절이 너무 멀어 패스"
+else if (alignL ? triggerL : triggerS) and needTiming and not (alignL ? timeL : timeS)
+    job := "반등 확인이 없음"
+else if (alignL ? triggerL : triggerS) and (alignL ? votesL : votesS) < effConfirm
+    job := "확인 " + str.tostring(alignL ? votesL : votesS) + "/" + str.tostring(effConfirm)
+else if (alignL ? triggerL : triggerS) and not cooled
+    job := "쿨다운"
+else if not (alignL ? triggerL : triggerS)
+    job := (alignL ? "롱" : "숏") + (useScalp ? " 단타. 8이평·VWAP 눌림 대기" : " 추세. 21이평·VWAP 눌림 대기")
+    jobC := alignL ? bullCol : bearCol
+else if (gateL or gateS) and not barstate.isconfirmed
+    job := "봉이 닫히면 " + (gateL ? "롱" : "숏")
+    jobC := gateL ? bullCol : bearCol
+
+dashPos = dashPosIn == "오른쪽 아래" ? position.bottom_right : dashPosIn == "왼쪽 위" ? position.top_left : dashPosIn == "왼쪽 아래" ? position.bottom_left : position.top_right
+var table dash = table.new(position.top_right, 2, 18, bgcolor=color.new(#12141c, 12), border_color=color.new(#2a2e3a, 0), border_width=1)
+if barstate.islast
+    table.set_position(dash, dashPos)
+f_cell(int r, string a, string b, color bc) =>
+    table.cell(dash, 0, r, a, text_color=color.new(#c8cdd8, 0), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, r, b, text_color=bc, text_halign=text.align_right, text_size=size.small)
+
+if showDash and barstate.islast
+    string wrTxt = closedTrades > 0 ? str.tostring(wins) + "/" + str.tostring(losses) + "  " + str.tostring(winRate, "#.0") + "%" : "-"
+    if nBe > 0
+        wrTxt := wrTxt + "  본절" + str.tostring(nBe)
+    if nFull > 0
+        wrTxt := wrTxt + "  TP2 " + str.tostring(nFull)
+    if zLive
+        wrTxt := wrTxt + "  진행"
+    string perTxt = statMode == "기간 지정" ? str.format_time(statFrom, "yy.MM.dd HH:mm", sessTz) + " ~ " + str.format_time(statTo, "yy.MM.dd HH:mm", sessTz) : statMode == "최근 N일" ? str.format_time(lookFrom, "yy.MM.dd HH:mm", sessTz) + " ~ " + str.format_time(timenow, "yy.MM.dd HH:mm", sessTz) : na(firstTradeTime) ? "-" : str.format_time(firstTradeTime, "yy.MM.dd HH:mm", sessTz) + " ~ " + (na(lastCloseTime) ? "진행중" : str.format_time(lastCloseTime, "yy.MM.dd HH:mm", sessTz))
+    string pbTxt = triggerL ? "롱 눌림" : triggerS ? "숏 눌림" : "없음"
+    color pbC = triggerL ? bullCol : triggerS ? bearCol : color.gray
+    table.cell(dash, 0, 0, useScalp ? "HWR Apex 단타" : "HWR Apex", text_color=color.white, text_halign=text.align_left, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    table.cell(dash, 1, 0, f_tfTxt(timeframe.period), text_color=color.new(#8b95a8, 0), text_halign=text.align_right, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    f_cell(1, "할 일", job, jobC)
+    f_cell(2, "큰 " + bigName, bigTxt + "  ADX " + str.tostring(bigAdx, "#.0"), bigBias > 0.5 ? bullCol : bigBias < -0.5 ? bearCol : color.gray)
+    f_cell(3, "작은 " + smlName, smlTxt + "  ADX " + str.tostring(smlAdx, "#.0"), smlBias > 0.5 ? bullCol : smlBias < -0.5 ? bearCol : color.gray)
+    f_cell(4, "차트", (chartStL ? "슈퍼트렌드 롱" : chartStS ? "슈퍼트렌드 숏" : "슈퍼트렌드 중립") + (useScalp ? (structL ? "  ·  8>21" : structS ? "  ·  8<21" : "") : (structL ? "  ·  21>50" : structS ? "  ·  21<50" : "")), chartStL and structL ? bullCol : chartStS and structS ? bearCol : color.gray)
+    f_cell(5, "ADX", str.tostring(adxVal, "#.0"), adxOk ? bullCol : color.gray)
+    f_cell(6, "RSI", str.tostring(rsiVal, "#.0"), (rsiOkL or rsiOkS) ? color.white : color.gray)
+    f_cell(7, "눌림", pbTxt, pbC)
+    f_cell(8, "확인", str.tostring(liveVotes) + "/10  " + liveMarks, liveVotes >= effConfirm ? bullCol : color.gray)
+    f_cell(9, "주문", (useScalp ? "단타  " : "") + "TP1 " + str.tostring(effTp1, "#.##") + "R " + str.tostring(effQ1, "#") + "%  후 본절  ·  TP2 " + str.tostring(effTp2, "#.##") + "R", color.new(#c8cdd8, 0))
+    f_cell(10, "승/패", wrTxt, not na(winRate) and winRate >= 55 ? bullCol : not na(winRate) and winRate < 45 ? bearCol : color.gray)
+    f_cell(11, "손익비", na(rrReal) ? "-" : str.tostring(rrReal, "#.##") + "  (" + str.tostring(avgWinR, "#.##") + "/" + str.tostring(avgLossR, "#.##") + "R)", na(rrReal) ? color.gray : color.new(#c8cdd8, 0))
+    f_cell(12, "거래당 기대 R", na(expR) ? "-" : str.tostring(expR, "#.###"), na(expR) ? color.gray : expR >= 0 ? bullCol : bearCol)
+    f_cell(13, "측정", perTxt, closedTrades > 0 ? color.white : color.gray)
+    float eqEnd = betAmt + sumUsd
+    color usdC = sumUsd > 0 ? bullCol : sumUsd < 0 ? bearCol : color.gray
+    f_cell(14, "배팅", "$" + str.tostring(betAmt, "#.##") + "  ×  " + str.tostring(lev, "#.##") + "x  매 주문 고정", color.new(#c8cdd8, 0))
+    f_cell(15, "기간 손익", closedTrades > 0 ? (sumUsd >= 0 ? "+" : "") + str.tostring(sumUsd, "#.##") + " 달러" : "-", usdC)
+    f_cell(16, "시작+손익", closedTrades > 0 ? "$" + str.tostring(eqEnd, "#.##") + "  /  시작 $" + str.tostring(betAmt, "#.##") : "-", eqEnd >= betAmt ? bullCol : bearCol)
+    f_cell(17, "규칙", "라벨만 진입. 승률은 TP1이 먼저", color.gray)
+
+alertcondition(alertEntry and longSignal, title="Apex 롱", message="HWR Apex LONG")
+alertcondition(alertEntry and shortSignal, title="Apex 숏", message="HWR Apex SHORT")
+alertcondition(alertExit and exitNow, title="Apex 청산", message="HWR Apex EXIT")

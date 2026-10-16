@@ -1,0 +1,1155 @@
+//@version=5
+indicator("종합 컨플루언스 [HWR Combo]", shorttitle="HWR Combo", overlay=true, scale=scale.right, max_labels_count=500, max_lines_count=50, max_boxes_count=100)
+
+// ─────────────────────────────────────────────
+// 합의 신호는 하나. 청산만 1·2·3 중에서 고름.
+// 1 박스 TP/SL  2 박스 + %트레일  3 반대합의·표 소멸
+// ─────────────────────────────────────────────
+
+// ===== 입력 =====
+grpMode = "0. 청산 방식"
+pMode = input.string("1. 박스 TP/SL", "청산", options=["1. 박스 TP/SL", "2. 박스 + %트레일", "3. 신호 청산"], group=grpMode, tooltip="1=콤보1, 2=콤보2, 3=콤보3. 신호는 같습니다.")
+isSigX = pMode == "3. 신호 청산"
+isBoxX = not isSigX
+isTrailX = pMode == "2. 박스 + %트레일"
+
+grpMod = "1. 모듈"
+useTrailMod = input.bool(true, "추세선 (ATR 트레일)", group=grpMod)
+useTrip     = input.bool(true, "삼중합의 (빠른·중간·느린 ST)", group=grpMod)
+useSr       = input.bool(true, "지지저항 (돌파·리테스트)", group=grpMod)
+useTl       = input.bool(false, "추세선돌파", group=grpMod)
+useOb       = input.bool(false, "오더블록 리테스트", group=grpMod)
+useRsiBb    = input.bool(true, "RSI밴드", group=grpMod)
+useTrap     = input.bool(true, "함정반전", group=grpMod)
+useChoch    = input.bool(false, "구조전환 (CHoCH)", group=grpMod)
+useExp      = input.bool(true, "확장 돌파 (큰 구간 초입)", group=grpMod, tooltip="최근 고점을 확정 종가로 뚫고 봉이 커지면, 늦은 추세 모듈을 기다리지 않고 먼저 표를 줍니다.")
+minAgree    = input.int(3, "최소 합의 수", minval=1, maxval=8, group=grpMod)
+voteHold    = input.int(5, "이벤트 표 유지 봉", minval=1, maxval=20, group=grpMod)
+htfTf       = input.timeframe("60", "상위 타임프레임", group=grpMod)
+
+grpCore = "1b. 모듈 수치"
+atrLen      = input.int(10, "ATR 기간", minval=1, group=grpCore)
+trailKey    = input.float(1.20, "트레일 민감도", minval=0.4, step=0.05, group=grpCore)
+stFastF     = input.float(2.00, "빠른 ST 배수", minval=0.5, step=0.1, group=grpCore)
+stFastL     = input.int(7, "빠른 ST ATR", minval=1, group=grpCore)
+stMidF      = input.float(3.00, "중간 ST 배수", minval=0.5, step=0.1, group=grpCore)
+stMidL      = input.int(10, "중간 ST ATR", minval=1, group=grpCore)
+stSlowF     = input.float(4.00, "느린 ST 배수", minval=0.5, step=0.1, group=grpCore)
+stSlowL     = input.int(14, "느린 ST ATR", minval=1, group=grpCore)
+srLook      = input.int(12, "SR 피벗 봉", minval=3, maxval=40, group=grpCore)
+srBoxAtr    = input.float(0.35, "SR 박스 ATR", minval=0.05, step=0.05, group=grpCore)
+tlLook      = input.int(14, "추세선 피벗 봉", minval=3, maxval=40, group=grpCore)
+obLook      = input.int(7, "OB 피벗 봉", minval=3, maxval=20, group=grpCore)
+rsiLen      = input.int(14, "RSI 기간", minval=2, group=grpCore)
+rsiSigLen   = input.int(14, "RSI 시그널", minval=2, group=grpCore)
+rsiOs       = input.int(42, "RSI 과매도", minval=10, maxval=50, group=grpCore)
+rsiOb       = input.int(58, "RSI 과매수", minval=50, maxval=90, group=grpCore)
+bbLen       = input.int(20, "볼린저 기간", minval=5, group=grpCore)
+bbMult      = input.float(2.00, "볼린저 배수", minval=0.5, step=0.1, group=grpCore)
+envLen      = input.int(55, "함정 엔벨로프", minval=5, group=grpCore)
+envMult     = input.float(2.80, "함정 폭 ATR", minval=0.8, step=0.1, group=grpCore)
+trapWin     = input.int(8, "함정 유효 봉", minval=2, maxval=20, group=grpCore)
+chochLen    = input.int(5, "구조 피벗 봉", minval=2, maxval=20, group=grpCore)
+expLook     = input.int(16, "확장 탐색 봉", minval=6, maxval=40, group=grpCore)
+devLen      = input.int(50, "편차 SMA", minval=10, group=grpCore)
+
+grpMom = "2. 확인"
+adxLen     = input.int(14, "ADX 기간", minval=2, group=grpMom)
+adxMin     = input.float(16.0, "최소 ADX", minval=1, step=0.5, group=grpMom)
+requireHtf = input.bool(true, "상위TF 방향 필수", group=grpMom)
+requireAdx = input.bool(true, "ADX 필수 (횡보 제외)", group=grpMom)
+requireDev = input.bool(false, "편차 SMA 기울기 필수", group=grpMom)
+requireReject = input.bool(true, "양/음봉·거부봉만 진입", group=grpMom)
+
+grpVol = "3. 손절·익절"
+swingLen  = input.int(8, "스윙 손절 봉", minval=3, maxval=30, group=grpVol)
+slPadAtr  = input.float(0.12, "손절 여유 ATR", minval=0.0, step=0.02, group=grpVol)
+slMinAtr  = input.float(0.90, "손절 최소 ATR", minval=0.4, step=0.05, group=grpVol)
+slMaxAtr  = input.float(2.00, "손절 최대 ATR", minval=0.8, step=0.05, group=grpVol)
+tp1R      = input.float(0.80, "TP1 (R)", minval=0.3, step=0.05, group=grpVol, tooltip="손절 거리 대비. 대시보드 승률은 이 값 기준.")
+tp2R      = input.float(2.00, "TP2 (R)", minval=0.5, step=0.1, group=grpVol)
+tp3R      = input.float(3.20, "TP3 (R)", minval=0.8, step=0.1, group=grpVol, tooltip="비중 0이면 사실상 안 씀.")
+q1Pct     = input.float(30.0, "TP1 비중 %", minval=0, maxval=100, step=5, group=grpVol)
+q2Pct     = input.float(40.0, "TP2 비중 %", minval=0, maxval=100, step=5, group=grpVol)
+slToBe    = input.bool(true, "TP1 후 손절을 본절로", group=grpVol)
+useTrail  = input.bool(true, "트레일링 스탑 사용", group=grpVol)
+trailPct  = input.float(20.0, "트레일 콜백 %", minval=0.5, maxval=50, step=0.5, group=grpVol, tooltip="고점(숏은 저점)에서 이 %만큼 되밀리면 청산. 20이면 거래소 트레일 20%와 같음. 15분은 2~5가 더 타이트합니다.")
+trailWhen = input.string("TP1 이후", "트레일 시작", options=["TP1 이후", "진입 즉시", "수익 중"], group=grpVol)
+useTrailSl = input.bool(false, "구조 트레일도 사용", group=grpVol, tooltip="스윙 저점/고점을 따라가는 추가 트레일. 기본은 꺼 두고 % 트레일만 씁니다.")
+trailBars = input.int(6, "구조 트레일 봉", minval=3, maxval=20, group=grpVol)
+q3Pct     = math.max(100.0 - q1Pct - q2Pct, 0.0)
+tpCount   = q3Pct < 0.5 ? 2 : 3
+usePctTrail = isTrailX and useTrail
+useStructNow = isBoxX and (pMode == "1. 박스 TP/SL" or useTrailSl)
+
+grpBox = "3b. 구간 박스"
+showBoxes   = input.bool(true, "TP/SL 구간 표시", group=grpBox)
+useSplit    = input.bool(true, "최근 진입 분할선", group=grpBox)
+splitN      = input.int(2, "진입 분할 수", minval=2, maxval=3, group=grpBox)
+split2Pct   = input.float(40.0, "2차 위치 (진입~손절 %)", minval=10, maxval=80, step=1, group=grpBox)
+split3Pct   = input.float(70.0, "3차 위치 (진입~손절 %)", minval=20, maxval=90, step=1, group=grpBox)
+qty1        = input.int(55, "1차 비중 %", minval=1, maxval=90, group=grpBox)
+qty2        = input.int(45, "2차 비중 %", minval=1, maxval=90, group=grpBox)
+qty3        = input.int(0, "3차 비중 %", minval=0, maxval=90, group=grpBox)
+
+grpExit = "3c. 신호 청산 (방식 3)"
+exitOnOpp   = input.bool(true, "반대 합의면 청산", group=grpExit, tooltip="숏 합의가 최소 수에 닿으면 롱을 닫습니다. 쿨다운은 보지 않습니다.")
+exitOnFade  = input.bool(true, "아군 합의가 꺼지면 청산", group=grpExit, tooltip="롱이면 롱 표가 유지 최소 합의 아래로 떨어질 때.")
+holdNeedIn  = input.int(2, "유지 최소 합의", minval=1, maxval=8, group=grpExit, tooltip="진입 최소 합의보다 낮게. 2면 트레일+삼중만 남아도 들고 갑니다.")
+minHoldBars = input.int(1, "최소 보유 봉", minval=1, maxval=20, group=grpExit)
+flipOnOpp   = input.bool(true, "반대 합의면 뒤집기", group=grpExit)
+showPos     = input.bool(true, "포지션 구간 표시", group=grpExit)
+
+grpSig = "4. 신호 품질"
+cooldownBars = input.int(6, "신호 쿨다운(봉)", minval=1, group=grpSig)
+minConv      = input.int(60, "최소 확신도", minval=0, maxval=90, group=grpSig)
+
+grpStat = "5. 측정기간"
+statMode = input.string("최근 N일", "측정 방식", options=["전체", "최근 N일", "기간 지정"], group=grpStat)
+statDays = input.int(60, "최근 N일", minval=1, maxval=3650, group=grpStat)
+statFrom = input.time(timestamp("01 Jan 2026 00:00"), "시작", group=grpStat)
+statTo   = input.time(timestamp("06 Sep 2026 23:59"), "종료", group=grpStat)
+sessTz   = input.string("Asia/Seoul", "타임존", options=["Asia/Seoul", "America/New_York", "Europe/London", "UTC"], group=grpStat)
+
+grpUi = "6. 표시"
+showTrail  = input.bool(true, "ATR 트레일 표시", group=grpUi)
+showSrBox  = input.bool(true, "최근 SR 박스", group=grpUi)
+showObBox  = input.bool(false, "오더블록 박스", group=grpUi)
+showTlLine = input.bool(false, "기울기 추세선", group=grpUi)
+showEnv    = input.bool(false, "함정 엔벨로프", group=grpUi)
+showDash   = input.bool(true, "대시보드 표시", group=grpUi)
+alertEntry = input.bool(false, "진입 알림", group=grpUi, tooltip="끄면 롱/숏 진입 알림을 보내지 않습니다. 차트 라벨은 그대로입니다.")
+alertExit  = input.bool(false, "청산 알림", group=grpUi, tooltip="끄면 TP/SL 청산 알림을 보내지 않습니다.")
+dashPosIn  = input.string("오른쪽 위", "테이블 위치", options=["오른쪽 위", "오른쪽 아래", "왼쪽 위", "왼쪽 아래", "가운데 위", "가운데 아래", "오른쪽 중간", "왼쪽 중간"], group=grpUi)
+bullCol    = input.color(color.new(#26a69a, 0), "롱 색", group=grpUi)
+bearCol    = input.color(color.new(#ef5350, 0), "숏 색", group=grpUi)
+
+grpBot = "7. 봇 웹훅"
+botJson    = input.bool(true, "알림을 봇 JSON으로", group=grpBot, tooltip="bot/ 서버용. action·symbol·grade·close·sl·tp1·tp2.")
+botSecret  = input.string("", "웹훅 시크릿", group=grpBot, tooltip="bot/.env 의 WEBHOOK_SECRET과 같게. 비우면 JSON에 secret 없음(헤더 X-Webhook-Secret 사용).")
+
+f_symBot() =>
+    str.replace_all(syminfo.ticker, ".P", "")
+f_botEntry(string action, string grade, float slPx, float tp1Px, float tp2Px) =>
+    string core = '{"action":"' + action + '","symbol":"' + f_symBot() + '","grade":"' + grade + '","close":' + str.tostring(close) + ',"sl":' + str.tostring(slPx) + ',"tp1":' + str.tostring(tp1Px) + ',"tp2":' + str.tostring(tp2Px)
+    botSecret != "" ? core + ',"secret":"' + botSecret + '"}' : core + "}"
+f_botExit() =>
+    string core = '{"action":"EXIT","symbol":"' + f_symBot() + '","close":' + str.tostring(close)
+    botSecret != "" ? core + ',"secret":"' + botSecret + '"}' : core + "}"
+
+// ===== 공통 =====
+atrVal = ta.atr(atrLen)
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+adxOk = adxVal > adxMin
+volAvg = ta.sma(volume, 20)
+volOk = not na(volume) and volume >= volAvg
+
+htfEma = request.security(syminfo.tickerid, htfTf, ta.ema(close, 21)[1], barmerge.gaps_off, barmerge.lookahead_off)
+htfCls = request.security(syminfo.tickerid, htfTf, close[1], barmerge.gaps_off, barmerge.lookahead_off)
+htfBull = htfCls > htfEma
+htfBear = htfCls < htfEma
+
+devSma = ta.sma(close, devLen)
+devSlope = devSma - devSma[5]
+devBull = devSlope > 0
+devBear = devSlope < 0
+
+rng = high - low
+body = math.abs(close - open)
+upperWick = high - math.max(close, open)
+lowerWick = math.min(close, open) - low
+midPx = (high + low) * 0.5
+bullClose = close > open
+bearClose = close < open
+bodyOk = rng > 0 and body >= rng * 0.28
+bullPin = rng > 0 and lowerWick >= rng * 0.34 and close >= midPx
+bearPin = rng > 0 and upperWick >= rng * 0.34 and close <= midPx
+bullEngulf = bullClose and close > high[1] and open <= math.max(open[1], close[1])
+bearEngulf = bearClose and close < low[1] and open >= math.min(open[1], close[1])
+rejectLong  = not requireReject or bullPin or bullEngulf or (bullClose and bodyOk)
+rejectShort = not requireReject or bearPin or bearEngulf or (bearClose and bodyOk)
+realRejL = bullPin or bullEngulf
+realRejS = bearPin or bearEngulf
+
+f_hold(int nowVote, int prevVote, int prevBar) =>
+    int v = nowVote != 0 ? nowVote : prevVote
+    int b = nowVote != 0 ? bar_index : prevBar
+    if not na(b) and bar_index - b > voteHold
+        v := 0
+    [v, b]
+
+// ===== 1. ATR 트레일 =====
+nLoss = trailKey * atrVal
+var float trail = na
+float prevTr = nz(trail, close)
+if close > prevTr and close[1] > prevTr
+    trail := math.max(prevTr, close - nLoss)
+else if close < prevTr and close[1] < prevTr
+    trail := math.min(prevTr, close + nLoss)
+else
+    trail := close > prevTr ? close - nLoss : close + nLoss
+trailBull = close > trail
+vTrail = useTrailMod ? (trailBull ? 1 : -1) : 0
+
+// ===== 2. 삼중 슈퍼트렌드 =====
+[stF, dF] = ta.supertrend(stFastF, stFastL)
+[stM, dM] = ta.supertrend(stMidF, stMidL)
+[stS, dS] = ta.supertrend(stSlowF, stSlowL)
+upN = (dF < 0 ? 1 : 0) + (dM < 0 ? 1 : 0) + (dS < 0 ? 1 : 0)
+vTrip = useTrip ? (upN >= 2 ? 1 : -1) : 0
+
+// ===== 3. 지지저항 =====
+srPh = ta.pivothigh(high, srLook, srLook)
+srPl = ta.pivotlow(low, srLook, srLook)
+var float srSup = na
+var float srSup2 = na
+var float srRes = na
+var float srRes2 = na
+var int srSupBar = na
+var int srResBar = na
+if not na(srPl) and volOk
+    srSup := srPl
+    srSup2 := srPl - atrVal * srBoxAtr
+    srSupBar := bar_index - srLook
+if not na(srPh) and volOk
+    srRes := srPh
+    srRes2 := srPh + atrVal * srBoxAtr
+    srResBar := bar_index - srLook
+
+srRollHi = ta.highest(high, srLook)[1]
+srRollLo = ta.lowest(low, srLook)[1]
+srBreakRes = (not na(srRes) and ta.crossover(close, srRes)) or ta.crossover(close, srRollHi)
+srBreakSup = (not na(srSup) and ta.crossunder(close, srSup)) or ta.crossunder(close, srRollLo)
+srHoldSup = not na(srSup) and low <= srSup and close > srSup and bullClose
+srHoldRes = not na(srRes) and high >= srRes and close < srRes and bearClose
+int srNow = 0
+if useSr
+    if (srBreakRes or srHoldSup) and not (srBreakSup or srHoldRes)
+        srNow := 1
+    else if (srBreakSup or srHoldRes) and not (srBreakRes or srHoldSup)
+        srNow := -1
+var int vSr = 0
+var int bSr = na
+[vSrH, bSrH] = f_hold(srNow, vSr, bSr)
+vSr := vSrH
+bSr := bSrH
+
+// ===== 4. 기울기 추세선 =====
+tlPh = ta.pivothigh(high, tlLook, tlLook)
+tlPl = ta.pivotlow(low, tlLook, tlLook)
+tlSlope = atrVal / tlLook
+var float tlUpper = na
+var float tlLower = na
+var float tlUpSlope = na
+var float tlDnSlope = na
+var int tlUpBar = na
+var int tlDnBar = na
+if not na(tlPh)
+    tlUpper := tlPh
+    tlUpSlope := tlSlope
+    tlUpBar := bar_index - tlLook
+else if not na(tlUpper)
+    tlUpper := tlUpper - nz(tlUpSlope)
+if not na(tlPl)
+    tlLower := tlPl
+    tlDnSlope := tlSlope
+    tlDnBar := bar_index - tlLook
+else if not na(tlLower)
+    tlLower := tlLower + nz(tlDnSlope)
+tlBreakUp = not na(tlUpper) and ta.crossover(close, tlUpper)
+tlBreakDn = not na(tlLower) and ta.crossunder(close, tlLower)
+int tlNow = 0
+if useTl
+    if tlBreakUp and not tlBreakDn
+        tlNow := 1
+    else if tlBreakDn and not tlBreakUp
+        tlNow := -1
+var int vTl = 0
+var int bTl = na
+[vTlH, bTlH] = f_hold(tlNow, vTl, bTl)
+vTl := vTlH
+bTl := bTlH
+
+// ===== 5. 오더블록 =====
+obPh = ta.pivothigh(high, obLook, obLook)
+obPl = ta.pivotlow(low, obLook, obLook)
+f_buyPct() =>
+    float buy = 0.0
+    float tot = 0.0
+    for i = 0 to obLook
+        tot += nz(volume[i])
+        buy += close[i] >= open[i] ? nz(volume[i]) : 0.0
+    tot > 0 ? buy / tot * 100.0 : 50.0
+var float obBullTop = na
+var float obBullBot = na
+var float obBearTop = na
+var float obBearBot = na
+var float obBullPct = na
+var float obBearPct = na
+if not na(obPl)
+    float pct = f_buyPct()
+    if pct >= 50.0
+        obBullTop := high[obLook]
+        obBullBot := low[obLook]
+        obBullPct := pct
+if not na(obPh)
+    float pct = f_buyPct()
+    if pct <= 50.0
+        obBearTop := high[obLook]
+        obBearBot := low[obLook]
+        obBearPct := 100.0 - pct
+obTagL = not na(obBullTop) and low <= obBullTop and close > obBullTop and bullClose
+obTagS = not na(obBearBot) and high >= obBearBot and close < obBearBot and bearClose
+int obNow = 0
+if useOb
+    if obTagL and not obTagS
+        obNow := 1
+    else if obTagS and not obTagL
+        obNow := -1
+var int vOb = 0
+var int bOb = na
+[vObH, bObH] = f_hold(obNow, vOb, bOb)
+vOb := vObH
+bOb := bObH
+
+// ===== 6. RSI + 볼린저 =====
+rsiVal = ta.rsi(close, rsiLen)
+rsiSig = ta.sma(rsiVal, rsiSigLen)
+[bbMid, bbUp, bbDn] = ta.bb(close, bbLen, bbMult)
+rsiLong = ta.crossover(rsiVal, rsiSig) and rsiVal <= rsiOs
+rsiShort = ta.crossunder(rsiVal, rsiSig) and rsiVal >= rsiOb
+rsiMomL = rsiVal > rsiVal[1] and rsiVal >= 48 and rsiVal <= 78 and close > bbMid
+rsiMomS = rsiVal < rsiVal[1] and rsiVal <= 52 and rsiVal >= 22 and close < bbMid
+bbLong = (ta.crossover(close, bbDn) or (low <= bbDn and close > bbDn and close > close[1])) and rsiVal <= 55
+bbShort = (ta.crossunder(close, bbUp) or (high >= bbUp and close < bbUp and close < close[1])) and rsiVal >= 45
+bbFadeS = bbShort and not trailBull and close <= ta.highest(high, expLook)[1]
+bbFadeL = bbLong and not (not trailBull and close >= ta.lowest(low, expLook)[1])
+int rbNow = 0
+if useRsiBb
+    if (rsiLong or bbLong or rsiMomL) and not (rsiShort or bbFadeS)
+        rbNow := 1
+    else if (rsiShort or bbFadeS or rsiMomS) and not (rsiLong or bbLong or rsiMomL)
+        rbNow := -1
+var int vRb = 0
+var int bRb = na
+[vRbH, bRbH] = f_hold(rbNow, vRb, bRb)
+vRb := vRbH
+bRb := bRbH
+
+// ===== 7. 함정반전 =====
+envMid = ta.ema(close, envLen)
+envUp = envMid + atrVal * envMult
+envDn = envMid - atrVal * envMult
+var int outUp = 0
+var int outDn = 0
+if close > envUp
+    outUp += 1
+    outDn := 0
+else if close < envDn
+    outDn += 1
+    outUp := 0
+else
+    outUp := 0
+    outDn := 0
+trapS = high > envUp and close < envUp and nz(outUp[1]) <= trapWin and bearClose
+trapL = low < envDn and close > envDn and nz(outDn[1]) <= trapWin and bullClose
+int trNow = 0
+if useTrap
+    if trapL and not trapS
+        trNow := 1
+    else if trapS and not trapL
+        trNow := -1
+var int vTr = 0
+var int bTr = na
+[vTrH, bTrH] = f_hold(trNow, vTr, bTr)
+vTr := vTrH
+bTr := bTrH
+
+// ===== 8. 구조전환 =====
+chPh = ta.pivothigh(high, chochLen, chochLen)
+chPl = ta.pivotlow(low, chochLen, chochLen)
+var float lastSwingH = na
+var float lastSwingL = na
+if not na(chPh)
+    lastSwingH := chPh
+if not na(chPl)
+    lastSwingL := chPl
+chochUp = not na(lastSwingH) and ta.crossover(close, lastSwingH)
+chochDn = not na(lastSwingL) and ta.crossunder(close, lastSwingL)
+int chNow = 0
+if useChoch
+    if chochUp and not chochDn
+        chNow := 1
+    else if chochDn and not chochUp
+        chNow := -1
+var int vCh = 0
+var int bCh = na
+[vChH, bChH] = f_hold(chNow, vCh, bCh)
+vCh := vChH
+bCh := bChH
+
+// ===== 9. 확장 돌파 (큰 구간 초입) =====
+priorHi = ta.highest(high, expLook)[1]
+priorLo = ta.lowest(low, expLook)[1]
+rngRank = ta.percentrank(rng, 40)
+bodyAtr = atrVal > 0 ? body / atrVal : 0.0
+rawExpUp = close > priorHi and bullClose and (rngRank >= 48 or bodyAtr >= 0.65 or close - close[3] >= atrVal * 0.80)
+rawExpDn = close < priorLo and bearClose and (rngRank >= 48 or bodyAtr >= 0.65 or close[3] - close >= atrVal * 0.80)
+expUp = rawExpUp and (dF < 0 or rsiVal >= 48 or volOk or close > nz(srRes, priorHi))
+expDn = rawExpDn and (dF > 0 or rsiVal <= 52 or volOk or close < nz(srSup, priorLo))
+int expNow = 0
+if useExp
+    if expUp and not expDn
+        expNow := 1
+    else if expDn and not expUp
+        expNow := -1
+var int vExp = 0
+var int bExp = na
+[vExpH, bExpH] = f_hold(expNow, vExp, bExp)
+vExp := vExpH
+bExp := bExpH
+isExpL = vExp == 1
+isExpS = vExp == -1
+
+// 확장 초입에는 늦은 추세·페이드 반대표를 세지 않음
+vTrailUse = isExpL and vTrail == -1 ? 0 : isExpS and vTrail == 1 ? 0 : vTrail
+vTripUse  = isExpL and vTrip == -1 ? 0 : isExpS and vTrip == 1 ? 0 : vTrip
+vRbUse    = isExpL and vRb == -1 ? 0 : isExpS and vRb == 1 ? 0 : vRb
+vTrUse    = isExpL and vTr == -1 ? 0 : isExpS and vTr == 1 ? 0 : vTr
+
+// ===== 합의 =====
+votesL = (vTrailUse == 1 ? 1 : 0) + (vTripUse == 1 ? 1 : 0) + (vSr == 1 ? 1 : 0) + (vTl == 1 ? 1 : 0) + (vOb == 1 ? 1 : 0) + (vRbUse == 1 ? 1 : 0) + (vTrUse == 1 ? 1 : 0) + (vCh == 1 ? 1 : 0) + (vExp == 1 ? 1 : 0)
+votesS = (vTrailUse == -1 ? 1 : 0) + (vTripUse == -1 ? 1 : 0) + (vSr == -1 ? 1 : 0) + (vTl == -1 ? 1 : 0) + (vOb == -1 ? 1 : 0) + (vRbUse == -1 ? 1 : 0) + (vTrUse == -1 ? 1 : 0) + (vCh == -1 ? 1 : 0) + (vExp == -1 ? 1 : 0)
+nOn = (useTrailMod ? 1 : 0) + (useTrip ? 1 : 0) + (useSr ? 1 : 0) + (useTl ? 1 : 0) + (useOb ? 1 : 0) + (useRsiBb ? 1 : 0) + (useTrap ? 1 : 0) + (useChoch ? 1 : 0) + (useExp ? 1 : 0)
+needBase = math.max(1, math.min(minAgree, math.max(nOn, 1)))
+need = isExpL or isExpS ? math.min(2, needBase) : needBase
+agreeL = votesL >= need
+agreeS = votesS >= need
+
+f_conf(bool isLong) =>
+    int votes = isLong ? votesL : votesS
+    bool early = isLong ? isExpL : isExpS
+    int pts = 0
+    pts += early ? int(votes / math.max(need, 1) * 24.0) : (nOn > 0 ? int(votes / nOn * 40.0) : 0)
+    pts += early ? 22 : 0
+    pts += (isLong ? htfBull : htfBear) ? 12 : 0
+    pts += adxOk ? 10 : 2
+    pts += (isLong ? realRejL : realRejS) ? 10 : 0
+    pts += votes >= need + 1 ? 12 : 0
+    pts += adxVal >= 22 ? 8 : 0
+    pts += (isLong ? devBull : devBear) ? 8 : 0
+    math.min(100, pts)
+
+f_grade(int c) =>
+    c >= 75 ? "A" : c >= 60 ? "B" : "C"
+f_expLo(int c) =>
+    math.max(48.0, 50.0 + (c - 50) * 0.12)
+f_expHi(int c) =>
+    math.min(66.0, 57.0 + (c - 50) * 0.16)
+
+confLong = f_conf(true)
+confShort = f_conf(false)
+gradeLong = f_grade(confLong)
+gradeShort = f_grade(confShort)
+
+var int lastSigBar = na
+cooled = na(lastSigBar) or (bar_index - lastSigBar >= cooldownBars)
+htfGateL = not requireHtf or htfBull or isExpL
+htfGateS = not requireHtf or htfBear or isExpS
+adxRising = adxVal >= nz(adxVal[1], adxVal)
+adxGate = not requireAdx or adxOk or ((isExpL or isExpS) and adxRising)
+devGateL = not requireDev or devBull or isExpL
+devGateS = not requireDev or devBear or isExpS
+baseOk = barstate.isconfirmed and cooled and adxGate
+baseOkFlip = barstate.isconfirmed and adxGate
+
+longRaw  = baseOk and agreeL and not agreeS and rejectLong and htfGateL and devGateL and confLong >= minConv
+shortRaw = baseOk and agreeS and not agreeL and rejectShort and htfGateS and devGateS and confShort >= minConv
+longSignal  = longRaw and not shortRaw
+shortSignal = shortRaw and not longRaw
+longFlip = baseOkFlip and agreeL and not agreeS and rejectLong and htfGateL and devGateL and confLong >= minConv
+shortFlip = baseOkFlip and agreeS and not agreeL and rejectShort and htfGateS and devGateS and confShort >= minConv
+holdNeed = math.max(1, math.min(holdNeedIn, math.max(nOn, 1)))
+
+if not isSigX and (longSignal or shortSignal)
+    lastSigBar := bar_index
+
+swingLo = ta.lowest(low, swingLen)
+swingHi = ta.highest(high, swingLen)
+f_sl(bool isLong, float px) =>
+    float structPx = isLong ? math.min(swingLo, math.min(nz(trail, swingLo), nz(srSup, swingLo))) : math.max(swingHi, math.max(nz(trail, swingHi), nz(srRes, swingHi)))
+    raw = isLong ? structPx - atrVal * slPadAtr : structPx + atrVal * slPadAtr
+    dist = math.abs(px - raw)
+    adj = math.max(atrVal * slMinAtr, math.min(atrVal * slMaxAtr, dist))
+    isLong ? px - adj : px + adj
+f_tpR(bool isLong, float px, float sl, float rMult) =>
+    risk = math.max(math.abs(px - sl), syminfo.mintick)
+    isLong ? px + risk * rMult : px - risk * rMult
+f_split(bool isLong, float px, float sl, float pct) =>
+    isLong ? px - (px - sl) * pct / 100.0 : px + (sl - px) * pct / 100.0
+
+// ===== 가상 승률 =====
+var int[] tDir = array.new_int()
+var float[] tEnt = array.new_float()
+var float[] tSlA = array.new_float()
+var float[] tTpA = array.new_float()
+var int[] tGr = array.new_int()
+var int[] tTm = array.new_int()
+var int wins = 0
+var int losses = 0
+var int winsA = 0
+var int lossesA = 0
+var int winsB = 0
+var int lossesB = 0
+var int winsC = 0
+var int lossesC = 0
+var float sumWinR = 0.0
+var float sumLossR = 0.0
+var int nBe = 0
+var float sumPct = 0.0
+var float sumWinPct = 0.0
+var float sumLossPct = 0.0
+var int firstTradeTime = na
+var int lastCloseTime = na
+int closedBefore = wins + losses
+int lookFrom = timenow - statDays * 24 * 60 * 60 * 1000
+
+f_inStat(int t) =>
+    na(t) ? false : statMode == "전체" ? true : statMode == "최근 N일" ? (t >= lookFrom and t <= timenow) : (t >= statFrom and t <= statTo)
+f_gradeId(string g) =>
+    g == "A" ? 3 : g == "B" ? 2 : 1
+
+if not isSigX and longSignal
+    float sln = f_sl(true, close)
+    array.push(tDir, 1)
+    array.push(tEnt, close)
+    array.push(tSlA, sln)
+    array.push(tTpA, f_tpR(true, close, sln, tp1R))
+    array.push(tGr, f_gradeId(gradeLong))
+    array.push(tTm, time)
+    if f_inStat(time) and na(firstTradeTime)
+        firstTradeTime := time
+if not isSigX and shortSignal
+    float sls = f_sl(false, close)
+    array.push(tDir, -1)
+    array.push(tEnt, close)
+    array.push(tSlA, sls)
+    array.push(tTpA, f_tpR(false, close, sls, tp1R))
+    array.push(tGr, f_gradeId(gradeShort))
+    array.push(tTm, time)
+    if f_inStat(time) and na(firstTradeTime)
+        firstTradeTime := time
+
+if not isSigX and array.size(tDir) > 0
+    for i = array.size(tDir) - 1 to 0
+        int d = array.get(tDir, i)
+        float ent = array.get(tEnt, i)
+        float slv = array.get(tSlA, i)
+        float tpv = array.get(tTpA, i)
+        int g = array.get(tGr, i)
+        bool hitSl = d == 1 ? low <= slv : high >= slv
+        bool hitTp = d == 1 ? high >= tpv : low <= tpv
+        if hitSl or hitTp
+            bool w = hitSl and hitTp ? (d == 1 ? close >= ent : close <= ent) : hitTp
+            if f_inStat(array.get(tTm, i))
+                float risk = math.max(math.abs(ent - slv), syminfo.mintick)
+                float fill = hitSl and hitTp ? close : w ? tpv : slv
+                float pnl = d == 1 ? fill - ent : ent - fill
+                float rNet = pnl / risk
+                if w
+                    wins += 1
+                    sumWinR += math.max(rNet, 0.01)
+                else
+                    losses += 1
+                    sumLossR += math.max(math.abs(rNet), 0.01)
+                if g == 3
+                    if w
+                        winsA += 1
+                    else
+                        lossesA += 1
+                else if g == 2
+                    if w
+                        winsB += 1
+                    else
+                        lossesB += 1
+                else
+                    if w
+                        winsC += 1
+                    else
+                        lossesC += 1
+            array.remove(tDir, i)
+            array.remove(tEnt, i)
+            array.remove(tSlA, i)
+            array.remove(tTpA, i)
+            array.remove(tGr, i)
+            array.remove(tTm, i)
+
+closedTrades = wins + losses
+pendingTrades = array.size(tDir)
+if closedTrades > closedBefore
+    lastCloseTime := time
+winRate = closedTrades > 0 ? wins / closedTrades * 100.0 : na
+avgWinR = wins > 0 ? sumWinR / wins : 0.0
+avgLossR = losses > 0 ? sumLossR / losses : 0.0
+rrReal = avgLossR > 0 ? avgWinR / avgLossR : na
+expR = closedTrades > 0 ? (wins * avgWinR - losses * avgLossR) / closedTrades : na
+beWr = avgWinR + avgLossR > 0 ? avgLossR / (avgWinR + avgLossR) * 100.0 : na
+
+// ===== 플롯 =====
+plot(close, "축고정", color=color.new(color.white, 100), linewidth=1, editable=false)
+plot(high, "축고정H", color=color.new(color.white, 100), linewidth=1, editable=false)
+plot(low, "축고정L", color=color.new(color.white, 100), linewidth=1, editable=false)
+plot(showTrail ? trail : na, "ATR Trail", color=trailBull ? bullCol : bearCol, linewidth=2)
+plot(showEnv ? envUp : na, "Trap Upper", color=color.new(bearCol, 40), linewidth=1)
+plot(showEnv ? envMid : na, "Trap Mid", color=color.new(#8b95a8, 50), linewidth=1)
+plot(showEnv ? envDn : na, "Trap Lower", color=color.new(bullCol, 40), linewidth=1)
+plot(showEnv ? bbUp : na, "BB Upper", color=color.new(#8b95a8, 85), linewidth=1)
+plot(showEnv ? bbDn : na, "BB Lower", color=color.new(#8b95a8, 85), linewidth=1)
+
+// 최근 SR 박스
+var box bSup = na
+var box bRes = na
+if showSrBox and not na(srPl) and volOk and not na(srSup)
+    box.delete(bSup)
+    bSup := box.new(bar_index - srLook, srSup, bar_index, srSup2, xloc=xloc.bar_index, border_color=bullCol, border_width=1, bgcolor=color.new(bullCol, 80))
+if showSrBox and not na(srPh) and volOk and not na(srRes)
+    box.delete(bRes)
+    bRes := box.new(bar_index - srLook, srRes2, bar_index, srRes, xloc=xloc.bar_index, border_color=bearCol, border_width=1, bgcolor=color.new(bearCol, 80))
+if showSrBox
+    if not na(bSup)
+        box.set_right(bSup, bar_index)
+        if srBreakSup
+            box.set_border_color(bSup, bearCol)
+            box.set_bgcolor(bSup, color.new(bearCol, 85))
+        else if srHoldSup
+            box.set_border_color(bSup, bullCol)
+            box.set_bgcolor(bSup, color.new(bullCol, 80))
+    if not na(bRes)
+        box.set_right(bRes, bar_index)
+        if srBreakRes
+            box.set_border_color(bRes, bullCol)
+            box.set_bgcolor(bRes, color.new(bullCol, 85))
+        else if srHoldRes
+            box.set_border_color(bRes, bearCol)
+            box.set_bgcolor(bRes, color.new(bearCol, 80))
+
+// 오더블록 박스
+var box bObL = na
+var box bObS = na
+if showObBox and not na(obPl) and not na(obBullTop)
+    box.delete(bObL)
+    bObL := box.new(bar_index - obLook, obBullTop, bar_index, obBullBot, xloc=xloc.bar_index, border_color=bullCol, border_width=1, bgcolor=color.new(bullCol, 82))
+if showObBox and not na(obPh) and not na(obBearTop)
+    box.delete(bObS)
+    bObS := box.new(bar_index - obLook, obBearTop, bar_index, obBearBot, xloc=xloc.bar_index, border_color=bearCol, border_width=1, bgcolor=color.new(bearCol, 82))
+if showObBox
+    if not na(bObL)
+        box.set_right(bObL, bar_index)
+    if not na(bObS)
+        box.set_right(bObS, bar_index)
+
+// 기울기 추세선
+var line lnUp = na
+var line lnDn = na
+if showTlLine and not na(tlPh) and not na(tlUpper)
+    line.delete(lnUp)
+    lnUp := line.new(bar_index - tlLook, tlPh, bar_index, tlUpper, xloc=xloc.bar_index, color=bearCol, width=1, style=line.style_dashed)
+if showTlLine and not na(tlPl) and not na(tlLower)
+    line.delete(lnDn)
+    lnDn := line.new(bar_index - tlLook, tlPl, bar_index, tlLower, xloc=xloc.bar_index, color=bullCol, width=1, style=line.style_dashed)
+if showTlLine
+    if not na(lnUp) and not na(tlUpper)
+        line.set_xy2(lnUp, bar_index, tlUpper)
+    if not na(lnDn) and not na(tlLower)
+        line.set_xy2(lnDn, bar_index, tlLower)
+
+// ===== 최근 진입 구간 =====
+var bool zLive = false
+var int zDir = 0
+var float zSl = na
+var float zTp1 = na
+var float zTp2 = na
+var float zTp3 = na
+var float zE1 = na
+var float zE2 = na
+var float zE3 = na
+var float zEntry = na
+var bool zHit1 = false
+var bool zHit2 = false
+var bool zHit3 = false
+var bool zBe = false
+var float zPeak = na
+var float zSlOrig = na
+var int zLockBar = na
+var bool zFill1 = false
+var bool zFill2 = false
+var bool zFill3 = false
+var float zAvg = na
+var box bTp1 = na
+var box bTp2 = na
+var box bTp3 = na
+var box bSl = na
+var box bE1 = na
+var box bE2 = na
+var box bE3 = na
+var label tTp1 = na
+var label tTp2 = na
+var label tTp3 = na
+var label tSl = na
+var label tE1 = na
+var label tE2 = na
+var label tE3 = na
+var box bAvg = na
+var label tAvg = na
+
+f_zone(float p1, float p2, color bg, color bd) =>
+    box.new(bar_index, math.max(p1, p2), bar_index, math.min(p1, p2), xloc=xloc.bar_index, border_color=bd, border_width=1, bgcolor=bg)
+f_tag(float y, color c, string name, float px) =>
+    label.new(bar_index, y, name + "  " + str.tostring(px, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(c, 20), textcolor=color.white, size=size.tiny)
+f_ext(b) =>
+    if not na(b)
+        box.set_right(b, bar_index)
+    true
+f_avgPx() =>
+    float num = 0.0
+    float den = 0.0
+    if zFill1
+        num += zE1 * qty1
+        den += qty1
+    if zFill2
+        num += zE2 * qty2
+        den += qty2
+    if zFill3
+        num += zE3 * qty3
+        den += qty3
+    den > 0 ? num / den : zE1
+f_fillTxt() =>
+    zFill3 ? "1·2·3차" : zFill2 ? "1·2차" : zFill1 ? "1차" : "-"
+
+if isBoxX and showBoxes and (longSignal or shortSignal)
+    box.delete(bTp1)
+    box.delete(bTp2)
+    box.delete(bTp3)
+    box.delete(bSl)
+    box.delete(bE1)
+    box.delete(bE2)
+    box.delete(bE3)
+    label.delete(tTp1)
+    label.delete(tTp2)
+    label.delete(tTp3)
+    label.delete(tSl)
+    label.delete(tE1)
+    label.delete(tE2)
+    label.delete(tE3)
+    box.delete(bAvg)
+    label.delete(tAvg)
+    bool isL = longSignal
+    float px = close
+    float slv = f_sl(isL, px)
+    zLive := true
+    zDir := isL ? 1 : -1
+    zSl := slv
+    zSlOrig := slv
+    zTp1 := f_tpR(isL, px, slv, tp1R)
+    zTp2 := f_tpR(isL, px, slv, tp2R)
+    zTp3 := f_tpR(isL, px, slv, tp3R)
+    zE1 := px
+    zE2 := f_split(isL, px, slv, split2Pct)
+    zE3 := f_split(isL, px, slv, math.max(split3Pct, split2Pct + 5.0))
+    zEntry := px
+    zPeak := px
+    zLockBar := na
+    zHit1 := false
+    zHit2 := false
+    zHit3 := false
+    zBe := false
+    zFill1 := true
+    zFill2 := false
+    zFill3 := false
+    zAvg := px
+    bTp1 := f_zone(zE1, zTp1, color.new(#26a69a, 78), color.new(#26a69a, 25))
+    bTp2 := tpCount >= 2 ? f_zone(zTp1, zTp2, color.new(#4db6ac, 80), color.new(#26a69a, 25)) : na
+    bTp3 := tpCount >= 3 ? f_zone(zTp2, zTp3, color.new(#80cbc4, 82), color.new(#26a69a, 25)) : na
+    float slTop = useSplit ? (splitN == 3 ? zE3 : zE2) : zE1
+    bSl := f_zone(slTop, zSl, color.new(#ab47bc, 72), color.new(#ab47bc, 18))
+    bE1 := useSplit ? f_zone(zE1, (zE1 + zE2) * 0.5, color.new(#4da3ff, 78), color.new(#4da3ff, 25)) : na
+    bE2 := useSplit ? f_zone((zE1 + zE2) * 0.5, splitN == 3 ? (zE2 + zE3) * 0.5 : zE2, color.new(#f0c14a, 78), color.new(#f0c14a, 25)) : na
+    bE3 := useSplit and splitN == 3 ? f_zone((zE2 + zE3) * 0.5, zE3, color.new(#ff9f43, 78), color.new(#ff9f43, 25)) : na
+    tTp1 := f_tag(zTp1, #26a69a, "TP1 " + str.tostring(q1Pct, "#") + "%", zTp1)
+    tTp2 := tpCount >= 2 ? f_tag(zTp2, #4db6ac, "TP2 " + str.tostring(q2Pct, "#") + "%", zTp2) : na
+    tTp3 := tpCount >= 3 ? f_tag(zTp3, #80cbc4, "TP3 " + str.tostring(q3Pct, "#") + "%", zTp3) : na
+    tSl := f_tag(zSl, #ab47bc, "SL", zSl)
+    tE1 := useSplit ? f_tag(zE1, #4da3ff, "1차 진입 " + str.tostring(qty1) + "%", zE1) : na
+    tE2 := useSplit ? f_tag(zE2, #f0c14a, "2차 대기 " + str.tostring(qty2) + "%", zE2) : na
+    tE3 := useSplit and splitN == 3 ? f_tag(zE3, #ff9f43, "3차 대기 " + str.tostring(qty3) + "%", zE3) : na
+    float avgPad0 = math.max(syminfo.mintick * 4, atrVal * 0.04)
+    bAvg := f_zone(zAvg + avgPad0, zAvg - avgPad0, color.new(#e8ecf4, 70), color.new(#c8cdd8, 15))
+    tAvg := f_tag(zAvg, #c8cdd8, "평단 1차", zAvg)
+
+if isBoxX and zLive and showBoxes
+    bool fill2Now = useSplit and not zFill2 and (zDir == 1 ? low <= zE2 : high >= zE2)
+    bool fill3Now = useSplit and splitN == 3 and not zFill3 and (zDir == 1 ? low <= zE3 : high >= zE3)
+    if fill2Now
+        zFill2 := true
+        if not na(tE2)
+            label.set_text(tE2, "2차 진입 " + str.tostring(qty2) + "%  " + str.tostring(zE2, format.mintick))
+    if fill3Now
+        zFill3 := true
+        if not na(tE3)
+            label.set_text(tE3, "3차 진입 " + str.tostring(qty3) + "%  " + str.tostring(zE3, format.mintick))
+    if fill2Now or fill3Now
+        zAvg := f_avgPx()
+        float avgPad = math.max(syminfo.mintick * 4, atrVal * 0.04)
+        if not na(bAvg)
+            box.set_top(bAvg, zAvg + avgPad)
+            box.set_bottom(bAvg, zAvg - avgPad)
+        if not na(tAvg)
+            label.set_y(tAvg, zAvg)
+            label.set_text(tAvg, "평단 " + f_fillTxt() + "  " + str.tostring(zAvg, format.mintick))
+        if zBe
+            zSlOrig := zAvg
+            zSl := zAvg
+            if not na(tSl)
+                label.set_y(tSl, zAvg)
+                label.set_text(tSl, "본절  " + str.tostring(zAvg, format.mintick))
+    zPeak := zDir == 1 ? math.max(nz(zPeak, zEntry), high) : math.min(nz(zPeak, zEntry), low)
+    bool touch1 = zDir == 1 ? high >= zTp1 : low <= zTp1
+    bool touch2 = zDir == 1 ? high >= zTp2 : low <= zTp2
+    bool touch3 = zDir == 1 ? high >= zTp3 : low <= zTp3
+    if touch1 and not zHit1
+        zHit1 := true
+        zLockBar := bar_index
+        if slToBe and tpCount >= 2
+            zSl := zAvg
+            zSlOrig := zAvg
+            zBe := true
+            box.delete(bSl)
+            label.delete(tSl)
+            float bePad = math.max(syminfo.mintick * 4, atrVal * 0.05)
+            bSl := f_zone(zAvg + bePad, zAvg - bePad, color.new(#f0c14a, 70), color.new(#f0c14a, 20))
+            tSl := f_tag(zAvg, #f0c14a, "본절", zAvg)
+    if tpCount >= 2 and touch2
+        zHit2 := true
+    if tpCount >= 3 and touch3
+        zHit3 := true
+    bool trailOnNow = usePctTrail and (trailWhen == "진입 즉시" or (trailWhen == "TP1 이후" and zHit1) or (trailWhen == "수익 중" and ((zDir == 1 and zPeak > zEntry) or (zDir == -1 and zPeak < zEntry))))
+    float floorPx = slToBe and zHit1 ? zAvg : zSlOrig
+    float newSl = zSl
+    if trailOnNow
+        float trPx = zDir == 1 ? zPeak * (1.0 - trailPct * 0.01) : zPeak * (1.0 + trailPct * 0.01)
+        newSl := zDir == 1 ? math.max(floorPx, trPx) : math.min(floorPx, trPx)
+    else if slToBe and zHit1
+        newSl := zDir == 1 ? math.max(zSl, zAvg) : math.min(zSl, zAvg)
+    if zHit1 and useStructNow
+        float trailLv = zDir == 1 ? ta.lowest(low, trailBars) - atrVal * 0.08 : ta.highest(high, trailBars) + atrVal * 0.08
+        newSl := zDir == 1 ? math.max(newSl, math.max(zAvg, trailLv)) : math.min(newSl, math.min(zAvg, trailLv))
+    if newSl != zSl
+        zSl := newSl
+        string slName = trailOnNow or useStructNow ? "트레일" : zBe ? "본절" : "SL"
+        color slCol = trailOnNow or useStructNow ? #80cbc4 : zBe ? #f0c14a : #ab47bc
+        if not na(tSl)
+            label.set_y(tSl, zSl)
+            label.set_text(tSl, slName + "  " + str.tostring(zSl, format.mintick))
+            label.set_color(tSl, color.new(slCol, 20))
+        if not na(bSl)
+            float tPad = math.max(syminfo.mintick * 4, atrVal * 0.04)
+            box.set_top(bSl, zSl + tPad)
+            box.set_bottom(bSl, zSl - tPad)
+    bool lastTpHit = tpCount == 1 ? zHit1 : tpCount == 2 ? zHit2 : zHit3
+    bool slArmed = na(zLockBar) or bar_index > zLockBar
+    bool touchSlNow = slArmed and (zDir == 1 ? low <= zSl : high >= zSl)
+    f_ext(bTp1)
+    f_ext(bTp2)
+    f_ext(bTp3)
+    f_ext(bSl)
+    f_ext(bE1)
+    f_ext(bE2)
+    f_ext(bE3)
+    f_ext(bAvg)
+    if not na(tTp1)
+        label.set_x(tTp1, bar_index)
+    if not na(tTp2)
+        label.set_x(tTp2, bar_index)
+    if not na(tTp3)
+        label.set_x(tTp3, bar_index)
+    if not na(tSl)
+        label.set_x(tSl, bar_index)
+        label.set_y(tSl, zSl)
+    if not na(tE1)
+        label.set_x(tE1, bar_index)
+    if not na(tE2)
+        label.set_x(tE2, bar_index)
+    if not na(tE3)
+        label.set_x(tE3, bar_index)
+    if not na(tAvg)
+        label.set_x(tAvg, bar_index)
+        label.set_y(tAvg, zAvg)
+    if touchSlNow or lastTpHit
+        box.delete(bTp1)
+        box.delete(bTp2)
+        box.delete(bTp3)
+        box.delete(bSl)
+        box.delete(bE1)
+        box.delete(bE2)
+        box.delete(bE3)
+        box.delete(bAvg)
+        label.delete(tTp1)
+        label.delete(tTp2)
+        label.delete(tTp3)
+        label.delete(tSl)
+        label.delete(tE1)
+        label.delete(tE2)
+        label.delete(tE3)
+        label.delete(tAvg)
+        bTp1 := na
+        bTp2 := na
+        bTp3 := na
+        bSl := na
+        bE1 := na
+        bE2 := na
+        bE3 := na
+        bAvg := na
+        tTp1 := na
+        tTp2 := na
+        tTp3 := na
+        tSl := na
+        tE1 := na
+        tE2 := na
+        tE3 := na
+        tAvg := na
+        zLive := false
+        bool isBe = zBe and zHit1 and not zHit2 and not zHit3 and touchSlNow
+        string resTxt = zHit3 ? "TP3 성공" : zHit2 ? "TP2 성공" : isBe ? "본절" : zHit1 ? "TP1 성공" : "SL 실패"
+        bool winZ = zHit1 or zHit2 or zHit3
+        color resCol = zHit2 or zHit3 or (zHit1 and not isBe) ? bullCol : isBe ? color.new(#f0c14a, 0) : bearCol
+        bool resBelow = (zDir == 1 and not winZ) or (zDir == -1 and winZ)
+        label.new(bar_index, resBelow ? low : high, resTxt, xloc=xloc.bar_index, style=resBelow ? label.style_label_up : label.style_label_down, color=resCol, textcolor=color.white, size=size.tiny)
+        if alertExit
+            alert(botJson ? f_botExit() : "HWR Combo " + resTxt + "  close=" + str.tostring(close), alert.freq_once_per_bar)
+
+if not isSigX and longSignal
+    label.new(bar_index, low, (isExpL ? "확장" : "합의") + str.tostring(votesL) + " 롱 " + gradeLong + " " + str.tostring(confLong) + "%", xloc=xloc.bar_index, style=label.style_label_up, color=bullCol, textcolor=color.white, size=size.tiny)
+if not isSigX and shortSignal
+    label.new(bar_index, high, (isExpS ? "확장" : "합의") + str.tostring(votesS) + " 숏 " + gradeShort + " " + str.tostring(confShort) + "%", xloc=xloc.bar_index, style=label.style_label_down, color=bearCol, textcolor=color.white, size=size.tiny)
+
+// ===== 방식 3: 신호 청산 =====
+var bool sLive = false
+var int sDir = 0
+var float sEntry = na
+var int sBar = na
+var int sGr = na
+var int sTm = na
+var int sVotes0 = na
+var box bPos = na
+var label tSigEnt = na
+var label tHold = na
+bool openedL = false
+bool openedS = false
+bool closedNow = false
+int openDir = 0
+int openGr = 0
+int openVotes = 0
+bool isFlip = false
+bool wantWipe = false
+
+if isSigX and sLive and barstate.isconfirmed
+    int ownV = sDir == 1 ? votesL : votesS
+    bool oppA = sDir == 1 ? agreeS : agreeL
+    bool fadeNow = exitOnFade and ownV < holdNeed
+    bool oppNow = exitOnOpp and oppA
+    bool heldOk = bar_index - sBar >= minHoldBars
+    if heldOk and (fadeNow or oppNow)
+        float pnl = sDir == 1 ? close - sEntry : sEntry - close
+        float exitPct = sEntry > 0 ? pnl / sEntry * 100.0 : 0.0
+        bool exitWin = exitPct > 0.04
+        bool exitLoss = exitPct < -0.04
+        if f_inStat(sTm)
+            sumPct += exitPct
+            if exitWin
+                wins += 1
+                sumWinPct += exitPct
+            else if exitLoss
+                losses += 1
+                sumLossPct += math.abs(exitPct)
+            else
+                nBe += 1
+            if sGr == 3
+                if exitWin
+                    winsA += 1
+                else if exitLoss
+                    lossesA += 1
+            else if sGr == 2
+                if exitWin
+                    winsB += 1
+                else if exitLoss
+                    lossesB += 1
+            else
+                if exitWin
+                    winsC += 1
+                else if exitLoss
+                    lossesC += 1
+        closedNow := true
+        lastCloseTime := time
+        string exitWhy = oppNow ? "반대합의" : "합의소멸"
+        color resCol = exitWin ? bullCol : exitLoss ? bearCol : color.new(#f0c14a, 0)
+        string resTxt = exitWhy + "  " + (exitWin ? "익절 " : exitLoss ? "손절 " : "본절 ") + str.tostring(exitPct, "#.##") + "%"
+        bool resBelow = (sDir == 1 and not exitWin) or (sDir == -1 and exitWin)
+        label.new(bar_index, resBelow ? low : high, resTxt, xloc=xloc.bar_index, style=resBelow ? label.style_label_up : label.style_label_down, color=resCol, textcolor=color.white, size=size.tiny)
+        if alertExit
+            alert(botJson ? f_botExit() : "HWR Combo " + resTxt + "  close=" + str.tostring(close), alert.freq_once_per_bar)
+        int oldDir = sDir
+        wantWipe := true
+        bool doFlip = flipOnOpp and oppNow and (oldDir == 1 ? shortFlip : longFlip)
+        if doFlip
+            isFlip := true
+            openDir := oldDir == 1 ? -1 : 1
+            openGr := oldDir == 1 ? f_gradeId(gradeShort) : f_gradeId(gradeLong)
+            openVotes := oldDir == 1 ? votesS : votesL
+        else
+            sLive := false
+
+if isSigX and not sLive and openDir == 0 and barstate.isconfirmed
+    if longSignal
+        openDir := 1
+        openGr := f_gradeId(gradeLong)
+        openVotes := votesL
+    else if shortSignal
+        openDir := -1
+        openGr := f_gradeId(gradeShort)
+        openVotes := votesS
+
+if isSigX and (wantWipe or (openDir != 0 and showPos) or (sLive and showPos))
+    box.delete(bPos)
+    label.delete(tSigEnt)
+    label.delete(tHold)
+    bPos := na
+    tSigEnt := na
+    tHold := na
+
+if isSigX and openDir != 0
+    sLive := true
+    sDir := openDir
+    sEntry := close
+    sBar := bar_index
+    sGr := openGr
+    sTm := time
+    sVotes0 := openVotes
+    lastSigBar := bar_index
+    if openDir == 1
+        openedL := true
+    else
+        openedS := true
+    if f_inStat(time) and na(firstTradeTime)
+        firstTradeTime := time
+    if isFlip
+        if openDir == -1
+            label.new(bar_index, high, "뒤집기 숏 " + gradeShort + " " + str.tostring(confShort) + "%", xloc=xloc.bar_index, style=label.style_label_down, color=bearCol, textcolor=color.white, size=size.tiny)
+        else
+            label.new(bar_index, low, "뒤집기 롱 " + gradeLong + " " + str.tostring(confLong) + "%", xloc=xloc.bar_index, style=label.style_label_up, color=bullCol, textcolor=color.white, size=size.tiny)
+    else if openDir == 1
+        label.new(bar_index, low, (isExpL ? "확장" : "합의") + str.tostring(votesL) + " 롱 " + gradeLong + " " + str.tostring(confLong) + "%", xloc=xloc.bar_index, style=label.style_label_up, color=bullCol, textcolor=color.white, size=size.tiny)
+        if alertEntry
+            float aSlFL = f_sl(true, close)
+            alert(botJson ? f_botEntry("LONG", gradeLong, aSlFL, f_tpR(true, close, aSlFL, tp1R), f_tpR(true, close, aSlFL, tp2R)) : "HWR Combo LONG  합의" + str.tostring(votesL) + "  " + gradeLong + " 확신 " + str.tostring(confLong) + "%  close=" + str.tostring(close), alert.freq_once_per_bar_close)
+    else
+        label.new(bar_index, high, (isExpS ? "확장" : "합의") + str.tostring(votesS) + " 숏 " + gradeShort + " " + str.tostring(confShort) + "%", xloc=xloc.bar_index, style=label.style_label_down, color=bearCol, textcolor=color.white, size=size.tiny)
+        if alertEntry
+            float aSlFS = f_sl(false, close)
+            alert(botJson ? f_botEntry("SHORT", gradeShort, aSlFS, f_tpR(false, close, aSlFS, tp1R), f_tpR(false, close, aSlFS, tp2R)) : "HWR Combo SHORT  합의" + str.tostring(votesS) + "  " + gradeShort + " 확신 " + str.tostring(confShort) + "%  close=" + str.tostring(close), alert.freq_once_per_bar_close)
+
+if isSigX and sLive and showPos
+    float pad = math.max(syminfo.mintick * 4, atrVal * 0.04)
+    float hi = math.max(sEntry, close)
+    float lo = math.min(sEntry, close)
+    if hi - lo < pad
+        hi := sEntry + pad
+        lo := sEntry - pad
+    bool up = sDir == 1 ? close >= sEntry : close <= sEntry
+    bPos := box.new(sBar, hi, bar_index, lo, xloc=xloc.bar_index, border_color=color.new(up ? #26a69a : #ef5350, 20), border_width=1, bgcolor=color.new(up ? #26a69a : #ef5350, 78))
+    tSigEnt := label.new(bar_index, sEntry, (sDir == 1 ? "롱" : "숏") + " 진입  " + str.tostring(sEntry, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(#c8cdd8, 20), textcolor=color.white, size=size.tiny)
+    int ov = sDir == 1 ? votesL : votesS
+    tHold := label.new(bar_index, close, "유지 " + str.tostring(ov) + " / " + str.tostring(holdNeed), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(#4da3ff, 20), textcolor=color.white, size=size.tiny)
+
+closedTrades := wins + losses
+pendingTrades := isSigX ? (sLive ? 1 : 0) : array.size(tDir)
+if closedTrades > closedBefore
+    lastCloseTime := time
+winRate := closedTrades > 0 ? wins / closedTrades * 100.0 : na
+avgWinR := wins > 0 ? (isSigX ? sumWinPct / wins : sumWinR / wins) : 0.0
+avgLossR := losses > 0 ? (isSigX ? sumLossPct / losses : sumLossR / losses) : 0.0
+rrReal := avgLossR > 0 ? avgWinR / avgLossR : na
+expR := closedTrades > 0 ? (wins * avgWinR - losses * avgLossR) / closedTrades : na
+beWr := avgWinR + avgLossR > 0 ? avgLossR / (avgWinR + avgLossR) * 100.0 : na
+avgPct = closedTrades + nBe > 0 ? sumPct / (closedTrades + nBe) : na
+
+// ===== 대시보드 =====
+dashPos = dashPosIn == "오른쪽 아래" ? position.bottom_right : dashPosIn == "왼쪽 위" ? position.top_left : dashPosIn == "왼쪽 아래" ? position.bottom_left : dashPosIn == "가운데 위" ? position.top_center : dashPosIn == "가운데 아래" ? position.bottom_center : dashPosIn == "오른쪽 중간" ? position.middle_right : dashPosIn == "왼쪽 중간" ? position.middle_left : position.top_right
+var table dash = table.new(position.top_right, 2, 23, bgcolor=color.new(#12141c, 12), border_color=color.new(#2a2e3a, 0), border_width=1)
+if barstate.islast
+    table.set_position(dash, dashPos)
+f_cell(int r, string a, string b, color bc) =>
+    table.cell(dash, 0, r, a, text_color=color.new(#c8cdd8, 0), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, r, b, text_color=bc, text_halign=text.align_right, text_size=size.small)
+f_mod(bool on, int v) =>
+    not on ? "꺼짐" : v == 1 ? "롱" : v == -1 ? "숏" : "대기"
+f_modC(bool on, int v) =>
+    not on ? color.gray : v == 1 ? bullCol : v == -1 ? bearCol : color.new(#f0c14a, 0)
+
+if showDash and barstate.islast
+    wrTxt = closedTrades > 0 ? str.tostring(wins) + "/" + str.tostring(losses) + "  " + str.tostring(winRate, "#.0") + "%" : "-"
+    if isSigX and nBe > 0
+        wrTxt := wrTxt + "  본절" + str.tostring(nBe)
+    if pendingTrades > 0
+        wrTxt := wrTxt + "  진행" + str.tostring(pendingTrades)
+    int liveVotes = votesL >= votesS ? votesL : votesS
+    int liveConf = confLong >= confShort ? confLong : confShort
+    string liveGrade = confLong >= confShort ? gradeLong : gradeShort
+    string liveSide = votesL > votesS ? "L" : votesS > votesL ? "S" : "-"
+    string expTxt = str.tostring(f_expLo(liveConf), "#") + "-" + str.tostring(f_expHi(liveConf), "#") + "%"
+    int closedA = winsA + lossesA
+    int closedB = winsB + lossesB
+    string wrA = closedA > 0 ? str.tostring(winsA) + "/" + str.tostring(lossesA) + "  " + str.tostring(winsA / closedA * 100.0, "#.0") + "%" : "-"
+    string wrB = closedB > 0 ? str.tostring(winsB) + "/" + str.tostring(lossesB) + "  " + str.tostring(winsB / closedB * 100.0, "#.0") + "%" : "-"
+    color convC = liveConf >= 75 ? bullCol : liveConf >= 60 ? color.new(#f0c14a, 0) : color.gray
+    color agreeC = agreeL ? bullCol : agreeS ? bearCol : color.gray
+    table.cell(dash, 0, 0, "HWR Combo", text_color=color.white, text_halign=text.align_left, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    table.cell(dash, 1, 0, timeframe.period + " / HTF " + htfTf, text_color=color.new(#8b95a8, 0), text_halign=text.align_right, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    f_cell(1, "청산방식", pMode, color.new(#c8cdd8, 0))
+    f_cell(2, "합의", liveSide + " " + str.tostring(liveVotes) + "/" + str.tostring(need) + "  (켜짐 " + str.tostring(nOn) + ")", agreeC)
+    f_cell(3, "추세선", f_mod(useTrailMod, vTrail), f_modC(useTrailMod, vTrail))
+    f_cell(4, "삼중합의", f_mod(useTrip, vTrip), f_modC(useTrip, vTrip))
+    f_cell(5, "지지저항", f_mod(useSr, vSr), f_modC(useSr, vSr))
+    f_cell(6, "추세선돌파", f_mod(useTl, vTl), f_modC(useTl, vTl))
+    f_cell(7, "오더블록", f_mod(useOb, vOb), f_modC(useOb, vOb))
+    f_cell(8, "RSI밴드", f_mod(useRsiBb, vRb), f_modC(useRsiBb, vRb))
+    f_cell(9, "함정반전", f_mod(useTrap, vTr), f_modC(useTrap, vTr))
+    f_cell(10, "구조전환", f_mod(useChoch, vCh), f_modC(useChoch, vCh))
+    f_cell(11, "확장돌파", f_mod(useExp, vExp), f_modC(useExp, vExp))
+    f_cell(12, "ADX", not adxOk ? "횡보 " + str.tostring(adxVal, "#.0") : str.tostring(adxVal, "#.0"), adxOk ? bullCol : color.gray)
+    f_cell(13, "상위TF", htfBull ? "롱 우세" : htfBear ? "숏 우세" : "중립", htfBull ? bullCol : htfBear ? bearCol : color.gray)
+    f_cell(14, "확신도", liveSide + " " + liveGrade + " " + str.tostring(liveConf) + "%", convC)
+    f_cell(15, "추정 승률", expTxt, convC)
+    string perTxt = statMode == "기간 지정" ? str.format_time(statFrom, "yy.MM.dd HH:mm", sessTz) + " ~ " + str.format_time(statTo, "yy.MM.dd HH:mm", sessTz) : statMode == "최근 N일" ? str.format_time(lookFrom, "yy.MM.dd HH:mm", sessTz) + " ~ " + str.format_time(timenow, "yy.MM.dd HH:mm", sessTz) : na(firstTradeTime) ? "-" : str.format_time(firstTradeTime, "yy.MM.dd HH:mm", sessTz) + " ~ " + (na(lastCloseTime) ? "진행중" : str.format_time(lastCloseTime, "yy.MM.dd HH:mm", sessTz))
+    f_cell(16, "승/패", wrTxt, not na(winRate) and winRate >= 52 ? bullCol : not na(winRate) and winRate < 42 ? bearCol : color.gray)
+    string rrUnit = isSigX ? "%" : "R"
+    f_cell(17, "손익비", na(rrReal) ? "-" : str.tostring(rrReal, "#.##") + "  (" + str.tostring(avgWinR, "#.##") + "/" + str.tostring(avgLossR, "#.##") + rrUnit + ")", na(rrReal) ? color.gray : rrReal >= 1.3 ? bullCol : bearCol)
+    f_cell(18, isSigX ? "거래당 기대 %" : "거래당 기대 R", na(expR) ? "-" : str.tostring(expR, "#.###") + (isSigX ? "%" : "") + (na(beWr) ? "" : "  ·  본전승률 " + str.tostring(beWr, "#.0") + "%"), na(expR) ? color.gray : expR >= 0 ? bullCol : bearCol)
+    f_cell(19, "측정기간", perTxt, closedTrades > 0 ? color.white : color.gray)
+    f_cell(20, "A등급 실측", wrA, closedA > 0 ? bullCol : color.gray)
+    f_cell(21, "B등급 실측", wrB, closedB > 0 ? color.new(#f0c14a, 0) : color.gray)
+    string lastTxt = isSigX ? ((exitOnOpp ? "반대합의" : "") + (exitOnOpp and exitOnFade ? " + " : "") + (exitOnFade ? "유지 " + str.tostring(holdNeed) + "표" : "") + (flipOnOpp ? "  · 뒤집기" : "") + (na(avgPct) ? "" : "  · 평균 " + str.tostring(avgPct, "#.##") + "%")) : (str.tostring(tp1R, "#.##") + "/" + str.tostring(tp2R, "#.##") + "/" + str.tostring(tp3R, "#.##") + "R  " + str.tostring(q1Pct, "#") + "/" + str.tostring(q2Pct, "#") + "/" + str.tostring(q3Pct, "#") + "%  ·  " + (usePctTrail ? str.tostring(trailPct, "#.#") + "% " + trailWhen : "트레일 꺼짐"))
+    f_cell(22, isSigX ? "신호 청산" : "TP / 트레일", lastTxt, color.new(#c8cdd8, 0))
+
+alertcondition(alertEntry and (isSigX ? openedL : longSignal), title="콤보 롱", message="HWR Combo LONG")
+alertcondition(alertEntry and (isSigX ? openedS : shortSignal), title="콤보 숏", message="HWR Combo SHORT")
+alertcondition(alertExit and closedNow, title="콤보 청산", message="HWR Combo EXIT")
+if alertEntry and not isSigX and longSignal
+    float aSlL = f_sl(true, close)
+    float aTp1L = f_tpR(true, close, aSlL, tp1R)
+    float aTp2L = f_tpR(true, close, aSlL, tp2R)
+    alert(botJson ? f_botEntry("LONG", gradeLong, aSlL, aTp1L, aTp2L) : "HWR Combo LONG  합의" + str.tostring(votesL) + "  " + gradeLong + " 확신 " + str.tostring(confLong) + "%  close=" + str.tostring(close), alert.freq_once_per_bar_close)
+if alertEntry and not isSigX and shortSignal
+    float aSlS = f_sl(false, close)
+    float aTp1S = f_tpR(false, close, aSlS, tp1R)
+    float aTp2S = f_tpR(false, close, aSlS, tp2R)
+    alert(botJson ? f_botEntry("SHORT", gradeShort, aSlS, aTp1S, aTp2S) : "HWR Combo SHORT  합의" + str.tostring(votesS) + "  " + gradeShort + " 확신 " + str.tostring(confShort) + "%  close=" + str.tostring(close), alert.freq_once_per_bar_close)

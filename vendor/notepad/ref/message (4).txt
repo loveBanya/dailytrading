@@ -1,0 +1,411 @@
+/// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+indicator("LuxQuant x Trendilio: Kinetic Runner Ultimate Master", shorttitle="LQ MASTER", overlay=true, max_labels_count=500, max_lines_count=500, max_bars_back=500)
+
+// ==========================================
+// 1. --- MASTER INPUT SELECTION SWITCHES ---
+// ==========================================
+settings_mode = input.string("Timeframe Auto Profile", "Settings Engine Mode", options=["Timeframe Auto Profile", "Manual Override"], group="Master Strategy Routing")
+strategy_tf   = input.string("1H Profile", "Active Strategy Timeframe Profile", options=["5M Profile", "15M Profile", "1H Profile", "4H Profile"], group="Master Strategy Routing")
+
+// CONTROLS: Toggle individual dashboard layouts on or off
+show_dash     = input.bool(true, "Show Multi-Timeframe Matrix Panel", group="Dashboard Panels Control")
+show_stats    = input.bool(true, "Show System Strategy Analytics & Win-Rates", group="Dashboard Panels Control")
+show_guide    = input.bool(true, "Show Strategy Trading Instructions Window", group="Dashboard Panels Control")
+
+// ==========================================
+// 2. --- MANUAL SETTINGS INPUTS (OVERRIDE) ---
+// ==========================================
+m_lMA = input.int(50, "Trend Filter Length (VWMA)", group="Manual Parameters (Override Options)")
+m_lRS = input.int(14, "RSI Length", group="Manual Parameters (Override Options)")
+m_lAT = input.int(10, "ATR Length", group="Manual Parameters (Override Options)")
+m_mAT = input.float(3.0, "ATR Multiplier", group="Manual Parameters (Override Options)")
+m_t1M = input.float(1.5, "Target 1 Mult (50% Cashout)", group="Manual Parameters (Override Options)")
+m_t2M = input.float(3.0, "Target 2 Mult (Runner/Bonus)", group="Manual Parameters (Override Options)")
+
+// Trendilio Manual Params
+m_alma_len = input.int(50, "Trendilio Length (ALMA)", group="Manual Parameters (Override Options)")
+m_alma_off = input.float(0.4, "Offset", step=0.05, group="Manual Parameters (Override Options)")
+m_alma_sig = input.float(6.0, "Sigma", group="Manual Parameters (Override Options)")
+
+// ==========================================
+// 3. --- BREAKEVEN & RISK MANAGEMENT ---
+// ==========================================
+move_to_be   = input.bool(true, "Move Stop Line to Breakeven at TP1", group="Runner Risk Lock")
+be_offset_pct= input.float(0.1, "Breakeven Fee Offset %", step=0.05, group="Runner Risk Lock")
+
+user_capital = input.float(1000.0, "Current Account Capital ($)", group="Position Sizing Calculator", tooltip="Update this manually to match your actual broker account balance.")
+risk_pct     = input.float(1.0, "Risk Per Trade (%)", step=0.1, group="Position Sizing Calculator")
+user_leverage= input.int(1, "Account Leverage (x)", minval=1, maxval=200, group="Position Sizing Calculator", tooltip="Leverage doesn't change your position size, it lowers the margin required to open it.")
+
+// Master Unified Alert Switches
+alert_buy   = input.bool(true, "Enable BUY Signals", group="Master Alert Filters")
+alert_sell  = input.bool(true, "Enable SELL Signals", group="Master Alert Filters")
+alert_elong = input.bool(true, "Enable CLOSE LONG Exits", group="Master Alert Filters")
+alert_eshrt = input.bool(true, "Enable CLOSE SHORT Exits", group="Master Alert Filters")
+
+// Visual Plots Controls
+show_st_sl = input.bool(true, "Show Supertrend Trailing Line", group="Visual Plots Control")
+show_tl_sl = input.bool(true, "Show Trendilio Runner Line", group="Visual Plots Control")
+tf1_sel    = input.timeframe("60", "Higher Timeframe 1 (e.g. 1h)", group="MTF Dashboard Customization")
+tf2_sel    = input.timeframe("240", "Higher Timeframe 2 (e.g. 4h)", group="MTF Dashboard Customization")
+dash_pos   = input.string("Top Right", "Dashboard Location", options=["Top Right", "Top Left", "Top Center", "Bottom Right", "Bottom Left", "Bottom Center", "Middle Right", "Middle Left", "Middle Center"], group="MTF Dashboard Customization")
+dash_size  = input.string("Small", "Dashboard Size", options=["Auto", "Tiny", "Small", "Normal", "Large"], group="MTF Dashboard Customization")
+
+// Dashboard Visual Layout Themes
+head_bg    = input.color(color.black, "Header Background Color", group="System Color Theme")
+head_txt   = input.color(color.white, "Header Text Color", group="System Color Theme")
+label_bg   = input.color(color.gray, "Factor Label Background", group="System Color Theme")
+label_txt  = input.color(color.white, "Factor Label Text", group="System Color Theme")
+
+bull_color = input.color(#089981, "Bullish Theme (Green)", group="System Theme")
+bear_color = input.color(#f23645, "Bearish Theme (Red)", group="System Theme")
+text_theme = input.color(color.white, "Status Text Color", group="System Theme")
+run_color  = input.color(color.blue, "Runner Line Color", group="System Theme")
+
+// Gradient Candle Tints & Visual Opacities
+grad_bull_low  = input.color(#c8e6c9, "Bull Gradient Start", group="Candle Colors")
+grad_bull_high = input.color(#089981, "Bull Gradient End", group="Candle Colors")
+grad_bear_low  = input.color(#ffcdd2, "Bear Gradient Start", group="Candle Colors")
+grad_bear_high = input.color(#f23645, "Bearish Gradient End", group="Candle Colors")
+bg_transparency = input.int(93, "Background Chart Transparency", minval=0, maxval=100, group="Visual Transparencies")
+fill_trans_bull = input.int(60, "Bull Stop Fill Transparency", minval=0, maxval=100, group="Visual Transparencies")
+fill_trans_bear = input.int(60, "Bear Stop Fill Transparency", minval=0, maxval=100, group="Visual Transparencies")
+
+// ==========================================
+// 4. --- STRATEGY ROUTING & TOP-LEVEL CALCULATIONS ---
+// ==========================================
+int lMA         = settings_mode == "Manual Override" ? m_lMA : (strategy_tf == "5M Profile" ? 20 : strategy_tf == "15M Profile" ? 30 : strategy_tf == "1H Profile" ? 50 : 100)
+int lRS         = settings_mode == "Manual Override" ? m_lRS : (strategy_tf == "5M Profile" ? 7 : strategy_tf == "15M Profile" ? 10 : strategy_tf == "1H Profile" ? 14 : 21)
+int lAT         = settings_mode == "Manual Override" ? m_lAT : (strategy_tf == "5M Profile" ? 14 : strategy_tf == "15M Profile" ? 12 : strategy_tf == "1H Profile" ? 10 : 14)
+float mAT       = settings_mode == "Manual Override" ? m_mAT : (strategy_tf == "5M Profile" ? 2.5 : strategy_tf == "15M Profile" ? 2.8 : strategy_tf == "1H Profile" ? 3.0 : 3.5)
+float t1M       = settings_mode == "Manual Override" ? m_t1M : (strategy_tf == "5M Profile" ? 1.0 : strategy_tf == "15M Profile" ? 1.2 : strategy_tf == "1H Profile" ? 1.5 : 2.0)
+float t2M       = settings_mode == "Manual Override" ? m_t2M : (strategy_tf == "5M Profile" ? 2.0 : strategy_tf == "15M Profile" ? 2.5 : strategy_tf == "1H Profile" ? 3.0 : 4.0)
+int alma_len    = settings_mode == "Manual Override" ? m_alma_len : (strategy_tf == "5M Profile" ? 20 : strategy_tf == "15M Profile" ? 30 : strategy_tf == "1H Profile" ? 50 : 100)
+float alma_off  = settings_mode == "Manual Override" ? m_alma_off : (strategy_tf == "5M Profile" ? 0.35 : strategy_tf == "15M Profile" ? 0.38 : strategy_tf == "1H Profile" ? 0.40 : 0.45)
+float alma_sig  = settings_mode == "Manual Override" ? m_alma_sig : (strategy_tf == "5M Profile" ? 5.0 : strategy_tf == "15M Profile" ? 5.5 : strategy_tf == "1H Profile" ? 6.0 : 6.5)
+
+string active_mode_label = settings_mode == "Manual Override" ? "Manual Mode" : strategy_tf
+
+// Core Current Timeframe Calculations
+vMA = ta.vwma(close, lMA)
+vRS = ta.rsi(close, lRS)
+vAT = ta.atr(lAT)
+[sT_raw, sD] = ta.supertrend(mAT, lAT)
+
+tB = close > vMA
+mB = vRS > 50
+sB = sD < 0
+
+var int trend = 0
+if tB and mB and sB
+    trend := 1
+else if not tB and not mB and not sB
+    trend := -1
+else if (trend == 1 and close < sT_raw) or (trend == -1 and close > sT_raw)
+    trend := 0
+
+// RESTORED PURE STRATEGY ENTRY TRIGGERS
+sigB = (tB and mB and sB) and trend[1] != 1
+sigS = (not tB and not mB and not sB) and trend[1] != -1
+
+trendilio_line = ta.alma(close, alma_len, alma_off, alma_sig)
+raw_exit_long  = ta.crossunder(close, trendilio_line)
+raw_exit_short = ta.crossover(close, trendilio_line)
+
+// Reusable Static Framework for MTF Lookups to prevent silent data failure locks
+calc_system_static(_close, _vwma, _rsi, _st_direction) =>
+    _tB = nz(_close) > nz(_vwma)
+    _mB = nz(_rsi) > 50
+    _sB = nz(_st_direction) < 0
+    int _tr = 0
+    if _tB and _mB and _sB
+        _tr := 1
+    else if not _tB and not _mB and not _sB
+        _tr := -1
+    _tr
+
+// Function to calculate all MTF data in one tuple
+get_mtf_data(_lMA, _lRS, _mAT, _lAT) =>
+    _vwma = ta.vwma(close, _lMA)
+    _rsi  = ta.rsi(close, _lRS)
+    [_, _sd] = ta.supertrend(_mAT, _lAT)
+    [close, _vwma, _rsi, _sd]
+
+// Optimization 1: Grouping 8 request.security calls into just 2 tuple calls
+[mtf_close1, mtf_vwma1, mtf_rsi1, d1] = request.security(syminfo.tickerid, tf1_sel, get_mtf_data(lMA, lRS, mAT, lAT), lookahead=barmerge.lookahead_off)
+[mtf_close2, mtf_vwma2, mtf_rsi2, d2] = request.security(syminfo.tickerid, tf2_sel, get_mtf_data(lMA, lRS, mAT, lAT), lookahead=barmerge.lookahead_off)
+
+current_trend = calc_system_static(close, vMA, vRS, sD)
+tf1_trend     = calc_system_static(mtf_close1, mtf_vwma1, mtf_rsi1, d1)
+tf2_trend     = calc_system_static(mtf_close2, mtf_vwma2, mtf_rsi2, d2)
+
+// ==========================================
+// 5. --- TRACKING STATE MACHINE RULES ---
+// ==========================================
+var bool inside_long_trade  = false
+var bool inside_short_trade = false
+var float active_t1         = na
+var float active_t2         = na
+var bool tp1_hit            = false
+var float be_stop_price     = na
+
+// DATA ACCOUNTING ENGINE VARIABLES
+var int total_trades    = 0
+var int tp1_wins        = 0
+var float max_run_gain  = 0.0
+var float current_entry = 0.0
+
+if sigB
+    inside_long_trade  := true
+    inside_short_trade := false
+    tp1_hit            := false
+    active_t1          := close + (vAT * t1M)
+    active_t2          := close + (vAT * t2M)
+    be_stop_price      := close * (1.0 + (be_offset_pct / 100.0))
+    current_entry      := close
+    total_trades       += 1
+
+if sigS
+    inside_short_trade := true
+    inside_long_trade  := false
+    tp1_hit            := false
+    active_t1          := close - (vAT * t1M)
+    active_t2          := close - (vAT * t2M)
+    be_stop_price      := close * (1.0 - (be_offset_pct / 100.0))
+    current_entry      := close
+    total_trades       += 1
+
+// Optimization 3: Added nz() to active_t1 to prevent potential NA evaluation errors on the very first bar
+if inside_long_trade and high >= nz(active_t1, high + 1) and not tp1_hit
+    tp1_hit  := true
+    tp1_wins += 1
+
+if inside_short_trade and low <= nz(active_t1, low - 1) and not tp1_hit
+    tp1_hit  := true
+    tp1_wins += 1
+
+if inside_long_trade and current_entry > 0
+    max_run_gain := math.max(max_run_gain, ((high - current_entry) / current_entry) * 100.0)
+if inside_short_trade and current_entry > 0
+    max_run_gain := math.max(max_run_gain, ((current_entry - low) / current_entry) * 100.0)
+
+// Dynamic Trailing Floor Manipulation Switch (Breakeven Snap Logic)
+float sT = sT_raw
+if move_to_be and tp1_hit and trend != 0 and not na(be_stop_price)
+    sT := be_stop_price
+
+exit_runner_long  = false
+exit_runner_short = false
+
+if inside_long_trade
+    bool be_hit_long = move_to_be and tp1_hit and close <= nz(be_stop_price, 0)
+    if (tp1_hit and raw_exit_long) or be_hit_long or trend == 0
+        exit_runner_long  := true
+        inside_long_trade := false 
+        be_stop_price      := na
+
+if inside_short_trade
+    bool be_hit_short = move_to_be and tp1_hit and close >= nz(be_stop_price, 999999)
+    if (tp1_hit and raw_exit_short) or be_hit_short or trend == 0
+        exit_runner_short := true
+        inside_short_trade := false 
+        be_stop_price      := na
+
+// ==========================================
+// 6. --- VISUAL CHART PLOTS ---
+// ==========================================
+barcolor(trend == 1 ? color.from_gradient(vRS, 50, 75, grad_bull_low, grad_bull_high) : trend == -1 ? color.from_gradient(vRS, 25, 50, grad_bear_high, grad_bear_low) : na)
+
+pP = plot(close, "P", color=na, display=display.none)
+pS = plot(show_st_sl ? sT : na, "S", color = sD < 0 ? bull_color : bear_color, linewidth=2, style=plot.style_linebr)
+fill(pS, pP, sD < 0 ? close : sT, sD < 0 ? sT : close, sD < 0 ? color.new(bull_color, fill_trans_bull) : color.new(bear_color, 100), sD < 0 ? color.new(bull_color, 100) : color.new(bear_color, fill_trans_bear))
+
+plot(show_tl_sl ? trendilio_line : na, "Trendilio Runner", color=run_color, linewidth=2)
+
+// Targets tied directly to active trade status
+var float target1 = na
+var float target2 = na
+
+if sigB
+    target1 := close + (vAT * t1M)
+    target2 := close + (vAT * t2M)
+    label.new(bar_index, target1, "T1 (50%)", color=#00000000, textcolor=bull_color, style=label.style_label_left, size=size.small)
+else if sigS
+    target1 := close - (vAT * t1M)
+    target2 := close - (vAT * t2M)
+    label.new(bar_index, target1, "T1 (50%)", color=#00000000, textcolor=bear_color, style=label.style_label_left, size=size.small)
+else if trend == 0 or (trend == 1 and exit_runner_long) or (trend == -1 and exit_runner_short)
+    target1 := na
+    target2 := na
+
+plot(trend != 0 ? target1 : na, "Target 1", color = trend == 1 ? bull_color : bear_color, style=plot.style_circles)
+plot(trend != 0 ? target2 : na, "Target 2", color = trend == 1 ? color.new(bull_color, 30) : color.new(bear_color, 30), style=plot.style_circles)
+
+plotshape(sigB ? low : na, "BUY", shape.triangleup, location.belowbar, bull_color, size=size.small, text="BUY", textcolor=bull_color)
+plotshape(sigS ? high : na, "SELL", shape.triangledown, location.abovebar, bear_color, size=size.small, text="SELL", textcolor=bear_color)
+
+plotshape(exit_runner_long, "EXIT LONG", shape.xcross, location.abovebar, bear_color, size=size.small, text="CLOSE LONG", textcolor=bear_color)
+plotshape(exit_runner_short, "EXIT SHORT", shape.xcross, location.belowbar, bull_color, size=size.small, text="CLOSE SHORT", textcolor=bull_color)
+
+bgcolor(trend == 1 ? color.new(bull_color, bg_transparency) : trend == -1 ? color.new(bear_color, bg_transparency) : na)
+
+// ==========================================
+// 7. --- DYNAMIC PANEL POSITIONING ---
+// ==========================================
+var pos_anchor = position.top_right
+var guide_anchor = position.top_center
+if dash_pos == "Top Left"
+    pos_anchor := position.top_left, guide_anchor := position.middle_left
+else if dash_pos == "Top Center"
+    pos_anchor := position.top_center, guide_anchor := position.bottom_center
+else if dash_pos == "Bottom Right"
+    pos_anchor := position.bottom_right, guide_anchor := position.middle_right
+else if dash_pos == "Bottom Left"
+    pos_anchor := position.bottom_left, guide_anchor := position.middle_left
+else if dash_pos == "Bottom Center"
+    pos_anchor := position.bottom_center, guide_anchor := position.top_center
+else if dash_pos == "Middle Right"
+    pos_anchor := position.middle_right, guide_anchor := position.top_center
+else if dash_pos == "Middle Left"
+    pos_anchor := position.middle_left, guide_anchor := position.top_center
+else if dash_pos == "Middle Center"
+    pos_anchor := position.middle_center, guide_anchor := position.top_center
+
+string txt_sz = size.small
+if dash_size == "Auto"
+    txt_sz := size.auto
+else if dash_size == "Tiny"
+    txt_sz := size.tiny
+else if dash_size == "Normal"
+    txt_sz := size.normal
+else if dash_size == "Large"
+    txt_sz := size.large
+
+// ==========================================
+// 8. --- POSITION SIZER CALCULATION ---
+// ==========================================
+// Calculate real-time position sizing based on current bar's distance to Supertrend stop loss
+float risk_amount_usd = user_capital * (risk_pct / 100.0)
+float sl_distance_raw = math.abs(close - sT_raw)
+float sl_distance_safe = math.max(sl_distance_raw, syminfo.mintick) // Prevent division by zero
+
+// Total units to buy regardless of leverage
+float position_size_units = risk_amount_usd / sl_distance_safe
+// Total $ value of the position
+float total_position_value = position_size_units * close
+// Actual margin required from the account to open the trade
+float margin_required = total_position_value / user_leverage
+
+// ==========================================
+// 9. --- UNIFIED DISPLAY & TOGGLED INSTRUCTIONS SYSTEM ---
+// ==========================================
+var table dashTable  = show_dash ? table.new(pos_anchor, 2, 15, border_width=1) : na // Increased rows to 15
+var table guideTable = show_guide ? table.new(guide_anchor, 1, 5, border_width=1) : na
+
+if barstate.islast
+    if show_dash
+        string status_btn_text = "⛔ NO TRADE"
+        color status_btn_bg   = color.gray
+        if trend == 1
+            status_btn_text := "🚀 BULL RUN"
+            status_btn_bg   := bull_color
+        else if trend == -1
+            status_btn_text := "📉 WATERFALL"
+            status_btn_bg   := bear_color
+            
+        table.merge_cells(dashTable, 0, 0, 1, 0)
+        table.cell(dashTable, 0, 0, status_btn_text, bgcolor=status_btn_bg, text_color=text_theme, text_size=txt_sz)
+        
+        table.cell(dashTable, 0, 1, "TIMEFRAME", bgcolor=head_bg, text_color=head_txt, text_size=txt_sz)
+        table.cell(dashTable, 1, 1, "TREND STATUS", bgcolor=head_bg, text_color=head_txt, text_size=txt_sz)
+        
+        c_color = current_trend == 1 ? bull_color : current_trend == -1 ? bear_color : color.gray
+        c_txt   = current_trend == 1 ? "BULL" : current_trend == -1 ? "BEAR" : "NEUTRAL"
+        table.cell(dashTable, 0, 2, timeframe.period + " (" + active_mode_label + ")", bgcolor=label_bg, text_color=label_txt, text_size=txt_sz)
+        table.cell(dashTable, 1, 2, c_txt, bgcolor=c_color, text_color=text_theme, text_size=txt_sz)
+        
+        tf1_c   = tf1_trend == 1 ? bull_color : tf1_trend == -1 ? bear_color : color.gray
+        tf1_t   = tf1_trend == 1 ? "BULL" : tf1_trend == -1 ? "BEAR" : "NEUTRAL"
+        table.cell(dashTable, 0, 3, tf1_sel, bgcolor=label_bg, text_color=label_txt, text_size=txt_sz)
+        table.cell(dashTable, 1, 3, tf1_t, bgcolor=tf1_c, text_color=text_theme, text_size=txt_sz)
+        
+        tf2_c   = tf2_trend == 1 ? bull_color : tf2_trend == -1 ? bear_color : color.gray
+        tf2_t   = tf2_trend == 1 ? "BULL" : tf2_trend == -1 ? "BEAR" : "NEUTRAL"
+        table.cell(dashTable, 0, 4, tf2_sel, bgcolor=label_bg, text_color=label_txt, text_size=txt_sz)
+        table.cell(dashTable, 1, 4, tf2_t, bgcolor=tf2_c, text_color=text_theme, text_size=txt_sz)
+
+        c_trend = tB ? bull_color : bear_color
+        c_mom   = mB ? bull_color : bear_color
+        c_vol   = sB ? bull_color : bear_color
+        table.cell(dashTable, 0, 5, "Trend (VWMA)", bgcolor=label_bg, text_color=label_txt, text_size=txt_sz)
+        table.cell(dashTable, 1, 5, tB ? "BULL" : "BEAR", bgcolor=c_trend, text_color=text_theme, text_size=txt_sz)
+        table.cell(dashTable, 0, 6, "Momentum (RSI)", bgcolor=label_bg, text_color=label_txt, text_size=txt_sz)
+        table.cell(dashTable, 1, 6, mB ? "BULL" : "BEAR", bgcolor=c_mom, text_color=text_theme, text_size=txt_sz)
+        table.cell(dashTable, 0, 7, "Volatility (ATR)", bgcolor=label_bg, text_color=label_txt, text_size=txt_sz)
+        table.cell(dashTable, 1, 7, sB ? "BULL" : "BEAR", bgcolor=c_vol, text_color=text_theme, text_size=txt_sz)
+
+        if show_stats
+            float win_rate = total_trades > 0 ? (float(tp1_wins) / float(total_trades)) * 100.0 : 0.0
+            table.cell(dashTable, 0, 8, "Total Signals", bgcolor=head_bg, text_color=head_txt, text_size=txt_sz)
+            table.cell(dashTable, 1, 8, str.tostring(total_trades), bgcolor=label_bg, text_color=label_txt, text_size=txt_sz)
+            table.cell(dashTable, 0, 9, "TP1 Cashout Accuracy", bgcolor=head_bg, text_color=head_txt, text_size=txt_sz)
+            table.cell(dashTable, 1, 9, str.tostring(win_rate, "#.##") + "%", bgcolor=win_rate >= 50.0 ? bull_color : bear_color, text_color=text_theme, text_size=txt_sz)
+            table.cell(dashTable, 0, 10, "Peak Max Runner Run", bgcolor=head_bg, text_color=head_txt, text_size=txt_sz)
+            table.cell(dashTable, 1, 10, "+" + str.tostring(max_run_gain, "#.##") + "%", bgcolor=label_bg, text_color=label_txt, text_size=txt_sz)
+
+        // --- POSITION SIZER ROWS ---
+        table.cell(dashTable, 0, 11, "Risk Amount (" + str.tostring(risk_pct) + "%)", bgcolor=head_bg, text_color=head_txt, text_size=txt_sz)
+        table.cell(dashTable, 1, 11, "$" + str.tostring(risk_amount_usd, "#.##"), bgcolor=label_bg, text_color=label_txt, text_size=txt_sz)
+        
+        table.cell(dashTable, 0, 12, "Est. Stop Distance", bgcolor=head_bg, text_color=head_txt, text_size=txt_sz)
+        table.cell(dashTable, 1, 12, str.tostring((sl_distance_safe / close) * 100, "#.##") + "%", bgcolor=label_bg, text_color=label_txt, text_size=txt_sz)
+
+        table.cell(dashTable, 0, 13, "Rec. Position Size", bgcolor=head_bg, text_color=head_txt, text_size=txt_sz)
+        table.cell(dashTable, 1, 13, str.tostring(position_size_units, "#.####") + " Units", bgcolor=color.new(bull_color, 20), text_color=text_theme, text_size=txt_sz)
+        
+        table.cell(dashTable, 0, 14, str.tostring(user_leverage) + "x Margin Needed", bgcolor=head_bg, text_color=head_txt, text_size=txt_sz)
+        table.cell(dashTable, 1, 14, "$" + str.tostring(margin_required, "#.##"), bgcolor=color.new(bull_color, 50), text_color=text_theme, text_size=txt_sz)
+
+
+    if show_guide
+        string step1_txt = "Step 1 (The Bias): MTF Cloud Background must be GREEN/BULLISH before buying."
+        string step2_txt = "Step 2 (The Trigger): Wait for a Green Triangle ('BUY') arrow to print."
+        string step3_txt = "Step 3 (Trade Status): Main Trend cloud confirms trade is active and tracking."
+        string step4_txt = "Step 4 (Risk Lock): At Target 1, cash out 50%. S Line automatically snaps to Breakeven +0.1%."
+        
+        if trend == -1 or inside_short_trade
+            step1_txt := "Step 1 (The Bias): MTF Cloud Background must be RED/BEARISH before shorting."
+            step2_txt := "Step 2 (The Trigger): Wait for a Red Triangle ('SELL') arrow to print."
+            step3_txt := "Step 3 (Trade Status): Main Trend cloud confirms short trade is active."
+            step4_txt := "Step 4 (Risk Lock): At Target 1, cash out 50%. S Line automatically snaps to Breakeven -0.1%."
+        else if inside_long_trade
+            step1_txt := "STATUS: ACTIVE LONG RUNNER TRADE"
+            step2_txt := "Stop Loss Floor: Supertrend (S Line) is tracking behind your candles."
+            step3_txt := "Take Profit 1: Green Circle Target. Triggers 50% exit and shifts S Line to Breakeven."
+            step4_txt := "Trailing Exit: If Target 1 is cleared, a clean cross under the Blue Trendilio line closes the remaining 50%."
+
+        table.cell(guideTable, 0, 1, step1_txt, bgcolor=label_bg, text_color=label_txt, text_size=txt_sz, text_halign=text.align_left)
+        table.cell(guideTable, 0, 2, step2_txt, bgcolor=label_bg, text_color=label_txt, text_size=txt_sz, text_halign=text.align_left)
+        table.cell(guideTable, 0, 3, step3_txt, bgcolor=label_bg, text_color=label_txt, text_size=txt_sz, text_halign=text.align_left)
+        table.cell(guideTable, 0, 4, step4_txt, bgcolor=label_bg, text_color=label_txt, text_size=txt_sz, text_halign=text.align_left)
+
+// ==========================================
+// 10. --- MASTER ALERT ENGINE ---
+// ==========================================
+fire_buy   = sigB and alert_buy
+fire_sell  = sigS and alert_sell
+fire_elong = exit_runner_long and alert_elong
+fire_eshrt = exit_runner_short and alert_eshrt
+
+if fire_buy
+    alert("Kinetic Master BUY Signal! Mode: " + active_mode_label + " Price: " + str.tostring(close), alert.freq_once_per_bar_close)
+
+if fire_sell
+    alert("Kinetic Master SELL Signal! Mode: " + active_mode_label + " Price: " + str.tostring(close), alert.freq_once_per_bar_close)
+
+if fire_elong
+    alert("Kinetic Master CLOSE LONG Exit Triggered! Price: " + str.tostring(close), alert.freq_once_per_bar_close)
+
+if fire_eshrt
+    alert("Kinetic Master CLOSE SHORT Exit Triggered! Price: " + str.tostring(close), alert.freq_once_per_bar_close)

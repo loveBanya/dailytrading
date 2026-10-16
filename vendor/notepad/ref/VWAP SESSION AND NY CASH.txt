@@ -1,0 +1,575 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Uno_Mas
+
+//@version=6
+
+// ============================================================================
+// VWAP SESSION AND NY CASH
+// ============================================================================
+//
+// OVERVIEW:
+// This indicator displays two Volume Weighted Average Price (VWAP) lines designed
+// specifically for US equity markets:
+//
+//   1. NY VWAP (Cash Session VWAP) - Calculates VWAP for regular trading hours
+//      only (9:30 AM - 4:00 PM ET). Resets daily at market open.
+//
+//   2. Session VWAP - Calculates VWAP for the full trading session including
+//      pre-market and after-hours (6:00 PM - 4:00 PM ET next day). Only displays
+//      when extended hours data is available on the chart.
+//
+// The Session VWAP also supports standard deviation bands for identifying
+// potential support/resistance levels.
+//
+// ============================================================================
+
+indicator("VWAP Session and NY Cash", overlay = true)
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+// Time session definitions (America/New_York timezone)
+const string TIMEZONE           = "America/New_York"
+const string EXTENDED_SESSION   = "1800-0929"  // Extended hours: 6:00 PM to 9:29 AM
+const string MARKET_SESSION     = "0930-1600"  // Regular market: 9:30 AM to 4:00 PM
+const string IB_SESSION         = "0930-1030"  // Initial Balance: first hour
+
+// Fully transparent color for label backgrounds
+transparent = color.rgb(0, 0, 0, 100)
+
+// ============================================================================
+// USER INPUTS
+// ============================================================================
+
+// Calculation Settings
+CALC_GROUP = "Calculation"
+i_enableHD = input.bool(true, title = "Use 5-min data for precision", group = CALC_GROUP, tooltip = "On chart timeframes above 5 minutes, calculate VWAP using 5-minute bars for more accurate values. Prevents VWAP drift on higher timeframe charts.")
+i_debugLog = input.bool(false, title = "Debug Logging", group = CALC_GROUP, tooltip = "Enable logging to Pine Logs for debugging. Logs every 30 minutes.")
+
+// NY Cash VWAP Settings
+NY_GROUP = "NY VWAP"
+i_NY_color          = input.color(color.new(#4caf50, 0), title = "Color", group = NY_GROUP, inline = "line")
+i_NY_width          = input.int(1, title = "Width", group = NY_GROUP, inline = "line")
+i_NY_style          = input.string("Solid", title = "Style", options = ["Solid", "Dashed", "Dotted"], group = NY_GROUP, inline = "line")
+i_NY_showlabel      = input.bool(true, title = "Show Label", group = NY_GROUP, inline = "label")
+i_NY_label          = input.string("NYVWAP", title = "", group = NY_GROUP, inline = "label")
+i_NY_labelOffset    = input.int(0, title = "Offset", group = NY_GROUP, inline = "label")
+i_NY_txtSize        = str.lower(input.string("Normal", title = "Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = NY_GROUP))
+i_NY_showPriceScale = input.bool(true, title = "Show in Price Scale", group = NY_GROUP)
+
+// NY Open & IB Settings
+NY_OPEN_GROUP = "NY Open & Initial Balance"
+i_showNYOpen      = input.bool(true, "Show NY Open", group = NY_OPEN_GROUP)
+i_nyOpenColor     = input.color(color.gray, "Open Color", group = NY_OPEN_GROUP, inline = "open")
+i_nyOpenStyle     = input.string("Dashed", "Style", options = ["Solid", "Dashed", "Dotted"], group = NY_OPEN_GROUP, inline = "open")
+i_showNYOpenLabel = input.bool(true, "Show Label", group = NY_OPEN_GROUP, inline = "open_lab")
+i_nyOpenLabelText = input.string("NY Open", "", group = NY_OPEN_GROUP, inline = "open_lab")
+
+i_showIB          = input.bool(true, "Show Initial Balance (IB)", group = NY_OPEN_GROUP)
+i_ibColor         = input.color(color.new(#5b9cf6, 0), "IB Color", group = NY_OPEN_GROUP, inline = "ib")
+i_ibStyle         = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"], group = NY_OPEN_GROUP, inline = "ib")
+i_ibWidth         = input.int(1, "Width", group = NY_OPEN_GROUP, inline = "ib")
+i_showIBLabel     = input.bool(true, "Show Labels", group = NY_OPEN_GROUP, inline = "ib_lab")
+i_ibHighLabelText = input.string("IB High", "", group = NY_OPEN_GROUP, inline = "ib_lab")
+i_ibLowLabelText  = input.string("IB Low", "", group = NY_OPEN_GROUP, inline = "ib_lab")
+i_openIBLabOffset = input.int(0, "Label Offset", group = NY_OPEN_GROUP)
+
+// Session VWAP Settings
+SESSION_GROUP = "Session VWAP"
+i_Session_enabled        = input.bool(true, title = "Enabled", group = SESSION_GROUP, tooltip = "Disable to skip Session VWAP calculation and rendering. Useful when using the built-in VWAP indicator separately.")
+i_Session_color          = input.color(color.new(#04eb85, 0), title = "Color", group = SESSION_GROUP, inline = "line")
+i_Session_width          = input.int(2, title = "Width", group = SESSION_GROUP, inline = "line")
+i_Session_style          = input.string("Dashed", title = "Style", options = ["Solid", "Dashed", "Dotted"], group = SESSION_GROUP, inline = "line")
+i_Session_showlabel      = input.bool(true, title = "Show Label", group = SESSION_GROUP, inline = "label")
+i_Session_label          = input.string("VWAP", title = "", group = SESSION_GROUP, inline = "label")
+i_Session_labelOffset    = input.int(0, title = "Offset", group = SESSION_GROUP, inline = "label")
+i_Session_txtSize        = str.lower(input.string("Normal", title = "Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = SESSION_GROUP))
+i_Session_showPriceScale = input.bool(true, title = "Show in Price Scale", group = SESSION_GROUP)
+
+// Session VWAP Bands Settings
+BANDS_GROUP = "Session VWAP Bands"
+i_showBand1       = input.bool(false, title = "Band Std Dev #1", group = BANDS_GROUP, inline = "band1a")
+i_bandMult1       = input.float(1.0, title = "", group = BANDS_GROUP, inline = "band1a", step = 0.5, minval = 0)
+i_bandStyle1      = input.string("Solid", title = "", options = ["Solid", "Dashed", "Dotted"], group = BANDS_GROUP, inline = "band1a")
+i_bandColor1      = input.color(color.new(color.green, 0), title = "Line", group = BANDS_GROUP, inline = "band1b")
+i_bandFill1       = input.color(color.new(color.green, 90), title = "Fill", group = BANDS_GROUP, inline = "band1b")
+i_bandPriceScale1 = input.bool(false, title = "Price Scale", group = BANDS_GROUP, inline = "band1b")
+
+i_showBand2       = input.bool(false, title = "Band Std Dev #2", group = BANDS_GROUP, inline = "band2a")
+i_bandMult2       = input.float(2.0, title = "", group = BANDS_GROUP, inline = "band2a", step = 0.5, minval = 0)
+i_bandStyle2      = input.string("Solid", title = "", options = ["Solid", "Dashed", "Dotted"], group = BANDS_GROUP, inline = "band2a")
+i_bandColor2      = input.color(color.new(color.olive, 0), title = "Line", group = BANDS_GROUP, inline = "band2b")
+i_bandFill2       = input.color(color.new(color.olive, 90), title = "Fill", group = BANDS_GROUP, inline = "band2b")
+i_bandPriceScale2 = input.bool(false, title = "Price Scale", group = BANDS_GROUP, inline = "band2b")
+
+i_showBand3       = input.bool(false, title = "Band Std Dev #3", group = BANDS_GROUP, inline = "band3a")
+i_bandMult3       = input.float(3.0, title = "", group = BANDS_GROUP, inline = "band3a", step = 0.5, minval = 0)
+i_bandStyle3      = input.string("Solid", title = "", options = ["Solid", "Dashed", "Dotted"], group = BANDS_GROUP, inline = "band3a")
+i_bandColor3      = input.color(color.new(color.teal, 0), title = "Line", group = BANDS_GROUP, inline = "band3b")
+i_bandFill3       = input.color(color.new(color.teal, 90), title = "Fill", group = BANDS_GROUP, inline = "band3b")
+i_bandPriceScale3 = input.bool(false, title = "Price Scale", group = BANDS_GROUP, inline = "band3b")
+
+// ============================================================================
+// USER DEFINED TYPE
+// ============================================================================
+type myVWAP
+    label lab
+    int lab_offset
+    bool isActive = true
+    float cumPV = 0.0
+    float cumVol = 0.0
+    float vwap = na
+
+// ============================================================================
+// STATE VARIABLES
+// ============================================================================
+
+// Session VWAP - tracks full trading day (including extended hours)
+var myVWAP sessionVWAP = myVWAP.new(
+     label.new(bar_index, 0.0, text = "", style = label.style_label_left, color = transparent, textcolor = color.new(i_Session_color, 0), size = i_Session_txtSize),
+     i_Session_labelOffset
+ )
+
+// Cash VWAP uses two alternating instances to handle the market open transition smoothly.
+// When market opens, we swap which VWAP is "active" - the inactive one continues displaying
+// the previous day's VWAP while the active one calculates the new day's VWAP.
+// This prevents visual discontinuities at market open.
+// Note: Each cash VWAP has its own label for independent control
+var myVWAP cashVWAP1 = myVWAP.new(
+     label.new(bar_index, 0.0, text = "", style = label.style_label_left, color = transparent, textcolor = color.new(i_NY_color, 0), size = i_NY_txtSize),
+     i_NY_labelOffset
+ )
+
+var myVWAP cashVWAP2 = myVWAP.new(
+     label.new(bar_index, 0.0, text = "", style = label.style_label_left, color = transparent, textcolor = color.new(i_NY_color, 0), size = i_NY_txtSize),
+     i_NY_labelOffset,
+     isActive = false
+ )
+
+// NY Open and IB Variables
+var float nyOpenPrice = na
+var float ibHigh = na
+var float ibLow = na
+
+// NY Open and IB Labels
+var label nyOpenLab = label.new(bar_index, 0.0, text = "", style = label.style_label_left, color = transparent, textcolor = i_nyOpenColor, size = size.normal)
+var label ibHighLab = label.new(bar_index, 0.0, text = "", style = label.style_label_left, color = transparent, textcolor = i_ibColor, size = size.normal)
+var label ibLowLab  = label.new(bar_index, 0.0, text = "", style = label.style_label_left, color = transparent, textcolor = i_ibColor, size = size.normal)
+
+// Display configurations
+var sessionVWAPdisplay = i_Session_showPriceScale ? display.pane + display.data_window + display.status_line + display.price_scale : display.pane + display.data_window + display.status_line
+
+// Note: This display config excludes display.pane because we have separate plots for cashVWAP1/cashVWAP2 that handle pane display
+var cashVWAPdisplay = i_NY_showPriceScale ? display.data_window + display.status_line + display.price_scale : display.data_window + display.status_line
+
+// Tracks which cash VWAP instance (1 or 2) is currently active
+var int activeCashVWAP = 1
+
+// Whether to show session VWAP (only shown if extended hours data exists)
+var bool showSessionVWAP = false
+
+// First run flag for initialization
+var bool firstRun = true
+
+// Tracks if we've detected extended hours candles (used to determine if session VWAP should be displayed)
+var bool hasExtendedHoursData = false
+
+// Session VWAP Band values
+var float upperBand1 = na
+var float lowerBand1 = na
+var float upperBand2 = na
+var float lowerBand2 = na
+var float upperBand3 = na
+var float lowerBand3 = na
+
+// ============================================================================
+// VWAP FUNCTIONS
+// ============================================================================
+
+// Resets VWAP cumulative values to start fresh calculation
+resetVWAP(myVWAP vwap) =>
+    vwap.cumPV := 0.0
+    vwap.cumVol := 0.0
+    vwap.vwap := 0.0
+
+// Updates VWAP calculation with current bar's data
+updateVWAP(myVWAP vwap, bool showLabel, string labelText) =>
+    if vwap.isActive
+        vwap.cumPV += hlc3 * volume
+        vwap.cumVol += volume
+        vwap.vwap := vwap.cumVol > 0 ? vwap.cumPV / vwap.cumVol : na
+
+        vwap.lab.set_x(bar_index + vwap.lab_offset)
+        vwap.lab.set_y(vwap.vwap)
+        vwap.lab.set_text(showLabel ? labelText : "")
+        vwap.lab.set_tooltip(showLabel ? str.tostring(vwap.vwap, format.mintick) : "")
+
+// Calculates VWAP using built-in ta.vwap for higher timeframes (daily/weekly)
+calcHigherTimeframeVWAP(myVWAP vwap, simple string vwapPeriod, bool showLabel, string labelText) =>
+    vwap.vwap := ta.vwap(hlc3, timeframe.change(vwapPeriod))
+    vwap.lab.set_x(bar_index + vwap.lab_offset)
+    vwap.lab.set_y(vwap.vwap)
+    vwap.lab.set_text(showLabel ? labelText : "")
+    vwap.lab.set_tooltip(showLabel ? str.tostring(vwap.vwap, format.mintick) : "")
+
+// HD Mode helper: Detect if current bar is the first bar at or after 9:30 AM (market open)
+f_isMarketOpen5min() =>
+    h = hour(time, TIMEZONE)
+    m = minute(time, TIMEZONE)
+    ph = hour(time[1], TIMEZONE)
+    pm = minute(time[1], TIMEZONE)
+    // Current bar is exactly 9:30, OR current bar is after 9:30 and previous was before
+    currAt930 = (h == 9 and m == 30)
+    currAfter930 = h > 9 or (h == 9 and m >= 30)
+    prevBefore930 = ph < 9 or (ph == 9 and pm < 30)
+    currAt930 or (currAfter930 and prevBefore930)
+
+// HD Mode helper: Detect if current bar is within market hours (9:30 AM - 4:00 PM ET)
+f_inMarketHours() =>
+    h = hour(time, TIMEZONE)
+    m = minute(time, TIMEZONE)
+    afterOpen = h > 9 or (h == 9 and m >= 30)
+    beforeClose = h < 16
+    afterOpen and beforeClose
+
+// ============================================================================
+// VOLUME VALIDATION
+// ============================================================================
+cumVolume = ta.cum(volume)
+if barstate.islast and cumVolume == 0
+    runtime.error("No volume is provided by the data vendor.")
+
+// ============================================================================
+// SESSION DETECTION
+// ============================================================================
+bool isExtendedSession = not na(time(timeframe.period, EXTENDED_SESSION, TIMEZONE))
+bool isMarketSession = not na(time(timeframe.period, MARKET_SESSION, TIMEZONE))
+bool isMarketOpen = isMarketSession and (isMarketSession != isMarketSession[1])
+bool isIBPeriod = not na(time(timeframe.period, IB_SESSION, TIMEZONE))
+
+// ============================================================================
+// MAIN LOGIC
+// ============================================================================
+
+// First run initialization
+if firstRun
+    firstRun := false
+    if timeframe.isdaily or timeframe.isweekly
+        // Delete cash VWAP labels on daily/weekly (not applicable)
+        label.delete(cashVWAP1.lab)
+        label.delete(cashVWAP2.lab)
+        label.delete(nyOpenLab)
+        label.delete(ibHighLab)
+        label.delete(ibLowLab)
+    // Delete session VWAP label if disabled
+    if not i_Session_enabled
+        label.delete(sessionVWAP.lab)
+
+// Handle different timeframes
+if timeframe.isdaily
+    // Daily chart: use weekly VWAP anchor
+    if i_Session_enabled
+        calcHigherTimeframeVWAP(sessionVWAP, "1W", i_Session_showlabel, i_Session_label)
+
+else if timeframe.isweekly
+    // Weekly chart: use monthly VWAP anchor
+    if i_Session_enabled
+        calcHigherTimeframeVWAP(sessionVWAP, "1M", i_Session_showlabel, i_Session_label)
+
+else if timeframe.isintraday
+    // Intraday chart: calculate custom VWAPs
+
+    // Fix for commodities to properly flag session end
+    // session.islastbar_regular detects the last bar of regular trading hours
+    if session.islastbar_regular
+        isMarketSession := false
+
+    // Determine if HD mode should be used
+    // HD mode: for timeframes > 5min but < 1D, use 5min data for more precision
+    chartMinutes = timeframe.in_seconds() / 60
+    useHD = i_enableHD and chartMinutes > 5 and chartMinutes < 1440  // 1440 = 24 hours
+
+    // -------------------------------------------------------------------------
+    // NY Open & IB Logic
+    // -------------------------------------------------------------------------
+    if isMarketOpen
+        nyOpenPrice := open
+        ibHigh := high
+        ibLow := low
+    else if isIBPeriod
+        ibHigh := math.max(nz(ibHigh, -1e10), high)
+        ibLow := math.min(nz(ibLow, 1e10), low)
+
+    // Update NY Open and IB Labels
+    if not na(nyOpenPrice) and i_showNYOpen and i_showNYOpenLabel
+        nyOpenLab.set_xy(bar_index + i_openIBLabOffset, nyOpenPrice)
+        nyOpenLab.set_text(i_nyOpenLabelText)
+        nyOpenLab.set_textcolor(i_nyOpenColor)
+    else
+        nyOpenLab.set_text("")
+
+    if not na(ibHigh) and i_showIB and i_showIBLabel
+        ibHighLab.set_xy(bar_index + i_openIBLabOffset, ibHigh)
+        ibHighLab.set_text(i_ibHighLabelText)
+        ibHighLab.set_textcolor(i_ibColor)
+    else
+        ibHighLab.set_text("")
+
+    if not na(ibLow) and i_showIB and i_showIBLabel
+        ibLowLab.set_xy(bar_index + i_openIBLabOffset, ibLow)
+        ibLowLab.set_text(i_ibLowLabelText)
+        ibLowLab.set_textcolor(i_ibColor)
+    else
+        ibLowLab.set_text("")
+
+    // -------------------------------------------------------------------------
+    // Cash VWAP Logic
+    // -------------------------------------------------------------------------
+    
+    // Day counter for logging (incremented at each 9:30 reset)
+    var int dayCounter = 0
+    
+    // For HD NY VWAP: Request raw data from 5-min bars (only when useHD is true)
+    // When chart is 5-min or less, we use regular calculation instead
+    var float[] pvArray_hd = array.new_float(0)
+    var float[] volArray_hd = array.new_float(0)
+    var int lastResetDay_hd = -1
+    float nyVwapHD = na
+    
+    if useHD
+        // Request all data in a single call using tuple (more efficient than 3 separate calls)
+        [hlc3Array, volArray, timeArray] = request.security_lower_tf(syminfo.tickerid, "5", [hlc3, volume, time])
+        
+        // Process each intrabar from the current chart bar
+        if array.size(hlc3Array) > 0
+            for i = 0 to array.size(hlc3Array) - 1
+                barTime = array.get(timeArray, i)
+                barHlc3 = array.get(hlc3Array, i)
+                barVol = array.get(volArray, i)
+                
+                h = hour(barTime, TIMEZONE)
+                m = minute(barTime, TIMEZONE)
+                d = dayofmonth(barTime, TIMEZONE)
+                
+                // Check if this is a 9:30 bar (market open)
+                is930 = (h == 9 and m == 30)
+                
+                if is930 and d != lastResetDay_hd
+                    // Reset arrays at first 9:30 bar of each day
+                    dayCounter += 1
+                    if i_debugLog
+                        log.info("Day {0} | === RESET at 9:30 === | clearing pvArray size: {1}", 
+                                 dayCounter, array.size(pvArray_hd))
+                    array.clear(pvArray_hd)
+                    array.clear(volArray_hd)
+                    lastResetDay_hd := d
+                
+                if barVol > 0
+                    // Accumulate all bars (24/7), reset only at 9:30
+                    array.push(pvArray_hd, barHlc3 * barVol)
+                    array.push(volArray_hd, barVol)
+            
+            // Calculate VWAP from accumulated arrays
+            if array.size(pvArray_hd) > 0
+                float totalPV = array.sum(pvArray_hd)
+                float totalVol = array.sum(volArray_hd)
+                nyVwapHD := totalVol > 0 ? totalPV / totalVol : na
+        
+        // Log chart bar summary (every 30 mins when debug enabled)
+        if i_debugLog
+            int chartBarHour = hour(time, TIMEZONE)
+            int chartBarMinute = minute(time, TIMEZONE)
+            bool shouldLog = (chartBarMinute == 0 or chartBarMinute == 30)
+            
+            if shouldLog
+                string vwapStr = na(nyVwapHD) ? "NA" : str.tostring(nyVwapHD, "#.##")
+                log.info("Day {0} | ChartBar {1}:{2} | nyVwapHD: {3} | pvArraySize: {4} | intrabars: {5}", 
+                         dayCounter, chartBarHour, str.tostring(chartBarMinute, "00"), 
+                         vwapStr, array.size(pvArray_hd), array.size(hlc3Array))
+    
+    if isMarketOpen
+        // Increment day counter (for both HD and non-HD modes)
+        if not useHD
+            dayCounter += 1
+        
+        // At market open, swap active VWAP instance
+        // This allows the previous day's VWAP to remain visible briefly
+        // while the new day's VWAP begins calculating
+        if activeCashVWAP == 1
+            activeCashVWAP := 2
+            cashVWAP1.isActive := false
+            cashVWAP2.isActive := true
+            // Clear inactive label
+            cashVWAP1.lab.set_text("")
+            cashVWAP1.lab.set_tooltip("")
+            resetVWAP(cashVWAP2)
+            if useHD and not na(nyVwapHD)
+                cashVWAP2.vwap := nyVwapHD
+                cashVWAP2.lab.set_x(bar_index + cashVWAP2.lab_offset)
+                cashVWAP2.lab.set_y(cashVWAP2.vwap)
+                cashVWAP2.lab.set_text(i_NY_showlabel ? i_NY_label : "")
+                cashVWAP2.lab.set_tooltip(i_NY_showlabel ? str.tostring(cashVWAP2.vwap, format.mintick) : "")
+            else
+                updateVWAP(cashVWAP2, i_NY_showlabel, i_NY_label)
+        else
+            activeCashVWAP := 1
+            cashVWAP1.isActive := true
+            cashVWAP2.isActive := false
+            // Clear inactive label
+            cashVWAP2.lab.set_text("")
+            cashVWAP2.lab.set_tooltip("")
+            resetVWAP(cashVWAP1)
+            if useHD and not na(nyVwapHD)
+                cashVWAP1.vwap := nyVwapHD
+                cashVWAP1.lab.set_x(bar_index + cashVWAP1.lab_offset)
+                cashVWAP1.lab.set_y(cashVWAP1.vwap)
+                cashVWAP1.lab.set_text(i_NY_showlabel ? i_NY_label : "")
+                cashVWAP1.lab.set_tooltip(i_NY_showlabel ? str.tostring(cashVWAP1.vwap, format.mintick) : "")
+            else
+                updateVWAP(cashVWAP1, i_NY_showlabel, i_NY_label)
+    else
+        // Normal update for both (only active one will actually update)
+        if useHD and not na(nyVwapHD)
+            // In HD mode, use the calculated HD value (24/7, not just market hours)
+            if cashVWAP1.isActive
+                cashVWAP1.vwap := nyVwapHD
+                cashVWAP1.lab.set_x(bar_index + cashVWAP1.lab_offset)
+                cashVWAP1.lab.set_y(cashVWAP1.vwap)
+                cashVWAP1.lab.set_text(i_NY_showlabel ? i_NY_label : "")
+                cashVWAP1.lab.set_tooltip(i_NY_showlabel ? str.tostring(cashVWAP1.vwap, format.mintick) : "")
+            else
+                cashVWAP2.vwap := nyVwapHD
+                cashVWAP2.lab.set_x(bar_index + cashVWAP2.lab_offset)
+                cashVWAP2.lab.set_y(cashVWAP2.vwap)
+                cashVWAP2.lab.set_text(i_NY_showlabel ? i_NY_label : "")
+                cashVWAP2.lab.set_tooltip(i_NY_showlabel ? str.tostring(cashVWAP2.vwap, format.mintick) : "")
+        else
+            updateVWAP(cashVWAP1, i_NY_showlabel, i_NY_label)
+            updateVWAP(cashVWAP2, i_NY_showlabel, i_NY_label)
+    
+    // Debug logging for 5min chart (non-HD mode)
+    if i_debugLog and not useHD
+        int chartBarHour = hour(time, TIMEZONE)
+        int chartBarMinute = minute(time, TIMEZONE)
+        bool shouldLog = (chartBarMinute == 0 or chartBarMinute == 30)
+        
+        if shouldLog
+            float activeVwap = cashVWAP1.isActive ? cashVWAP1.vwap : cashVWAP2.vwap
+            string vwapStr = na(activeVwap) ? "NA" : str.tostring(activeVwap, "#.##")
+            log.info("Day {0} | 5min | ChartBar {1}:{2} | nyVWAP: {3}", 
+                     dayCounter, chartBarHour, str.tostring(chartBarMinute, "00"), vwapStr)
+
+    // -------------------------------------------------------------------------
+    // Session VWAP Logic (only if enabled)
+    // -------------------------------------------------------------------------
+    if i_Session_enabled
+        // Check for extended session candles to determine if session VWAP should be shown
+        // Only enable session VWAP if the chart includes extended hours data
+        if isExtendedSession and not hasExtendedHoursData
+            hasExtendedHoursData := true
+            showSessionVWAP := true
+
+    // Session VWAP anchor: timeframe.change("1D") resets at 18:00 ET for futures/extended hours
+    isNewDay = timeframe.change("1D")
+    
+    // Standard calculation on current timeframe
+    [vwapStd, stdevUpperStd, _stdevLowerStd] = ta.vwap(hlc3, isNewDay, 1)
+    stdevAbsStd = stdevUpperStd - vwapStd
+    
+    // HD calculation from 5min timeframe (only when useHD is true)
+    float vwapHD = na
+    float stdevAbsHD = na
+    
+    if useHD
+        // Returns arrays - get the last value from each
+        vwapHDArray = request.security_lower_tf(syminfo.tickerid, "5", ta.vwap(hlc3, timeframe.change("1D")))
+        vwapHD := array.size(vwapHDArray) > 0 ? array.last(vwapHDArray) : na
+        
+        // For standard deviation, extract the upper band value from ta.vwap tuple first
+        [_vwapForStdev, stdevUpperForHD, _stdevLowerForHD] = ta.vwap(hlc3, timeframe.change("1D"), 1)
+        stdevUpperHDArray = request.security_lower_tf(syminfo.tickerid, "5", stdevUpperForHD)
+        stdevUpperHD = array.size(stdevUpperHDArray) > 0 ? array.last(stdevUpperHDArray) : na
+        stdevAbsHD := nz(stdevUpperHD) - nz(vwapHD)
+    
+    // Select which values to use based on HD mode
+    vwapVal = useHD ? vwapHD : vwapStd
+    stdevAbs = useHD ? stdevAbsHD : stdevAbsStd
+    
+    // Only update if Session VWAP is enabled and should be shown
+    if i_Session_enabled and showSessionVWAP
+        sessionVWAP.vwap := vwapVal
+        
+        // Update label
+        sessionVWAP.lab.set_x(bar_index + sessionVWAP.lab_offset)
+        sessionVWAP.lab.set_y(sessionVWAP.vwap)
+        sessionVWAP.lab.set_text(i_Session_showlabel ? i_Session_label : "")
+        sessionVWAP.lab.set_tooltip(i_Session_showlabel ? str.tostring(sessionVWAP.vwap, format.mintick) : "")
+
+    // Calculate band values (standard deviation based) - these need to be outside if block
+    showBands = i_Session_enabled and showSessionVWAP and not session.islastbar
+    upperBand1 := showBands ? vwapVal + stdevAbs * i_bandMult1 : na
+    lowerBand1 := showBands ? vwapVal - stdevAbs * i_bandMult1 : na
+    upperBand2 := showBands ? vwapVal + stdevAbs * i_bandMult2 : na
+    lowerBand2 := showBands ? vwapVal - stdevAbs * i_bandMult2 : na
+    upperBand3 := showBands ? vwapVal + stdevAbs * i_bandMult3 : na
+    lowerBand3 := showBands ? vwapVal - stdevAbs * i_bandMult3 : na
+
+// ============================================================================
+// PLOTS
+// ============================================================================
+
+// Linestyles from inputs
+sessionLinestyle = i_Session_style == "Solid" ? plot.linestyle_solid : i_Session_style == "Dashed" ? plot.linestyle_dashed : plot.linestyle_dotted
+nyLinestyle = i_NY_style == "Solid" ? plot.linestyle_solid : i_NY_style == "Dashed" ? plot.linestyle_dashed : plot.linestyle_dotted
+nyOpenLinestyle = i_nyOpenStyle == "Solid" ? plot.linestyle_solid : i_nyOpenStyle == "Dashed" ? plot.linestyle_dashed : plot.linestyle_dotted
+ibLinestyle = i_ibStyle == "Solid" ? plot.linestyle_solid : i_ibStyle == "Dashed" ? plot.linestyle_dashed : plot.linestyle_dotted
+
+// NY Open & IB Plots
+plot(i_showNYOpen and isMarketSession ? nyOpenPrice : na, "NY Open", i_nyOpenColor, 1, plot.style_linebr, linestyle = nyOpenLinestyle)
+plot(i_showIB and isMarketSession ? ibHigh : na, "IB High", i_ibColor, i_ibWidth, plot.style_linebr, linestyle = ibLinestyle)
+plot(i_showIB and isMarketSession ? ibLow : na, "IB Low", i_ibColor, i_ibWidth, plot.style_linebr, linestyle = ibLinestyle)
+
+// Session VWAP - full trading session including extended hours
+sessionVwapValue = i_Session_enabled ? sessionVWAP.vwap : na
+plot(sessionVwapValue, title = "Session VWAP", color = i_Session_color, linewidth = i_Session_width, style = plot.style_linebr, display = sessionVWAPdisplay, linestyle = sessionLinestyle)
+
+// Session VWAP Bands
+// Linestyles for bands
+bandLinestyle1 = i_bandStyle1 == "Solid" ? plot.linestyle_solid : i_bandStyle1 == "Dashed" ? plot.linestyle_dashed : plot.linestyle_dotted
+bandLinestyle2 = i_bandStyle2 == "Solid" ? plot.linestyle_solid : i_bandStyle2 == "Dashed" ? plot.linestyle_dashed : plot.linestyle_dotted
+bandLinestyle3 = i_bandStyle3 == "Solid" ? plot.linestyle_solid : i_bandStyle3 == "Dashed" ? plot.linestyle_dashed : plot.linestyle_dotted
+
+// Display settings for each band (pane only, plus price scale if enabled)
+// Bands are hidden from data window and status line to reduce clutter
+displayBand1 = i_showBand1 and i_Session_enabled ? (i_bandPriceScale1 ? display.pane + display.price_scale : display.pane) : display.none
+displayBand2 = i_showBand2 and i_Session_enabled ? (i_bandPriceScale2 ? display.pane + display.price_scale : display.pane) : display.none
+displayBand3 = i_showBand3 and i_Session_enabled ? (i_bandPriceScale3 ? display.pane + display.price_scale : display.pane) : display.none
+
+// Fill display only supports display.all or display.none
+fillDisplayBand1 = i_showBand1 and i_Session_enabled ? display.all : display.none
+fillDisplayBand2 = i_showBand2 and i_Session_enabled ? display.all : display.none
+fillDisplayBand3 = i_showBand3 and i_Session_enabled ? display.all : display.none
+
+upperBand1Plot = plot(upperBand1, title = "Upper Band 1SD", color = i_bandColor1, style = plot.style_linebr, display = displayBand1, linestyle = bandLinestyle1)
+lowerBand1Plot = plot(lowerBand1, title = "Lower Band 1SD", color = i_bandColor1, style = plot.style_linebr, display = displayBand1, linestyle = bandLinestyle1)
+fill(upperBand1Plot, lowerBand1Plot, title = "Band 1SD Fill", color = i_bandFill1, display = fillDisplayBand1)
+
+upperBand2Plot = plot(upperBand2, title = "Upper Band 2SD", color = i_bandColor2, style = plot.style_linebr, display = displayBand2, linestyle = bandLinestyle2)
+lowerBand2Plot = plot(lowerBand2, title = "Lower Band 2SD", color = i_bandColor2, style = plot.style_linebr, display = displayBand2, linestyle = bandLinestyle2)
+fill(upperBand2Plot, lowerBand2Plot, title = "Band 2SD Fill", color = i_bandFill2, display = fillDisplayBand2)
+
+upperBand3Plot = plot(upperBand3, title = "Upper Band 3SD", color = i_bandColor3, style = plot.style_linebr, display = displayBand3, linestyle = bandLinestyle3)
+lowerBand3Plot = plot(lowerBand3, title = "Lower Band 3SD", color = i_bandColor3, style = plot.style_linebr, display = displayBand3, linestyle = bandLinestyle3)
+fill(upperBand3Plot, lowerBand3Plot, title = "Band 3SD Fill", color = i_bandFill3, display = fillDisplayBand3)
+
+// Cash VWAP - displays the currently active VWAP value (for data window/status line/price scale)
+cashVwapValue = cashVWAP1.isActive ? cashVWAP1.vwap : cashVWAP2.vwap
+plot(cashVwapValue, title = "Cash VWAP", color = i_NY_color, linewidth = i_NY_width, style = plot.style_linebr, display = cashVWAPdisplay, linestyle = nyLinestyle)
+
+// Separate plots for each cash VWAP instance on the pane
+// This ensures smooth visual transitions when swapping active VWAP at market open
+cashVwap1Value = cashVWAP1.isActive ? cashVWAP1.vwap : na
+cashVwap2Value = cashVWAP2.isActive ? cashVWAP2.vwap : na
+
+plot(cashVwap1Value, title = "Cash VWAP1", color = i_NY_color, linewidth = i_NY_width, style = plot.style_linebr, display = display.pane, linestyle = nyLinestyle)
+plot(cashVwap2Value, title = "Cash VWAP2", color = i_NY_color, linewidth = i_NY_width, style = plot.style_linebr, display = display.pane, linestyle = nyLinestyle)

@@ -1,0 +1,83 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Quant
+
+//@version=6
+indicator("LuxQuant - Swing Points & VWAP - micky v1.0", "LuxQuant - Swing Points & VWAP - micky v1.0", overlay = true, max_labels_count = 500)
+
+// --- Inputs ---
+int swingLength = input.int(5, "Swing Length", minval = 1, tooltip = "Number of bars to the left and right to confirm a swing point")
+
+string anchor = input.string("Custom Time", "VWAP Anchor", options = ["Session", "Week", "Month", "Year", "Custom Time"])
+string customSession = input.session("0930-1600", "Custom Session (for Custom Time anchor)")
+string tz = input.string("America/New_York", "Timezone (for Custom Time anchor)")
+
+bool showBands = input.bool(true, "Show VWAP Bands", group = "VWAP Bands")
+float mult1 = input.float(1.0, "Multiplier 1", group = "VWAP Bands")
+float mult2 = input.float(2.0, "Multiplier 2", group = "VWAP Bands")
+float mult3 = input.float(3.0, "Multiplier 3", group = "VWAP Bands")
+
+bool showReset = input.bool(true, "Highlight Reset Bar", group = "Style")
+
+// --- Colors ---
+color colBull = #089981
+color colBear = #f23645
+color colVwap = #5b9cf6
+color colBands = color.new(color.gray, 50)
+color colReset = input.color(color.new(color.gray, 85), "Reset Color", group = "Style")
+
+// --- VWAP Calculation ---
+bool isNewAnchor = false
+if anchor == "Custom Time"
+    // Triggers on the first bar of the custom session every day
+    isNewAnchor := na(time(timeframe.period, customSession, tz)[1]) and not na(time(timeframe.period, customSession, tz))
+else
+    isNewAnchor := switch anchor
+        "Session" => timeframe.change("D")
+        "Week"    => timeframe.change("W")
+        "Month"   => timeframe.change("M")
+        "Year"    => timeframe.change("Y")
+        => false
+
+float vwapValue = na
+float stdevValue = na
+
+if anchor == "Session"
+    [v, u, l] = ta.vwap(hlcc4, isNewAnchor, 1)
+    vwapValue := v
+    // Approximation or custom calculation for stdev is needed if we want multiple bands without multiple ta.vwap calls
+    // Actually, we can compute it manually for all anchors to have full control.
+    
+float sumSrcVol = 0.0
+float sumVol = 0.0
+float sumSrcSrcVol = 0.0
+
+sumSrcVol := isNewAnchor ? hlcc4 * volume : nz(sumSrcVol[1]) + hlcc4 * volume
+sumVol    := isNewAnchor ? volume : nz(sumVol[1]) + volume
+sumSrcSrcVol := isNewAnchor ? volume * math.pow(hlcc4, 2) : nz(sumSrcSrcVol[1]) + volume * math.pow(hlcc4, 2)
+
+vwapValue := sumSrcVol / sumVol
+float variance = math.max(0, sumSrcSrcVol / sumVol - math.pow(vwapValue, 2))
+stdevValue := math.sqrt(variance)
+
+// --- Swing Points ---
+float ph = ta.pivothigh(high, swingLength, swingLength)
+float pl = ta.pivotlow(low, swingLength, swingLength)
+
+// --- Plotting ---
+// VWAP
+plot(vwapValue, "VWAP", color = colVwap, linewidth = 2)
+
+// VWAP Bands
+plot(showBands ? vwapValue + stdevValue * mult1 : na, "Upper Band 1", color = colBands)
+plot(showBands ? vwapValue - stdevValue * mult1 : na, "Lower Band 1", color = colBands)
+plot(showBands ? vwapValue + stdevValue * mult2 : na, "Upper Band 2", color = colBands)
+plot(showBands ? vwapValue - stdevValue * mult2 : na, "Lower Band 2", color = colBands)
+plot(showBands ? vwapValue + stdevValue * mult3 : na, "Upper Band 3", color = colBands)
+plot(showBands ? vwapValue - stdevValue * mult3 : na, "Lower Band 3", color = colBands)
+
+// Swing Points
+plotshape(ph, "Swing High", shape.triangledown, location.abovebar, colBear, -swingLength, size = size.small)
+plotshape(pl, "Swing Low", shape.triangleup, location.belowbar, colBull, -swingLength, size = size.small)
+
+// Reset Highlight
+bgcolor(showReset and isNewAnchor ? colReset : na, title = "VWAP Reset Highlight")

@@ -30,8 +30,8 @@ import { DemandSupplyPanel } from "./screener/DemandSupplyPanel";
 import { EquityCurvePanel } from "./EquityCurvePanel";
 import { fetchFxRate } from "@/lib/fx/client";
 import { ReviewCommentsFeed } from "./ReviewCommentsFeed";
-import { GoalChallengePanel } from "./GoalChallengePanel";
-import { HorizonGoalPanel } from "./HorizonGoalPanel";
+import { CompoundTrackerPanel } from "./CompoundTrackerPanel";
+import { ChartBacktestPanel } from "./ChartBacktestPanel";
 import { UpbitPanel } from "./UpbitPanel";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
 import { AlarmToastHost } from "./AlarmToastHost";
@@ -67,6 +67,7 @@ type Tab =
   | "review"
   | "live"
   | "overview"
+  | "chart"
   | "mindset"
   | "screener"
   | "screener-watch"
@@ -82,6 +83,7 @@ const TAB_IDS: Tab[] = [
   "review",
   "live",
   "overview",
+  "chart",
   "mindset",
   "demand-supply",
   "screener",
@@ -740,6 +742,7 @@ export function TradeJournal() {
             ["review", "오답노트"],
             ["live", "실시간·입출금"],
             ["overview", "한눈에"],
+            ["chart", "차트"],
             ["demand-supply", "수요·공급"],
             ["screener", "코인 스크리너"],
             ["screener-watch", "지정 평가"],
@@ -1018,7 +1021,7 @@ export function TradeJournal() {
         <div className="space-y-6">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-zinc-600">
-              월간 목표를 우선하고, 섹션 순서는 아래에서 바꿀 수 있습니다.
+              복리 목표를 우선하고, 섹션 순서는 아래에서 바꿀 수 있습니다.
             </p>
             <button
               type="button"
@@ -1080,28 +1083,14 @@ export function TradeJournal() {
           {overviewOrder.map((id) => {
             if (id === "monthly_goal") {
               return (
-                <Section key={id} title="월간 목표">
-                  <GoalChallengePanel
-                    variant="monthly"
+                <Section key={id} title="복리 목표">
+                  <CompoundTrackerPanel
                     prefs={goalPrefs}
                     onPrefsChange={patchGoalPrefs}
                     wallet={walletOverview}
                     walletLoading={walletLoading}
                     daily={daily}
                     onGoalUsdtChange={setGoalUsdt}
-                  />
-                </Section>
-              );
-            }
-            if (id === "horizon_goal") {
-              return (
-                <Section key={id} title="기한 목표">
-                  <HorizonGoalPanel
-                    prefs={goalPrefs}
-                    onPrefsChange={patchGoalPrefs}
-                    wallet={walletOverview}
-                    walletLoading={walletLoading}
-                    daily={daily}
                   />
                 </Section>
               );
@@ -1117,6 +1106,10 @@ export function TradeJournal() {
                     goalUsdt={goalUsdt}
                     fxRate={goalPrefs.fxRate}
                     walletFollow={goalPrefs.walletFollow}
+                    currency={goalPrefs.horizonCurrency}
+                    onCurrencyChange={(horizonCurrency) =>
+                      patchGoalPrefs((p) => ({ ...p, horizonCurrency }))
+                    }
                   />
                 </Section>
               );
@@ -1137,6 +1130,11 @@ export function TradeJournal() {
                     equityTotalPnl={overall?.totalPnl ?? 0}
                     wallet={walletOverview}
                     walletFollow={goalPrefs.walletFollow}
+                    fxRate={goalPrefs.fxRate}
+                    currency={goalPrefs.horizonCurrency}
+                    onCurrencyChange={(horizonCurrency) =>
+                      patchGoalPrefs((p) => ({ ...p, horizonCurrency }))
+                    }
                   />
                 </Section>
               );
@@ -1168,6 +1166,12 @@ export function TradeJournal() {
             return null;
           })}
         </div>
+      )}
+
+      {tab === "chart" && (
+        <Section title="차트">
+          <ChartBacktestPanel />
+        </Section>
       )}
 
       {tab === "demand-supply" && (

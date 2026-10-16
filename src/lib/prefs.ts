@@ -183,6 +183,14 @@ export interface GoalChallengePrefs {
   walletFollow: string;
   /** 월초 스냅샷을 잡은 지갑. 바꾸면 월초 자산을 다시 잡는다 */
   monthStartFollow: string;
+  /** 복리 추적 시작 시드 (USDT). 새 시작 기본은 200 */
+  trackSeedUsdt: number;
+  /** 복리 추적 시작일. 비어 있으면 화면에서 오늘로 잡는다 */
+  trackStart: string;
+  /** 하루 목표 복리 수익률 (%) */
+  trackDailyRatePct: number;
+  /** 날짜 → 실제 보유액. 없는 오늘은 지갑을 본다 */
+  trackActual: Record<string, number>;
 }
 
 const GOAL_KEY = "dailytrading.goal.challenge.v1";
@@ -205,6 +213,10 @@ export const DEFAULT_GOAL_CHALLENGE: GoalChallengePrefs = {
   horizonPaceMode: "rate",
   walletFollow: "binance:USDC",
   monthStartFollow: "",
+  trackSeedUsdt: 200,
+  trackStart: "",
+  trackDailyRatePct: 2,
+  trackActual: {},
 };
 
 export function loadGoalChallenge(): GoalChallengePrefs {
@@ -262,10 +274,31 @@ export function loadGoalChallenge(): GoalChallengePrefs {
           : DEFAULT_GOAL_CHALLENGE.walletFollow,
       monthStartFollow:
         typeof saved.monthStartFollow === "string" ? saved.monthStartFollow : "",
+      trackSeedUsdt:
+        Number(saved.trackSeedUsdt) > 0
+          ? Number(saved.trackSeedUsdt)
+          : DEFAULT_GOAL_CHALLENGE.trackSeedUsdt,
+      trackStart: typeof saved.trackStart === "string" ? saved.trackStart : "",
+      trackDailyRatePct:
+        Number(saved.trackDailyRatePct) > 0
+          ? Number(saved.trackDailyRatePct)
+          : DEFAULT_GOAL_CHALLENGE.trackDailyRatePct,
+      trackActual: readTrackActual(saved.trackActual),
     };
   } catch {
     return { ...DEFAULT_GOAL_CHALLENGE, dailyHits: {} };
   }
+}
+
+function readTrackActual(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) continue;
+    const amount = Number(value);
+    if (Number.isFinite(amount)) out[key] = amount;
+  }
+  return out;
 }
 
 export function saveGoalChallenge(prefs: GoalChallengePrefs): void {
@@ -279,15 +312,13 @@ export function saveGoalChallenge(prefs: GoalChallengePrefs): void {
 /** 한눈에 탭 섹션 순서 */
 export type OverviewSectionId =
   | "monthly_goal"
-  | "horizon_goal"
   | "equity"
   | "pnl"
   | "market"
   | "risk_calc";
 
 export const OVERVIEW_SECTION_LABELS: Record<OverviewSectionId, string> = {
-  monthly_goal: "월간 목표",
-  horizon_goal: "기한 목표",
+  monthly_goal: "복리 목표",
   equity: "자산 그래프",
   pnl: "All-time PNL",
   market: "현재 시장",
@@ -296,7 +327,6 @@ export const OVERVIEW_SECTION_LABELS: Record<OverviewSectionId, string> = {
 
 export const DEFAULT_OVERVIEW_ORDER: OverviewSectionId[] = [
   "monthly_goal",
-  "horizon_goal",
   "risk_calc",
   "equity",
   "pnl",
@@ -319,7 +349,7 @@ export function loadOverviewOrder(): OverviewSectionId[] {
     const merged = [...valid];
     for (const id of missing) {
       if (id === "risk_calc") {
-        const after = merged.indexOf("horizon_goal");
+        const after = merged.indexOf("monthly_goal");
         merged.splice(after >= 0 ? after + 1 : 0, 0, id);
       } else {
         merged.push(id);

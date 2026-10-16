@@ -1,0 +1,367 @@
+//@version=5
+indicator("8090 반등 [HWR 8090]", shorttitle="HWR 8090", overlay=true, scale=scale.right, max_labels_count=200, max_lines_count=20, max_boxes_count=50)
+
+// ─────────────────────────────────────────────
+// 올챙이 8090 개념만. UCTA/UCTV 복제 아님.
+// 상승 뒤 마지막 고점 대비 80~90% 원웨이 하락.
+// 구간 안에서 반전 봉이 나오면 롱. 숏 없음.
+// 주봉·월봉 측정이 기본. 알트 급락 자리용. BTC 본업과 별개.
+// 상장폐지는 차트에서 못 봄. 공지는 직접 확인.
+// ─────────────────────────────────────────────
+
+grpMeas = "1. 측정"
+measTf    = input.timeframe("W", "측정 타임프레임", group=grpMeas, tooltip="영상 기준 주봉/월봉. 일봉 차트에 올려도 주봉으로 고점·하락률을 잽니다.")
+lookback  = input.int(80, "고점 탐색 봉", minval=20, maxval=300, group=grpMeas, tooltip="측정 TF 봉 수. 주봉 80이면 약 1년 반.")
+minDrop   = input.float(80.0, "최소 하락 %", minval=50, maxval=95, step=1, group=grpMeas)
+maxDrop   = input.float(90.0, "최대 하락 %", minval=70, maxval=99.5, step=0.5, group=grpMeas, tooltip="앞자리 8·9 전부면 99로. 영상 본문은 80~90.")
+use89     = input.bool(false, "앞자리 8·9 전부 (80~99%)", group=grpMeas)
+bounceMax = input.float(28.0, "원웨이 최대 반등 %", minval=5, maxval=60, step=1, group=grpMeas, tooltip="고점 이후 저점 대비 이 % 넘게 반등했으면 원웨이가 아님.")
+minUpPct  = input.float(80.0, "고점 전 최소 상승 %", minval=20, step=5, group=grpMeas, tooltip="그 고점이 상승 추세의 끝이어야 함.")
+minSince  = input.int(6, "고점 이후 최소 봉", minval=2, maxval=80, group=grpMeas)
+
+grpEnt = "2. 진입"
+requireReversal = input.bool(true, "반전 봉 필수", group=grpEnt)
+requireOversold = input.bool(true, "RSI 과매도권에서만", group=grpEnt)
+rsiLen   = input.int(14, "RSI 기간", minval=2, group=grpEnt)
+rsiMax   = input.float(42.0, "RSI 상한", minval=15, maxval=55, step=1, group=grpEnt)
+adxLen   = input.int(14, "ADX 기간", minval=2, group=grpEnt)
+adxMin   = input.float(14.0, "최소 ADX", minval=1, step=0.5, group=grpEnt)
+requireAdx = input.bool(false, "ADX 필수", group=grpEnt)
+cooldownBars = input.int(8, "신호 쿨다운(봉)", minval=1, group=grpEnt)
+minConv  = input.int(60, "최소 확신도", minval=0, maxval=90, group=grpEnt)
+useBtc   = input.bool(false, "비트 주봉 필터", group=grpEnt, tooltip="켜면 비트 주봉이 21EMA 아래일 때만. 알트 단독 급락을 줄입니다.")
+btcSym   = input.symbol("BINANCE:BTCUSDT", "비트 심볼", group=grpEnt)
+
+grpVol = "3. 손절·익절"
+swingLen = input.int(10, "스윙 손절 봉", minval=3, maxval=40, group=grpVol)
+slPadAtr = input.float(0.20, "손절 여유 ATR", minval=0.0, step=0.05, group=grpVol)
+slMinAtr = input.float(1.20, "손절 최소 ATR", minval=0.4, step=0.05, group=grpVol)
+slMaxAtr = input.float(3.50, "손절 최대 ATR", minval=0.8, step=0.05, group=grpVol)
+tp1Pct   = input.float(50.0, "TP1 반등 %", minval=10, step=5, group=grpVol, tooltip="진입가 대비. 영상 최소 반등 50%.")
+tp2Pct   = input.float(100.0, "TP2 반등 %", minval=20, step=10, group=grpVol)
+usePeakHalf = input.bool(true, "TP3 = 고점까지 50% 되돌림", group=grpVol)
+slToBe   = input.bool(true, "TP1 후 본절", group=grpVol)
+
+grpBox = "3b. 박스"
+showBoxes = input.bool(true, "TP/SL 구간 표시", group=grpBox)
+showLevels = input.bool(true, "80%·90% 가격선", group=grpBox)
+
+grpStat = "4. 측정기간"
+statMode = input.string("최근 N일", "측정 방식", options=["전체", "최근 N일", "기간 지정"], group=grpStat)
+statDays = input.int(365, "최근 N일", minval=1, maxval=3650, group=grpStat)
+statFrom = input.time(timestamp("01 Jan 2024 00:00"), "시작", group=grpStat)
+statTo   = input.time(timestamp("09 Sep 2026 23:59"), "종료", group=grpStat)
+sessTz   = input.string("Asia/Seoul", "타임존", options=["Asia/Seoul", "America/New_York", "Europe/London", "UTC"], group=grpStat)
+
+grpUi = "5. 표시"
+showDash  = input.bool(true, "대시보드 표시", group=grpUi)
+dashPosIn = input.string("오른쪽 위", "테이블 위치", options=["오른쪽 위", "오른쪽 아래", "왼쪽 위", "왼쪽 아래", "가운데 위", "가운데 아래", "오른쪽 중간", "왼쪽 중간"], group=grpUi)
+bullCol   = input.color(color.new(#26a69a, 0), "롱 색", group=grpUi)
+bearCol   = input.color(color.new(#ef5350, 0), "숏 색", group=grpUi)
+zoneCol   = input.color(color.new(#f0c14a, 0), "구간 색", group=grpUi)
+
+dropHi = use89 ? 99.0 : maxDrop
+atrVal = ta.atr(14)
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+adxOk = adxVal > adxMin
+rsiVal = ta.rsi(close, rsiLen)
+volAvg = ta.sma(volume, 20)
+volOk = not na(volume) and volume >= volAvg * 0.15
+
+rng = high - low
+body = math.abs(close - open)
+lowerWick = math.min(close, open) - low
+midPx = (high + low) * 0.5
+bullClose = close > open
+bodyOk = rng > 0 and body >= rng * 0.28
+bullPin = rng > 0 and lowerWick >= rng * 0.34 and close >= midPx
+bullEngulf = bullClose and close > high[1] and open <= math.max(open[1], close[1])
+rejectLong = bullPin or bullEngulf or (bullClose and bodyOk)
+
+f_pack() =>
+    float pk = ta.highest(high, lookback)
+    int since = ta.barssince(high >= pk - syminfo.mintick)
+    float dd = pk > 0 ? (pk - close) / pk * 100.0 : 0.0
+    float runLo = pk
+    float maxB = 0.0
+    int n = math.min(nz(since, 0), lookback)
+    if n >= 2
+        for i = n to 0
+            runLo := math.min(runLo, low[i])
+            float den = pk - runLo
+            if den > 0
+                maxB := math.max(maxB, (high[i] - runLo) / den * 100.0)
+    int pre = math.max(lookback - nz(since, 0), 8)
+    float priorLo = ta.lowest(low, pre)
+    float upPct = priorLo > 0 ? (pk - priorLo) / priorLo * 100.0 : 0.0
+    [pk, dd, maxB, since, upPct]
+
+[htfPk, htfDd, htfBounce, htfSince, htfUp] = request.security(syminfo.tickerid, measTf, f_pack(), barmerge.gaps_off, barmerge.lookahead_off)
+
+pk = nz(htfPk, ta.highest(high, lookback))
+dd = nz(htfDd, 0.0)
+maxB = nz(htfBounce, 0.0)
+sinceB = nz(htfSince, 0)
+upPct = nz(htfUp, 0.0)
+
+lv80 = pk * 0.20
+lv90 = pk * 0.10
+inZone = dd >= minDrop and dd <= dropHi
+oneWay = maxB <= bounceMax
+hadUp = upPct >= minUpPct
+aged = sinceB >= minSince
+alive = close > 0 and volOk
+zoneOk = inZone and oneWay and hadUp and aged and alive
+
+btcCls = request.security(btcSym, "W", close[1], barmerge.gaps_off, barmerge.lookahead_off)
+btcEma = request.security(btcSym, "W", ta.ema(close, 21)[1], barmerge.gaps_off, barmerge.lookahead_off)
+btcOk = not useBtc or na(btcCls) or na(btcEma) or btcCls < btcEma
+
+rsiTurn = rsiVal > rsiVal[1] and rsiVal <= rsiMax
+emaF = ta.ema(close, 8)
+crossUp = ta.crossover(close, emaF)
+hl = low > ta.lowest(low, 6)[1]
+reversal = rejectLong or crossUp or (hl and bullClose)
+revOk = not requireReversal or reversal
+rsiOk = not requireOversold or rsiTurn
+adxGate = not requireAdx or adxOk
+
+f_conf() =>
+    int pts = 0
+    pts += zoneOk ? 28 : 0
+    pts += dd >= 85 ? 12 : dd >= 80 ? 6 : 0
+    pts += oneWay ? 14 : 0
+    pts += hadUp ? 8 : 0
+    pts += reversal ? 12 : 0
+    pts += rsiTurn ? 8 : 0
+    pts += volOk ? 6 : 0
+    pts += adxOk ? 6 : 0
+    pts += btcOk ? 6 : 0
+    math.min(100, pts)
+
+conf = f_conf()
+grade = conf >= 75 ? "A" : conf >= 60 ? "B" : "C"
+
+var int lastSigBar = na
+cooled = na(lastSigBar) or (bar_index - lastSigBar >= cooldownBars)
+longSignal = barstate.isconfirmed and cooled and zoneOk and revOk and rsiOk and adxGate and btcOk and conf >= minConv
+if longSignal
+    lastSigBar := bar_index
+
+swingLo = ta.lowest(low, swingLen)
+f_sl(float px) =>
+    raw = swingLo - atrVal * slPadAtr
+    dist = math.abs(px - raw)
+    adj = math.max(atrVal * slMinAtr, math.min(atrVal * slMaxAtr, dist))
+    px - adj
+f_tpPct(float px, float pct) =>
+    px * (1.0 + pct * 0.01)
+f_tpHalf(float px) =>
+    (pk + px) * 0.5
+
+// ===== 가상 승률 (구조 목표 TP1 vs SL) =====
+var int[] tEntB = array.new_int()
+var float[] tEnt = array.new_float()
+var float[] tSlA = array.new_float()
+var float[] tTpA = array.new_float()
+var int[] tTm = array.new_int()
+var int wins = 0
+var int losses = 0
+var int firstTradeTime = na
+var int lastCloseTime = na
+int closedBefore = wins + losses
+int lookFrom = timenow - statDays * 24 * 60 * 60 * 1000
+f_inStat(int t) =>
+    na(t) ? false : statMode == "전체" ? true : statMode == "최근 N일" ? (t >= lookFrom and t <= timenow) : (t >= statFrom and t <= statTo)
+
+if longSignal and array.size(tEnt) == 0
+    float sln = f_sl(close)
+    array.push(tEntB, bar_index)
+    array.push(tEnt, close)
+    array.push(tSlA, sln)
+    array.push(tTpA, f_tpPct(close, tp1Pct))
+    array.push(tTm, time)
+    if f_inStat(time) and na(firstTradeTime)
+        firstTradeTime := time
+
+if array.size(tEnt) > 0
+    for i = array.size(tEnt) - 1 to 0
+        float ent = array.get(tEnt, i)
+        float slv = array.get(tSlA, i)
+        float tpv = array.get(tTpA, i)
+        bool hitSl = low <= slv
+        bool hitTp = high >= tpv
+        if hitSl or hitTp
+            bool w = hitSl and hitTp ? close >= ent : hitTp
+            if f_inStat(array.get(tTm, i))
+                if w
+                    wins += 1
+                else
+                    losses += 1
+            array.remove(tEntB, i)
+            array.remove(tEnt, i)
+            array.remove(tSlA, i)
+            array.remove(tTpA, i)
+            array.remove(tTm, i)
+
+closedTrades = wins + losses
+pendingTrades = array.size(tEnt)
+if closedTrades > closedBefore
+    lastCloseTime := time
+winRate = closedTrades > 0 ? wins / closedTrades * 100.0 : na
+
+plot(close, "축고정", color=color.new(color.white, 100), linewidth=1, editable=false)
+plot(showLevels ? lv80 : na, "80% 하락", color=color.new(zoneCol, 20), linewidth=1, style=plot.style_linebr)
+plot(showLevels ? lv90 : na, "90% 하락", color=color.new(bearCol, 10), linewidth=1, style=plot.style_linebr)
+plot(showLevels ? pk : na, "측정 고점", color=color.new(#c8cdd8, 40), linewidth=1, style=plot.style_linebr)
+
+bgcolor(zoneOk ? color.new(zoneCol, 92) : na)
+
+var box bTp1 = na
+var box bTp2 = na
+var box bTp3 = na
+var box bSl = na
+var label tTp1 = na
+var label tTp2 = na
+var label tTp3 = na
+var label tSl = na
+var bool zLive = false
+var float zSl = na
+var float zTp1 = na
+var float zTp2 = na
+var float zTp3 = na
+var float zEntry = na
+var bool zHit1 = false
+var bool zHit2 = false
+var bool zBe = false
+
+f_zone(float p1, float p2, color bg, color bd) =>
+    box.new(bar_index, math.max(p1, p2), bar_index, math.min(p1, p2), xloc=xloc.bar_index, border_color=bd, border_width=1, bgcolor=bg)
+f_tag(float y, color c, string name, float px) =>
+    label.new(bar_index, y, name + "  " + str.tostring(px, format.mintick), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(c, 20), textcolor=color.white, size=size.tiny)
+
+if showBoxes and longSignal
+    box.delete(bTp1)
+    box.delete(bTp2)
+    box.delete(bTp3)
+    box.delete(bSl)
+    label.delete(tTp1)
+    label.delete(tTp2)
+    label.delete(tTp3)
+    label.delete(tSl)
+    float px = close
+    float slv = f_sl(px)
+    zLive := true
+    zEntry := px
+    zSl := slv
+    zTp1 := f_tpPct(px, tp1Pct)
+    zTp2 := f_tpPct(px, tp2Pct)
+    zTp3 := usePeakHalf ? f_tpHalf(px) : zTp2
+    zHit1 := false
+    zHit2 := false
+    zBe := false
+    bTp1 := f_zone(px, zTp1, color.new(#26a69a, 78), color.new(#26a69a, 25))
+    bTp2 := f_zone(zTp1, zTp2, color.new(#4db6ac, 82), color.new(#26a69a, 25))
+    bTp3 := usePeakHalf ? f_zone(zTp2, zTp3, color.new(#80cbc4, 84), color.new(#26a69a, 25)) : na
+    bSl := f_zone(px, slv, color.new(#ab47bc, 72), color.new(#ab47bc, 18))
+    tTp1 := f_tag(zTp1, #26a69a, "TP1 +" + str.tostring(tp1Pct, "#") + "%", zTp1)
+    tTp2 := f_tag(zTp2, #4db6ac, "TP2 +" + str.tostring(tp2Pct, "#") + "%", zTp2)
+    tTp3 := usePeakHalf ? f_tag(zTp3, #80cbc4, "TP3 고점50%", zTp3) : na
+    tSl := f_tag(slv, #ab47bc, "SL", slv)
+
+if zLive and showBoxes
+    if high >= zTp1 and not zHit1
+        zHit1 := true
+        if slToBe
+            zSl := zEntry
+            zBe := true
+            if not na(tSl)
+                label.set_y(tSl, zEntry)
+                label.set_text(tSl, "본절  " + str.tostring(zEntry, format.mintick))
+    if high >= zTp2
+        zHit2 := true
+    bool hit3 = high >= zTp3
+    if not na(bTp1)
+        box.set_right(bTp1, bar_index)
+    if not na(bTp2)
+        box.set_right(bTp2, bar_index)
+    if not na(bTp3)
+        box.set_right(bTp3, bar_index)
+    if not na(bSl)
+        box.set_right(bSl, bar_index)
+    if not na(tTp1)
+        label.set_x(tTp1, bar_index)
+    if not na(tTp2)
+        label.set_x(tTp2, bar_index)
+    if not na(tTp3)
+        label.set_x(tTp3, bar_index)
+    if not na(tSl)
+        label.set_x(tSl, bar_index)
+        label.set_y(tSl, zSl)
+    bool lastHit = usePeakHalf ? hit3 : zHit2
+    bool touchSl = low <= zSl
+    if lastHit or touchSl
+        box.delete(bTp1)
+        box.delete(bTp2)
+        box.delete(bTp3)
+        box.delete(bSl)
+        label.delete(tTp1)
+        label.delete(tTp2)
+        label.delete(tTp3)
+        label.delete(tSl)
+        bTp1 := na
+        bTp2 := na
+        bTp3 := na
+        bSl := na
+        tTp1 := na
+        tTp2 := na
+        tTp3 := na
+        tSl := na
+        zLive := false
+        bool winZ = zHit1 or zHit2 or lastHit
+        string resTxt = lastHit ? "목표 성공" : zHit2 ? "TP2 성공" : zHit1 and touchSl ? "본절" : zHit1 ? "TP1 성공" : "SL 실패"
+        color resCol = winZ and not (zHit1 and touchSl and not zHit2) ? bullCol : zHit1 and touchSl ? color.new(#f0c14a, 0) : bearCol
+        label.new(bar_index, winZ ? high : low, resTxt, xloc=xloc.bar_index, style=winZ ? label.style_label_down : label.style_label_up, color=resCol, textcolor=color.white, size=size.tiny)
+
+if longSignal
+    label.new(bar_index, low, "8090  " + str.tostring(dd, "#.0") + "%  " + grade + " " + str.tostring(conf) + "%", xloc=xloc.bar_index, style=label.style_label_up, color=bullCol, textcolor=color.white, size=size.tiny)
+
+dashPos = dashPosIn == "오른쪽 아래" ? position.bottom_right : dashPosIn == "왼쪽 위" ? position.top_left : dashPosIn == "왼쪽 아래" ? position.bottom_left : dashPosIn == "가운데 위" ? position.top_center : dashPosIn == "가운데 아래" ? position.bottom_center : dashPosIn == "오른쪽 중간" ? position.middle_right : dashPosIn == "왼쪽 중간" ? position.middle_left : position.top_right
+var table dash = table.new(position.top_right, 2, 16, bgcolor=color.new(#12141c, 12), border_color=color.new(#2a2e3a, 0), border_width=1)
+if barstate.islast
+    table.set_position(dash, dashPos)
+f_cell(int r, string a, string b, color bc) =>
+    table.cell(dash, 0, r, a, text_color=color.new(#c8cdd8, 0), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, r, b, text_color=bc, text_halign=text.align_right, text_size=size.small)
+
+if showDash and barstate.islast
+    wrTxt = closedTrades > 0 ? str.tostring(wins) + "/" + str.tostring(losses) + "  " + str.tostring(winRate, "#.0") + "%" : "-"
+    if pendingTrades > 0
+        wrTxt := wrTxt + "  진행" + str.tostring(pendingTrades)
+    string perTxt = statMode == "기간 지정" ? str.format_time(statFrom, "yy.MM.dd", sessTz) + " ~ " + str.format_time(statTo, "yy.MM.dd", sessTz) : statMode == "최근 N일" ? str.tostring(statDays) + "일" : "-"
+    float slNow = f_sl(close)
+    float tpNow = f_tpPct(close, tp1Pct)
+    float risk = math.max(close - slNow, syminfo.mintick)
+    float rrNow = risk > 0 ? (tpNow - close) / risk : na
+    color znC = zoneOk ? bullCol : inZone ? zoneCol : color.gray
+    table.cell(dash, 0, 0, "HWR 8090", text_color=color.white, text_halign=text.align_left, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    table.cell(dash, 1, 0, measTf + " 측정", text_color=color.new(#8b95a8, 0), text_halign=text.align_right, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    f_cell(1, "고점", str.tostring(pk, format.mintick), color.new(#c8cdd8, 0))
+    f_cell(2, "하락률", str.tostring(dd, "#.1") + "%", znC)
+    f_cell(3, "구간", inZone ? "8090 안" : dd < minDrop ? "아직 얕음" : "너무 깊음", znC)
+    f_cell(4, "원웨이", oneWay ? "통과 " + str.tostring(maxB, "#.0") + "%" : "반등 큼 " + str.tostring(maxB, "#.0") + "%", oneWay ? bullCol : bearCol)
+    f_cell(5, "고점 전 상승", str.tostring(upPct, "#.0") + "%" + (hadUp ? "" : " 부족"), hadUp ? bullCol : color.gray)
+    f_cell(6, "고점 이후", str.tostring(sinceB) + "봉", aged ? color.new(#c8cdd8, 0) : color.gray)
+    f_cell(7, "RSI", str.tostring(rsiVal, "#.0"), rsiOk ? bullCol : color.gray)
+    f_cell(8, "반전봉", reversal ? "있음" : "대기", reversal ? bullCol : color.gray)
+    f_cell(9, "비트필터", not useBtc ? "꺼짐" : btcOk ? "통과" : "비트 강함", not useBtc ? color.gray : btcOk ? bullCol : bearCol)
+    f_cell(10, "확신도", grade + " " + str.tostring(conf) + "%", conf >= 75 ? bullCol : conf >= 60 ? zoneCol : color.gray)
+    f_cell(11, "계획 손익비", na(rrNow) ? "-" : str.tostring(rrNow, "#.#") + "R  (TP1 +" + str.tostring(tp1Pct, "#") + "%)", na(rrNow) ? color.gray : rrNow >= 2 ? bullCol : zoneCol)
+    f_cell(12, "승/패", wrTxt, not na(winRate) and winRate >= 40 ? bullCol : color.gray)
+    f_cell(13, "측정기간", perTxt, closedTrades > 0 ? color.white : color.gray)
+    f_cell(14, "생존", "상장폐지 공지는 직접 확인", color.new(#8b95a8, 0))
+    f_cell(15, "참고", "영상 개념 · 실전 아님", color.new(#8b95a8, 0))
+
+alertcondition(longSignal, title="8090 롱", message="HWR 8090 LONG")
+if longSignal
+    alert("HWR 8090 LONG  하락" + str.tostring(dd, "#.0") + "%  " + grade + " 확신 " + str.tostring(conf) + "%  close=" + str.tostring(close), alert.freq_once_per_bar_close)

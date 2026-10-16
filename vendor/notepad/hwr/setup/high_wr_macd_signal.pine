@@ -1,0 +1,285 @@
+//@version=5
+indicator("MACD 0선 교차 [HWR MACD]", shorttitle="HWR MACD", overlay=true, scale=scale.right, max_labels_count=500)
+
+// ─────────────────────────────────────────────
+// 0선 위에서 골든크로스면 롱. 0선 아래에서 데드크로스면 숏.
+// 골든 상태로 0선을 위로 넘으면 롱. 데드 상태로 0선을 아래로 내리면 숏.
+// ADX·촙은 표에 항상 나오고, 필수를 켜면 그 기준을 통과할 때만 신호가 납니다.
+// 상위 둘의 MACD·ADX·촙도 표에 나옵니다. 봉이 닫힌 뒤에만. 다른 HWR과 같이 켜지 말 것.
+// 승률·손익비는 한 포지션. 손절은 ATR, 그 전에 반대 신호가 나오면 그 종가로 마감.
+// ─────────────────────────────────────────────
+
+grpM = "1. MACD"
+fastLen = input.int(12, "짧은 EMA", minval=1, group=grpM)
+slowLen = input.int(26, "긴 EMA", minval=2, group=grpM)
+sigLen = input.int(9, "시그널", minval=1, group=grpM)
+macdSrc = input.source(close, "가격", group=grpM)
+
+grpF = "2. ADX · 촙"
+useAdx = input.bool(false, "ADX 필수", group=grpF, tooltip="켜면 ADX가 기준 이상일 때만 신호가 납니다. 꺼도 표에는 나옵니다.")
+adxLen = input.int(14, "ADX 기간", minval=1, group=grpF)
+adxMin = input.float(20.0, "ADX 기준", minval=1, step=1, group=grpF, tooltip="이 값 이상이면 추세가 있는 쪽으로 봅니다.")
+useChop = input.bool(false, "촙 필수", group=grpF, tooltip="켜면 촙이 기준 이하일 때만 신호가 납니다. 높으면 횡보입니다.")
+chopLen = input.int(14, "촙 기간", minval=2, group=grpF)
+chopMax = input.float(61.8, "촙 상한", minval=1, maxval=100, step=0.1, group=grpF, tooltip="이 값 아래면 추세, 위면 횡보입니다.")
+
+grpH = "3. 상위 타임프레임"
+htf1 = input.timeframe("60", "상위 1", group=grpH)
+htf2 = input.timeframe("240", "상위 2", group=grpH)
+useHtf1 = input.bool(false, "상위 1과 같은 방향만", group=grpH, tooltip="0선 위치와 골든·데드가 차트 신호와 같을 때만.")
+useHtf2 = input.bool(false, "상위 2와 같은 방향만", group=grpH, tooltip="0선 위치와 골든·데드가 차트 신호와 같을 때만.")
+
+grpR = "4. 손익"
+atrLen = input.int(14, "손절 ATR 기간", minval=1, group=grpR)
+slAtr = input.float(1.5, "손절 ATR 배수", minval=0.2, step=0.1, group=grpR, tooltip="진입가에서 이 거리. 승률과 손익비의 1R입니다. 반대 신호로 끝나면 그 손익을 R로 환산합니다.")
+
+grpUi = "5. 표시"
+showDash = input.bool(true, "표", group=grpUi)
+alertOn = input.bool(true, "신호 알림", group=grpUi, tooltip="알림은 'alert() 함수 호출'로 만드세요.")
+dashPosIn = input.string("오른쪽 위", "테이블 위치", options=["오른쪽 위", "오른쪽 아래", "왼쪽 위", "왼쪽 아래"], group=grpUi)
+longCol = input.color(#089981, "롱", group=grpUi)
+shortCol = input.color(#f23645, "숏", group=grpUi)
+macdCol = input.color(#2962ff, "MACD", group=grpUi)
+sigCol = input.color(#ff6d00, "시그널", group=grpUi)
+
+f_chop(int len) =>
+    float trSum = math.sum(ta.tr(true), len)
+    float rng = ta.highest(high, len) - ta.lowest(low, len)
+    rng <= 0.0 ? 0.0 : 100.0 * math.log10(trSum / rng) / math.log10(len)
+
+f_tfLabel(string tf) =>
+    string name = tf
+    if tf == "1"
+        name := "1분"
+    else if tf == "3"
+        name := "3분"
+    else if tf == "5"
+        name := "5분"
+    else if tf == "15"
+        name := "15분"
+    else if tf == "30"
+        name := "30분"
+    else if tf == "60"
+        name := "1시간"
+    else if tf == "120"
+        name := "2시간"
+    else if tf == "240"
+        name := "4시간"
+    else if tf == "D" or tf == "1D"
+        name := "일봉"
+    else if tf == "W" or tf == "1W"
+        name := "주봉"
+    else if tf == "M" or tf == "1M"
+        name := "월봉"
+    name
+
+f_htf() =>
+    float m = ta.ema(macdSrc, fastLen) - ta.ema(macdSrc, slowLen)
+    float s = ta.ema(m, sigLen)
+    [dip, dim, a] = ta.dmi(adxLen, adxLen)
+    float c = f_chop(chopLen)
+    [m[1], s[1], a[1], c[1]]
+
+float macd = ta.ema(macdSrc, fastLen) - ta.ema(macdSrc, slowLen)
+float sig = ta.ema(macd, sigLen)
+float hist = macd - sig
+[dip, dim, adx] = ta.dmi(adxLen, adxLen)
+float chop = f_chop(chopLen)
+float atr = ta.atr(atrLen)
+
+bool golden = ta.crossover(macd, sig)
+bool dead = ta.crossunder(macd, sig)
+bool macdUp = ta.crossover(macd, 0.0)
+bool macdDn = ta.crossunder(macd, 0.0)
+bool goldState = macd > sig
+bool deadState = macd < sig
+
+bool longCross = golden and macd > 0.0
+bool shortCross = dead and macd < 0.0
+bool longZero = macdUp and goldState
+bool shortZero = macdDn and deadState
+
+[h1m, h1s, h1a, h1c] = request.security(syminfo.tickerid, htf1, f_htf(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+[h2m, h2s, h2a, h2c] = request.security(syminfo.tickerid, htf2, f_htf(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+bool h1Long = not na(h1m) and not na(h1s) and h1m > 0.0 and h1m > h1s
+bool h1Short = not na(h1m) and not na(h1s) and h1m < 0.0 and h1m < h1s
+bool h2Long = not na(h2m) and not na(h2s) and h2m > 0.0 and h2m > h2s
+bool h2Short = not na(h2m) and not na(h2s) and h2m < 0.0 and h2m < h2s
+
+bool adxOk = not useAdx or (not na(adx) and adx >= adxMin)
+bool chopOk = not useChop or chop <= chopMax
+bool h1OkL = not useHtf1 or h1Long
+bool h1OkS = not useHtf1 or h1Short
+bool h2OkL = not useHtf2 or h2Long
+bool h2OkS = not useHtf2 or h2Short
+
+bool rawLong = barstate.isconfirmed and (longCross or longZero) and not (shortCross or shortZero)
+bool rawShort = barstate.isconfirmed and (shortCross or shortZero) and not (longCross or longZero)
+bool longSignal = rawLong and adxOk and chopOk and h1OkL and h2OkL
+bool shortSignal = rawShort and adxOk and chopOk and h1OkS and h2OkS
+
+string longWhy = longCross and longZero ? "골든크로스 · 0선 돌파" : longCross ? "0선 위 골든크로스" : "골든 상태로 0선 돌파"
+string shortWhy = shortCross and shortZero ? "데드크로스 · 0선 이탈" : shortCross ? "0선 아래 데드크로스" : "데드 상태로 0선 이탈"
+
+var string lastWhy = "-"
+var int lastDir = 0
+if longSignal
+    lastWhy := longWhy
+    lastDir := 1
+    label.new(bar_index, low, "롱  " + longWhy, xloc=xloc.bar_index, style=label.style_label_up, color=longCol, textcolor=color.white, size=size.small)
+    if alertOn
+        alert(syminfo.ticker + " MACD 롱  " + longWhy + "  " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if shortSignal
+    lastWhy := shortWhy
+    lastDir := -1
+    label.new(bar_index, high, "숏  " + shortWhy, xloc=xloc.bar_index, style=label.style_label_down, color=shortCol, textcolor=color.white, size=size.small)
+    if alertOn
+        alert(syminfo.ticker + " MACD 숏  " + shortWhy + "  " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+var bool zLive = false
+var int zDir = 0
+var int zBar = na
+var float zEnt = na
+var float zSl = na
+var float zRisk = na
+var int wins = 0
+var int losses = 0
+var float sumWinR = 0.0
+var float sumLossR = 0.0
+
+bool exitNow = false
+bool exitWin = false
+float exitR = 0.0
+bool stopped = false
+
+if zLive and barstate.isconfirmed and bar_index > zBar
+    bool hitSl = zDir == 1 ? low <= zSl : high >= zSl
+    bool flip = zDir == 1 ? shortSignal : longSignal
+    if hitSl
+        exitNow := true
+        exitR := -1.0
+        stopped := true
+    else if flip
+        float move = zDir == 1 ? close - zEnt : zEnt - close
+        exitR := move / math.max(zRisk, syminfo.mintick)
+        exitNow := true
+        exitWin := exitR > 0.0
+
+if exitNow
+    if exitWin
+        wins += 1
+        sumWinR += exitR
+    else if exitR < 0.0
+        losses += 1
+        sumLossR += math.abs(exitR)
+    bool resBelow = (zDir == 1 and not exitWin) or (zDir == -1 and exitWin)
+    string resTxt = (exitWin ? "승  " : "패  ") + str.tostring(exitR, "#.##") + "R"
+    label.new(bar_index, resBelow ? low : high, resTxt, xloc=xloc.bar_index, style=resBelow ? label.style_label_up : label.style_label_down, color=exitWin ? longCol : shortCol, textcolor=color.white, size=size.tiny)
+    zLive := false
+
+bool riskOk = not na(atr) and atr > 0.0
+if (longSignal or shortSignal) and not zLive and riskOk and not stopped
+    bool isL = longSignal
+    float risk = math.max(atr * slAtr, syminfo.mintick)
+    zLive := true
+    zDir := isL ? 1 : -1
+    zBar := bar_index
+    zEnt := close
+    zRisk := risk
+    zSl := isL ? close - risk : close + risk
+
+color histCol = hist >= 0.0 ? (hist >= hist[1] ? color.new(longCol, 15) : color.new(longCol, 50)) : (hist <= hist[1] ? color.new(shortCol, 15) : color.new(shortCol, 50))
+plot(hist, "히스토그램", color=histCol, style=plot.style_columns, display=display.pane)
+plot(macd, "MACD", color=macdCol, linewidth=2, display=display.pane)
+plot(sig, "시그널", color=sigCol, linewidth=1, display=display.pane)
+plot(0.0, "0", color=color.new(#8b95a8, 35), display=display.pane)
+plotshape(longSignal, title="롱", style=shape.triangleup, location=location.belowbar, color=longCol, size=size.tiny)
+plotshape(shortSignal, title="숏", style=shape.triangledown, location=location.abovebar, color=shortCol, size=size.tiny)
+
+f_state(float m, float s) =>
+    na(m) or na(s) ? "-" : m > 0.0 and m > s ? "0선 위 · 골든" : m < 0.0 and m < s ? "0선 아래 · 데드" : m >= 0.0 and m < s ? "0선 위 · 데드" : "0선 아래 · 골든"
+
+f_stateCol(float m, float s) =>
+    na(m) or na(s) ? color.gray : m > 0.0 and m > s ? longCol : m < 0.0 and m < s ? shortCol : color.gray
+
+string job = "대기"
+color jobC = color.gray
+if longSignal
+    job := "롱. " + longWhy
+    jobC := longCol
+else if shortSignal
+    job := "숏. " + shortWhy
+    jobC := shortCol
+else if rawLong and not adxOk
+    job := "롱 자리. ADX가 기준보다 낮음"
+else if rawShort and not adxOk
+    job := "숏 자리. ADX가 기준보다 낮음"
+else if rawLong and not chopOk
+    job := "롱 자리. 촙이 기준보다 높음"
+else if rawShort and not chopOk
+    job := "숏 자리. 촙이 기준보다 높음"
+else if rawLong and not h1OkL
+    job := "롱 자리. " + f_tfLabel(htf1) + " 방향이 다름"
+else if rawShort and not h1OkS
+    job := "숏 자리. " + f_tfLabel(htf1) + " 방향이 다름"
+else if rawLong and not h2OkL
+    job := "롱 자리. " + f_tfLabel(htf2) + " 방향이 다름"
+else if rawShort and not h2OkS
+    job := "숏 자리. " + f_tfLabel(htf2) + " 방향이 다름"
+else if goldState and macd > 0.0
+    job := "골든 · 0선 위"
+    jobC := longCol
+else if goldState
+    job := "골든 상태. 0선을 위로 넘으면 롱"
+    jobC := longCol
+else if deadState and macd < 0.0
+    job := "데드 · 0선 아래"
+    jobC := shortCol
+else if deadState
+    job := "데드 상태. 0선을 아래로 내리면 숏"
+    jobC := shortCol
+
+dashPos = dashPosIn == "오른쪽 아래" ? position.bottom_right : dashPosIn == "왼쪽 위" ? position.top_left : dashPosIn == "왼쪽 아래" ? position.bottom_left : position.top_right
+var table dash = table.new(position.top_right, 2, 13, bgcolor=color.new(#12141c, 12), border_color=color.new(#2a2e3a, 0), border_width=1)
+if barstate.islast
+    table.set_position(dash, dashPos)
+f_cell(int r, string a, string b, color bc) =>
+    table.cell(dash, 0, r, a, text_color=color.new(#c8cdd8, 0), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, r, b, text_color=bc, text_halign=text.align_right, text_size=size.small)
+
+if showDash and barstate.islast
+    string adxMark = useAdx ? "필수" : "참고"
+    string chopMark = useChop ? "필수" : "참고"
+    string adxTxt = na(adx) ? "-" : str.tostring(adx, "#.0") + "  기준 " + str.tostring(adxMin, "#") + "  " + adxMark
+    string chopTxt = str.tostring(chop, "#.0") + "  상한 " + str.tostring(chopMax, "#.0") + "  " + chopMark
+    string h1Use = useHtf1 ? "  필수" : ""
+    string h2Use = useHtf2 ? "  필수" : ""
+    color adxC = na(adx) ? color.gray : adx >= adxMin ? longCol : shortCol
+    color chopC = chop <= chopMax ? longCol : shortCol
+    int closedTrades = wins + losses
+    float winRate = closedTrades > 0 ? wins / closedTrades * 100.0 : na
+    float avgWinR = wins > 0 ? sumWinR / wins : 0.0
+    float avgLossR = losses > 0 ? sumLossR / losses : 0.0
+    float rrReal = avgLossR > 0 ? avgWinR / avgLossR : na
+    string wrTxt = closedTrades > 0 ? str.tostring(wins) + "/" + str.tostring(losses) + "  " + str.tostring(winRate, "#.0") + "%" : "-"
+    if zLive
+        wrTxt := wrTxt + "  진행"
+    string rrTxt = na(rrReal) ? "-" : str.tostring(rrReal, "#.##") + "  (" + str.tostring(avgWinR, "#.##") + "/" + str.tostring(avgLossR, "#.##") + "R)"
+    table.cell(dash, 0, 0, "HWR MACD", text_color=color.white, text_halign=text.align_left, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    table.cell(dash, 1, 0, f_tfLabel(timeframe.period), text_color=color.new(#8b95a8, 0), text_halign=text.align_right, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    f_cell(1, "할 일", job, jobC)
+    f_cell(2, "승률", wrTxt, not na(winRate) and winRate >= 55 ? longCol : not na(winRate) and winRate < 45 ? shortCol : color.gray)
+    f_cell(3, "손익비", rrTxt, na(rrReal) ? color.gray : rrReal >= 1.3 ? longCol : shortCol)
+    f_cell(4, "MACD", str.tostring(macd, "#.##") + "  /  시그널 " + str.tostring(sig, "#.##"), macd >= sig ? longCol : shortCol)
+    f_cell(5, "상태", f_state(macd, sig) + "  히스토 " + str.tostring(hist, "#.##"), f_stateCol(macd, sig))
+    f_cell(6, "ADX", adxTxt, adxC)
+    f_cell(7, "촙", chopTxt, chopC)
+    f_cell(8, f_tfLabel(htf1), f_state(h1m, h1s) + "  " + str.tostring(h1m, "#.##") + " / " + str.tostring(h1s, "#.##") + h1Use, f_stateCol(h1m, h1s))
+    f_cell(9, f_tfLabel(htf1) + " 강도", "ADX " + str.tostring(h1a, "#.0") + "  ·  촙 " + str.tostring(h1c, "#.0"), f_stateCol(h1m, h1s))
+    f_cell(10, f_tfLabel(htf2), f_state(h2m, h2s) + "  " + str.tostring(h2m, "#.##") + " / " + str.tostring(h2s, "#.##") + h2Use, f_stateCol(h2m, h2s))
+    f_cell(11, f_tfLabel(htf2) + " 강도", "ADX " + str.tostring(h2a, "#.0") + "  ·  촙 " + str.tostring(h2c, "#.0"), f_stateCol(h2m, h2s))
+    f_cell(12, "최근", lastWhy, lastDir == 1 ? longCol : lastDir == -1 ? shortCol : color.gray)
+
+alertcondition(longSignal, title="MACD 롱", message="HWR MACD LONG")
+alertcondition(shortSignal, title="MACD 숏", message="HWR MACD SHORT")

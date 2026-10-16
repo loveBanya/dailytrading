@@ -1,0 +1,476 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Uno_Mas
+
+//@version=6
+
+// ============================================================================
+// VWAP SESSION AND NY CASH
+// ============================================================================
+//
+// OVERVIEW:
+// This indicator displays two Volume Weighted Average Price (VWAP) lines designed
+// specifically for US equity markets:
+//
+//   1. NY VWAP (Cash Session VWAP) - Calculates VWAP for regular trading hours
+//      only (9:30 AM - 4:00 PM ET). Resets daily at market open.
+//
+//   2. Session VWAP - Calculates VWAP for the full trading session including
+//      pre-market and after-hours (6:00 PM - 4:00 PM ET next day). Only displays
+//      when extended hours data is available on the chart.
+//
+// The Session VWAP also supports standard deviation bands for identifying
+// potential support/resistance levels.
+//
+// ============================================================================
+
+indicator("NYVWAP IB", overlay = true)
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+// Time session definitions (America/New_York timezone)
+const string TIMEZONE           = "America/New_York"
+const string EXTENDED_SESSION   = "1800-0929"  // Extended hours: 6:00 PM to 9:29 AM
+const string MARKET_SESSION     = "0930-1600"  // Regular market: 9:30 AM to 4:00 PM
+const string IB_SESSION         = "0930-1030"  // Initial Balance: first hour
+
+// Fully transparent color for label backgrounds
+transparent = color.rgb(0, 0, 0, 100)
+
+// ============================================================================
+// USER INPUTS
+// ============================================================================
+
+// Calculation Settings
+CALC_GROUP = "Calculation"
+i_enableHD = input.bool(true, title = "Use 5-min data for precision", group = CALC_GROUP, tooltip = "On chart timeframes above 5 minutes, calculate VWAP using 5-minute bars for more accurate values. Prevents VWAP drift on higher timeframe charts.")
+i_debugLog = input.bool(false, title = "Debug Logging", group = CALC_GROUP, tooltip = "Enable logging to Pine Logs for debugging. Logs every 30 minutes.")
+
+// NY Cash VWAP Settings
+NY_GROUP = "NY VWAP"
+i_NY_color          = input.color(color.new(#4caf50, 0), title = "Color", group = NY_GROUP, inline = "line")
+i_NY_width          = input.int(1, title = "Width", group = NY_GROUP, inline = "line")
+i_NY_style          = input.string("Solid", title = "Style", options = ["Solid", "Dashed", "Dotted"], group = NY_GROUP, inline = "line")
+i_NY_showlabel      = input.bool(true, title = "Show Label", group = NY_GROUP, inline = "label")
+i_NY_label          = input.string("NYVWAP", title = "", group = NY_GROUP, inline = "label")
+i_NY_labelOffset    = input.int(0, title = "Offset", group = NY_GROUP, inline = "label")
+i_NY_txtSize        = str.lower(input.string("Normal", title = "Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = NY_GROUP))
+i_NY_showPriceScale = input.bool(true, title = "Show in Price Scale", group = NY_GROUP)
+
+// NY Open & IB Settings
+NY_OPEN_GROUP = "NY Open & Initial Balance"
+i_showNYOpen      = input.bool(true, "Show NY Open", group = NY_OPEN_GROUP)
+i_nyOpenColor     = input.color(color.gray, "Open Color", group = NY_OPEN_GROUP, inline = "open")
+i_nyOpenStyle     = input.string("Dashed", "Style", options = ["Solid", "Dashed", "Dotted"], group = NY_OPEN_GROUP, inline = "open")
+i_showNYOpenLabel = input.bool(true, "Show Label", group = NY_OPEN_GROUP, inline = "open_lab")
+i_nyOpenLabelText = input.string("NY Open", "", group = NY_OPEN_GROUP, inline = "open_lab")
+
+i_showIB          = input.bool(true, "Show Initial Balance (IB)", group = NY_OPEN_GROUP)
+i_ibColor         = input.color(color.new(#5b9cf6, 0), "IB Color", group = NY_OPEN_GROUP, inline = "ib")
+i_ibStyle         = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"], group = NY_OPEN_GROUP, inline = "ib")
+i_ibWidth         = input.int(1, "Width", group = NY_OPEN_GROUP, inline = "ib")
+i_showIBLabel     = input.bool(true, "Show Labels", group = NY_OPEN_GROUP, inline = "ib_lab")
+i_ibHighLabelText = input.string("IB High", "", group = NY_OPEN_GROUP, inline = "ib_lab")
+i_ibLowLabelText  = input.string("IB Low", "", group = NY_OPEN_GROUP, inline = "ib_lab")
+i_openIBLabOffset = input.int(0, "Label Offset", group = NY_OPEN_GROUP)
+
+// IB Fibonacci Levels Settings
+IB_FIB_GROUP = "IB Fibonacci Levels"
+i_fibStyle    = input.string("Dotted", "Fib Line Style", options = ["Solid", "Dashed", "Dotted"], group = IB_FIB_GROUP)
+i_showFibLabs = input.bool(true, "Show Fib Labels", group = IB_FIB_GROUP)
+i_fibLabType  = input.string("Level", "Label Content", options = ["Level", "Price"], group = IB_FIB_GROUP)
+
+// Fib Slots 1-5
+i_f1_on = input.bool(false, "Slot 1", group = IB_FIB_GROUP, inline = "f1"), i_f1_val = input.float(0.236, "", group = IB_FIB_GROUP, inline = "f1"), i_f1_col = input.color(color.new(#787b86, 50), "", group = IB_FIB_GROUP, inline = "f1")
+i_f2_on = input.bool(false, "Slot 2", group = IB_FIB_GROUP, inline = "f2"), i_f2_val = input.float(0.382, "", group = IB_FIB_GROUP, inline = "f2"), i_f2_col = input.color(color.new(#f23645, 50), "", group = IB_FIB_GROUP, inline = "f2")
+i_f3_on = input.bool(false, "Slot 3", group = IB_FIB_GROUP, inline = "f3"), i_f3_val = input.float(0.500, "", group = IB_FIB_GROUP, inline = "f3"), i_f3_col = input.color(color.new(#4caf50, 50), "", group = IB_FIB_GROUP, inline = "f3")
+i_f4_on = input.bool(false, "Slot 4", group = IB_FIB_GROUP, inline = "f4"), i_f4_val = input.float(0.618, "", group = IB_FIB_GROUP, inline = "f4"), i_f4_col = input.color(color.new(#2962ff, 50), "", group = IB_FIB_GROUP, inline = "f4")
+i_f5_on = input.bool(false, "Slot 5", group = IB_FIB_GROUP, inline = "f5"), i_f5_val = input.float(0.786, "", group = IB_FIB_GROUP, inline = "f5"), i_f5_col = input.color(color.new(#9c27b0, 50), "", group = IB_FIB_GROUP, inline = "f5")
+// Fib Slots 6-10
+i_f6_on = input.bool(false, "Slot 6", group = IB_FIB_GROUP, inline = "f6"), i_f6_val = input.float(1.000, "", group = IB_FIB_GROUP, inline = "f6"), i_f6_col = input.color(color.new(#787b86, 50), "", group = IB_FIB_GROUP, inline = "f6")
+i_f7_on = input.bool(false, "Slot 7", group = IB_FIB_GROUP, inline = "f7"), i_f7_val = input.float(1.272, "", group = IB_FIB_GROUP, inline = "f7"), i_f7_col = input.color(color.new(#787b86, 50), "", group = IB_FIB_GROUP, inline = "f7")
+i_f8_on = input.bool(false, "Slot 8", group = IB_FIB_GROUP, inline = "f8"), i_f8_val = input.float(1.618, "", group = IB_FIB_GROUP, inline = "f8"), i_f8_col = input.color(color.new(#787b86, 50), "", group = IB_FIB_GROUP, inline = "f8")
+i_f9_on = input.bool(false, "Slot 9", group = IB_FIB_GROUP, inline = "f9"), i_f9_val = input.float(2.000, "", group = IB_FIB_GROUP, inline = "f9"), i_f9_col = input.color(color.new(#787b86, 50), "", group = IB_FIB_GROUP, inline = "f9")
+i_f10_on = input.bool(false, "Slot 10", group = IB_FIB_GROUP, inline = "f10"), i_f10_val = input.float(2.618, "", group = IB_FIB_GROUP, inline = "f10"), i_f10_col = input.color(color.new(#787b86, 50), "", group = IB_FIB_GROUP, inline = "f10")
+
+// Session VWAP Settings
+SESSION_GROUP = "Session VWAP"
+i_Session_enabled        = input.bool(true, title = "Enabled", group = SESSION_GROUP, tooltip = "Disable to skip Session VWAP calculation and rendering. Useful when using the built-in VWAP indicator separately.")
+i_Session_color          = input.color(color.new(#04eb85, 0), title = "Color", group = SESSION_GROUP, inline = "line")
+i_Session_width          = input.int(2, title = "Width", group = SESSION_GROUP, inline = "line")
+i_Session_style          = input.string("Dashed", title = "Style", options = ["Solid", "Dashed", "Dotted"], group = SESSION_GROUP, inline = "line")
+i_Session_showlabel      = input.bool(true, title = "Show Label", group = SESSION_GROUP, inline = "label")
+i_Session_label          = input.string("VWAP", title = "", group = SESSION_GROUP, inline = "label")
+i_Session_labelOffset    = input.int(0, title = "Offset", group = SESSION_GROUP, inline = "label")
+i_Session_txtSize        = str.lower(input.string("Normal", title = "Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = SESSION_GROUP))
+i_Session_showPriceScale = input.bool(true, title = "Show in Price Scale", group = SESSION_GROUP)
+
+// Session VWAP Bands Settings
+BANDS_GROUP = "Session VWAP Bands"
+i_showBand1       = input.bool(false, title = "Band Std Dev #1", group = BANDS_GROUP, inline = "band1a")
+i_bandMult1       = input.float(1.0, title = "", group = BANDS_GROUP, inline = "band1a", step = 0.5, minval = 0)
+i_bandStyle1      = input.string("Solid", title = "", options = ["Solid", "Dashed", "Dotted"], group = BANDS_GROUP, inline = "band1a")
+i_bandColor1      = input.color(color.new(color.green, 0), title = "Line", group = BANDS_GROUP, inline = "band1b")
+i_bandFill1       = input.color(color.new(color.green, 90), title = "Fill", group = BANDS_GROUP, inline = "band1b")
+i_bandPriceScale1 = input.bool(false, title = "Price Scale", group = BANDS_GROUP, inline = "band1b")
+
+i_showBand2       = input.bool(false, title = "Band Std Dev #2", group = BANDS_GROUP, inline = "band2a")
+i_bandMult2       = input.float(2.0, title = "", group = BANDS_GROUP, inline = "band2a", step = 0.5, minval = 0)
+i_bandStyle2      = input.string("Solid", title = "", options = ["Solid", "Dashed", "Dotted"], group = BANDS_GROUP, inline = "band2a")
+i_bandColor2      = input.color(color.new(color.olive, 0), title = "Line", group = BANDS_GROUP, inline = "band2b")
+i_bandFill2       = input.color(color.new(color.olive, 90), title = "Fill", group = BANDS_GROUP, inline = "band2b")
+i_bandPriceScale2 = input.bool(false, title = "Price Scale", group = BANDS_GROUP, inline = "band2b")
+
+i_showBand3       = input.bool(false, title = "Band Std Dev #3", group = BANDS_GROUP, inline = "band3a")
+i_bandMult3       = input.float(3.0, title = "", group = BANDS_GROUP, inline = "band3a", step = 0.5, minval = 0)
+i_bandStyle3      = input.string("Solid", title = "", options = ["Solid", "Dashed", "Dotted"], group = BANDS_GROUP, inline = "band3a")
+i_bandColor3      = input.color(color.new(color.teal, 0), title = "Line", group = BANDS_GROUP, inline = "band3b")
+i_bandFill3       = input.color(color.new(color.teal, 90), title = "Fill", group = BANDS_GROUP, inline = "band3b")
+i_bandPriceScale3 = input.bool(false, title = "Price Scale", group = BANDS_GROUP, inline = "band3b")
+
+// ============================================================================
+// USER DEFINED TYPE
+// ============================================================================
+type myVWAP
+    label lab
+    int lab_offset
+    bool isActive = true
+    float cumPV = 0.0
+    float cumVol = 0.0
+    float vwap = na
+
+// ============================================================================
+// STATE VARIABLES
+// ============================================================================
+
+// Session VWAP - tracks full trading day (including extended hours)
+var myVWAP sessionVWAP = myVWAP.new(
+     label.new(bar_index, 0.0, text = "", style = label.style_label_left, color = transparent, textcolor = color.new(i_Session_color, 0), size = i_Session_txtSize),
+     i_Session_labelOffset
+ )
+
+// Cash VWAP uses two alternating instances to handle the market open transition smoothly.
+// When market opens, we swap which VWAP is "active" - the inactive one continues displaying
+// the previous day's VWAP while the active one calculates the new day's VWAP.
+var myVWAP cashVWAP1 = myVWAP.new(
+     label.new(bar_index, 0.0, text = "", style = label.style_label_left, color = transparent, textcolor = color.new(i_NY_color, 0), size = i_NY_txtSize),
+     i_NY_labelOffset
+ )
+
+var myVWAP cashVWAP2 = myVWAP.new(
+     label.new(bar_index, 0.0, text = "", style = label.style_label_left, color = transparent, textcolor = color.new(i_NY_color, 0), size = i_NY_txtSize),
+     i_NY_labelOffset,
+     isActive = false
+ )
+
+// NY Open and IB Variables
+var float nyOpenPrice = na
+var float ibHigh = na
+var float ibLow = na
+
+// Fib Level State
+var float[] fibLevels = array.new_float(10, na)
+var label[] fibLabels = array.new_label(10, na)
+
+// NY Open and IB Labels
+var label nyOpenLab = label.new(bar_index, 0.0, text = "", style = label.style_label_left, color = transparent, textcolor = i_nyOpenColor, size = size.normal)
+var label ibHighLab = label.new(bar_index, 0.0, text = "", style = label.style_label_left, color = transparent, textcolor = i_ibColor, size = size.normal)
+var label ibLowLab  = label.new(bar_index, 0.0, text = "", style = label.style_label_left, color = transparent, textcolor = i_ibColor, size = size.normal)
+
+// Initialize Fib Labels
+if barstate.isfirst
+    for i = 0 to 9
+        array.set(fibLabels, i, label.new(bar_index, 0.0, "", style = label.style_label_left, color = transparent, size = size.small))
+
+// Display configurations
+var sessionVWAPdisplay = i_Session_showPriceScale ? display.pane + display.data_window + display.status_line + display.price_scale : display.pane + display.data_window + display.status_line
+var cashVWAPdisplay = i_NY_showPriceScale ? display.data_window + display.status_line + display.price_scale : display.data_window + display.status_line
+
+var int activeCashVWAP = 1
+var bool showSessionVWAP = false
+var bool firstRun = true
+var bool hasExtendedHoursData = false
+
+// Session VWAP Band values
+var float upperBand1 = na
+var float lowerBand1 = na
+var float upperBand2 = na
+var float lowerBand2 = na
+var float upperBand3 = na
+var float lowerBand3 = na
+
+// ============================================================================
+// FUNCTIONS
+// ============================================================================
+
+resetVWAP(myVWAP vwap) =>
+    vwap.cumPV := 0.0
+    vwap.cumVol := 0.0
+    vwap.vwap := 0.0
+
+updateVWAP(myVWAP vwap, bool showLabel, string labelText) =>
+    if vwap.isActive
+        vwap.cumPV += hlc3 * volume
+        vwap.cumVol += volume
+        vwap.vwap := vwap.cumVol > 0 ? vwap.cumPV / vwap.cumVol : na
+
+        vwap.lab.set_x(bar_index + vwap.lab_offset)
+        vwap.lab.set_y(vwap.vwap)
+        vwap.lab.set_text(showLabel ? labelText : "")
+        vwap.lab.set_tooltip(showLabel ? str.tostring(vwap.vwap, format.mintick) : "")
+
+calcHigherTimeframeVWAP(myVWAP vwap, simple string vwapPeriod, bool showLabel, string labelText) =>
+    vwap.vwap := ta.vwap(hlc3, timeframe.change(vwapPeriod))
+    vwap.lab.set_x(bar_index + vwap.lab_offset)
+    vwap.lab.set_y(vwap.vwap)
+    vwap.lab.set_text(showLabel ? labelText : "")
+    vwap.lab.set_tooltip(showLabel ? str.tostring(vwap.vwap, format.mintick) : "")
+
+// ============================================================================
+// VOLUME VALIDATION
+// ============================================================================
+cumVolume = ta.cum(volume)
+if barstate.islast and cumVolume == 0
+    runtime.error("No volume is provided by the data vendor.")
+
+// ============================================================================
+// SESSION DETECTION
+// ============================================================================
+bool isExtendedSession = not na(time(timeframe.period, EXTENDED_SESSION, TIMEZONE))
+bool isMarketSession = not na(time(timeframe.period, MARKET_SESSION, TIMEZONE))
+bool isMarketOpen = isMarketSession and (isMarketSession != isMarketSession[1])
+bool isIBPeriod = not na(time(timeframe.period, IB_SESSION, TIMEZONE))
+
+// ============================================================================
+// MAIN LOGIC
+// ============================================================================
+
+if firstRun
+    firstRun := false
+    if timeframe.isdaily or timeframe.isweekly
+        label.delete(cashVWAP1.lab)
+        label.delete(cashVWAP2.lab)
+        label.delete(nyOpenLab)
+        label.delete(ibHighLab)
+        label.delete(ibLowLab)
+        for lab in fibLabels
+            label.delete(lab)
+    if not i_Session_enabled
+        label.delete(sessionVWAP.lab)
+
+if timeframe.isdaily
+    if i_Session_enabled
+        calcHigherTimeframeVWAP(sessionVWAP, "1W", i_Session_showlabel, i_Session_label)
+else if timeframe.isweekly
+    if i_Session_enabled
+        calcHigherTimeframeVWAP(sessionVWAP, "1M", i_Session_showlabel, i_Session_label)
+else if timeframe.isintraday
+    if session.islastbar_regular
+        isMarketSession := false
+
+    chartMinutes = timeframe.in_seconds() / 60
+    useHD = i_enableHD and chartMinutes > 5 and chartMinutes < 1440
+
+    // -------------------------------------------------------------------------
+    // NY Open & IB Logic
+    // -------------------------------------------------------------------------
+    if isMarketOpen
+        nyOpenPrice := open
+        ibHigh := high
+        ibLow := low
+        for i = 0 to 9
+            array.set(fibLevels, i, na)
+    else if isIBPeriod
+        ibHigh := math.max(nz(ibHigh, -1e10), high)
+        ibLow := math.min(nz(ibLow, 1e10), low)
+    
+    // Calculate Fib Levels during and after IB
+    if not na(ibHigh) and not na(ibLow)
+        ibRange = ibHigh - ibLow
+        
+        // Update Levels using slots
+        array.set(fibLevels, 0, i_f1_on ? ibLow + ibRange * i_f1_val : na)
+        array.set(fibLevels, 1, i_f2_on ? ibLow + ibRange * i_f2_val : na)
+        array.set(fibLevels, 2, i_f3_on ? ibLow + ibRange * i_f3_val : na)
+        array.set(fibLevels, 3, i_f4_on ? ibLow + ibRange * i_f4_val : na)
+        array.set(fibLevels, 4, i_f5_on ? ibLow + ibRange * i_f5_val : na)
+        array.set(fibLevels, 5, i_f6_on ? ibLow + ibRange * i_f6_val : na)
+        array.set(fibLevels, 6, i_f7_on ? ibLow + ibRange * i_f7_val : na)
+        array.set(fibLevels, 7, i_f8_on ? ibLow + ibRange * i_f8_val : na)
+        array.set(fibLevels, 8, i_f9_on ? ibLow + ibRange * i_f9_val : na)
+        array.set(fibLevels, 9, i_f10_on ? ibLow + ibRange * i_f10_val : na)
+
+    // Update NY Open and IB Labels
+    if not na(nyOpenPrice) and i_showNYOpen and i_showNYOpenLabel
+        nyOpenLab.set_xy(bar_index + i_openIBLabOffset, nyOpenPrice)
+        nyOpenLab.set_text(i_nyOpenLabelText)
+        nyOpenLab.set_textcolor(i_nyOpenColor)
+    else
+        nyOpenLab.set_text("")
+
+    if not na(ibHigh) and i_showIB and i_showIBLabel
+        ibHighLab.set_xy(bar_index + i_openIBLabOffset, ibHigh)
+        ibHighLab.set_text(i_ibHighLabelText)
+        ibHighLab.set_textcolor(i_ibColor)
+    else
+        ibHighLab.set_text("")
+
+    if not na(ibLow) and i_showIB and i_showIBLabel
+        ibLowLab.set_xy(bar_index + i_openIBLabOffset, ibLow)
+        ibLowLab.set_text(i_ibLowLabelText)
+        ibLowLab.set_textcolor(i_ibColor)
+    else
+        ibLowLab.set_text("")
+
+    // Update Fib Labels
+    color[] fibColors = array.from(i_f1_col, i_f2_col, i_f3_col, i_f4_col, i_f5_col, i_f6_col, i_f7_col, i_f8_col, i_f9_col, i_f10_col)
+    float[] fibVals   = array.from(i_f1_val, i_f2_val, i_f3_val, i_f4_val, i_f5_val, i_f6_val, i_f7_val, i_f8_val, i_f9_val, i_f10_val)
+    
+    for i = 0 to 9
+        lab = array.get(fibLabels, i)
+        lev = array.get(fibLevels, i)
+        if not na(lev) and i_showFibLabs and isMarketSession
+            lab.set_xy(bar_index + i_openIBLabOffset, lev)
+            lab.set_textcolor(array.get(fibColors, i))
+            txt = i_fibLabType == "Level" ? str.tostring(array.get(fibVals, i), "#.###") : str.tostring(lev, format.mintick)
+            lab.set_text(txt)
+        else
+            lab.set_text("")
+
+    // -------------------------------------------------------------------------
+    // Cash VWAP Logic
+    // -------------------------------------------------------------------------
+    var float[] pvArray_hd = array.new_float(0)
+    var float[] volArray_hd = array.new_float(0)
+    var int lastResetDay_hd = -1
+    float nyVwapHD = na
+    
+    if useHD
+        [hlc3Array, volArray, timeArray] = request.security_lower_tf(syminfo.tickerid, "5", [hlc3, volume, time])
+        if array.size(hlc3Array) > 0
+            for i = 0 to array.size(hlc3Array) - 1
+                barTime = array.get(timeArray, i)
+                barHlc3 = array.get(hlc3Array, i)
+                barVol = array.get(volArray, i)
+                d = dayofmonth(barTime, TIMEZONE)
+                is930 = (hour(barTime, TIMEZONE) == 9 and minute(barTime, TIMEZONE) == 30)
+                if is930 and d != lastResetDay_hd
+                    array.clear(pvArray_hd)
+                    array.clear(volArray_hd)
+                    lastResetDay_hd := d
+                if barVol > 0
+                    array.push(pvArray_hd, barHlc3 * barVol)
+                    array.push(volArray_hd, barVol)
+            if array.size(pvArray_hd) > 0
+                nyVwapHD := array.sum(volArray_hd) > 0 ? array.sum(pvArray_hd) / array.sum(volArray_hd) : na
+
+    if isMarketOpen
+        if activeCashVWAP == 1
+            activeCashVWAP := 2
+            cashVWAP1.isActive := false, cashVWAP2.isActive := true
+            cashVWAP1.lab.set_text(""), cashVWAP1.lab.set_tooltip("")
+            resetVWAP(cashVWAP2)
+            if useHD and not na(nyVwapHD)
+                cashVWAP2.vwap := nyVwapHD
+                cashVWAP2.lab.set_xy(bar_index + cashVWAP2.lab_offset, cashVWAP2.vwap)
+                cashVWAP2.lab.set_text(i_NY_showlabel ? i_NY_label : "")
+            else
+                updateVWAP(cashVWAP2, i_NY_showlabel, i_NY_label)
+        else
+            activeCashVWAP := 1
+            cashVWAP1.isActive := true, cashVWAP2.isActive := false
+            cashVWAP2.lab.set_text(""), cashVWAP2.lab.set_tooltip("")
+            resetVWAP(cashVWAP1)
+            if useHD and not na(nyVwapHD)
+                cashVWAP1.vwap := nyVwapHD
+                cashVWAP1.lab.set_xy(bar_index + cashVWAP1.lab_offset, cashVWAP1.vwap)
+                cashVWAP1.lab.set_text(i_NY_showlabel ? i_NY_label : "")
+            else
+                updateVWAP(cashVWAP1, i_NY_showlabel, i_NY_label)
+    else
+        if useHD and not na(nyVwapHD)
+            cur = cashVWAP1.isActive ? cashVWAP1 : cashVWAP2
+            cur.vwap := nyVwapHD
+            cur.lab.set_xy(bar_index + cur.lab_offset, cur.vwap)
+            cur.lab.set_text(i_NY_showlabel ? i_NY_label : "")
+        else
+            updateVWAP(cashVWAP1, i_NY_showlabel, i_NY_label)
+            updateVWAP(cashVWAP2, i_NY_showlabel, i_NY_label)
+
+    // -------------------------------------------------------------------------
+    // Session VWAP Logic
+    // -------------------------------------------------------------------------
+    if i_Session_enabled
+        if isExtendedSession and not hasExtendedHoursData
+            hasExtendedHoursData := true, showSessionVWAP := true
+
+    isNewDay = timeframe.change("1D")
+    [vwapStd, stdevUpperStd, _] = ta.vwap(hlc3, isNewDay, 1)
+    stdevAbsStd = stdevUpperStd - vwapStd
+    
+    float vwapVal = vwapStd, float stdevAbs = stdevAbsStd
+    if useHD
+        vH = request.security_lower_tf(syminfo.tickerid, "5", ta.vwap(hlc3, timeframe.change("1D")))
+        vwapVal := array.size(vH) > 0 ? array.last(vH) : na
+        [_, sUH, _] = ta.vwap(hlc3, timeframe.change("1D"), 1)
+        sH = request.security_lower_tf(syminfo.tickerid, "5", sUH)
+        stdevAbs := array.size(sH) > 0 ? nz(array.last(sH)) - nz(vwapVal) : na
+    
+    if i_Session_enabled and showSessionVWAP
+        sessionVWAP.vwap := vwapVal
+        sessionVWAP.lab.set_xy(bar_index + sessionVWAP.lab_offset, sessionVWAP.vwap)
+        sessionVWAP.lab.set_text(i_Session_showlabel ? i_Session_label : "")
+
+    showBands = i_Session_enabled and showSessionVWAP and not session.islastbar
+    upperBand1 := showBands ? vwapVal + stdevAbs * i_bandMult1 : na
+    lowerBand1 := showBands ? vwapVal - stdevAbs * i_bandMult1 : na
+    upperBand2 := showBands ? vwapVal + stdevAbs * i_bandMult2 : na
+    lowerBand2 := showBands ? vwapVal - stdevAbs * i_bandMult2 : na
+    upperBand3 := showBands ? vwapVal + stdevAbs * i_bandMult3 : na
+    lowerBand3 := showBands ? vwapVal - stdevAbs * i_bandMult3 : na
+
+// ============================================================================
+// PLOTS
+// ============================================================================
+
+f_getStyle(s) => s == "Solid" ? plot.linestyle_solid : s == "Dashed" ? plot.linestyle_dashed : plot.linestyle_dotted
+
+// Basic Plots
+plot(i_showNYOpen and isMarketSession ? nyOpenPrice : na, "NY Open", i_nyOpenColor, 1, plot.style_linebr, linestyle = f_getStyle(i_nyOpenStyle))
+plot(i_showIB and isMarketSession ? ibHigh : na, "IB High", i_ibColor, i_ibWidth, plot.style_linebr, linestyle = f_getStyle(i_ibStyle))
+plot(i_showIB and isMarketSession ? ibLow : na, "IB Low", i_ibColor, i_ibWidth, plot.style_linebr, linestyle = f_getStyle(i_ibStyle))
+
+// IB Fib Plots (Manual for Each Slot)
+fibLinestyle = f_getStyle(i_fibStyle)
+plot(isMarketSession ? array.get(fibLevels, 0) : na, "Fib 1", i_f1_col, 1, plot.style_linebr, linestyle = fibLinestyle)
+plot(isMarketSession ? array.get(fibLevels, 1) : na, "Fib 2", i_f2_col, 1, plot.style_linebr, linestyle = fibLinestyle)
+plot(isMarketSession ? array.get(fibLevels, 2) : na, "Fib 3", i_f3_col, 1, plot.style_linebr, linestyle = fibLinestyle)
+plot(isMarketSession ? array.get(fibLevels, 3) : na, "Fib 4", i_f4_col, 1, plot.style_linebr, linestyle = fibLinestyle)
+plot(isMarketSession ? array.get(fibLevels, 4) : na, "Fib 5", i_f5_col, 1, plot.style_linebr, linestyle = fibLinestyle)
+plot(isMarketSession ? array.get(fibLevels, 5) : na, "Fib 6", i_f6_col, 1, plot.style_linebr, linestyle = fibLinestyle)
+plot(isMarketSession ? array.get(fibLevels, 6) : na, "Fib 7", i_f7_col, 1, plot.style_linebr, linestyle = fibLinestyle)
+plot(isMarketSession ? array.get(fibLevels, 7) : na, "Fib 8", i_f8_col, 1, plot.style_linebr, linestyle = fibLinestyle)
+plot(isMarketSession ? array.get(fibLevels, 8) : na, "Fib 9", i_f9_col, 1, plot.style_linebr, linestyle = fibLinestyle)
+plot(isMarketSession ? array.get(fibLevels, 9) : na, "Fib 10", i_f10_col, 1, plot.style_linebr, linestyle = fibLinestyle)
+
+// VWAPs
+plot(i_Session_enabled ? sessionVWAP.vwap : na, "Session VWAP", i_Session_color, i_Session_width, plot.style_linebr, display = sessionVWAPdisplay, linestyle = f_getStyle(i_Session_style))
+
+// Bands
+u1 = plot(upperBand1, "U1", i_bandColor1, style = plot.style_linebr, display = i_showBand1 and i_Session_enabled ? (i_bandPriceScale1 ? display.pane + display.price_scale : display.pane) : display.none, linestyle = f_getStyle(i_bandStyle1))
+l1 = plot(lowerBand1, "L1", i_bandColor1, style = plot.style_linebr, display = i_showBand1 and i_Session_enabled ? (i_bandPriceScale1 ? display.pane + display.price_scale : display.pane) : display.none, linestyle = f_getStyle(i_bandStyle1))
+fill(u1, l1, color = i_bandFill1, display = i_showBand1 and i_Session_enabled ? display.all : display.none)
+
+u2 = plot(upperBand2, "U2", i_bandColor2, style = plot.style_linebr, display = i_showBand2 and i_Session_enabled ? (i_bandPriceScale2 ? display.pane + display.price_scale : display.pane) : display.none, linestyle = f_getStyle(i_bandStyle2))
+l2 = plot(lowerBand2, "L2", i_bandColor2, style = plot.style_linebr, display = i_showBand2 and i_Session_enabled ? (i_bandPriceScale2 ? display.pane + display.price_scale : display.pane) : display.none, linestyle = f_getStyle(i_bandStyle2))
+fill(u2, l2, color = i_bandFill2, display = i_showBand2 and i_Session_enabled ? display.all : display.none)
+
+u3 = plot(upperBand3, "U3", i_bandColor3, style = plot.style_linebr, display = i_showBand3 and i_Session_enabled ? (i_bandPriceScale3 ? display.pane + display.price_scale : display.pane) : display.none, linestyle = f_getStyle(i_bandStyle3))
+l3 = plot(lowerBand3, "L3", i_bandColor3, style = plot.style_linebr, display = i_showBand3 and i_Session_enabled ? (i_bandPriceScale3 ? display.pane + display.price_scale : display.pane) : display.none, linestyle = f_getStyle(i_bandStyle3))
+fill(u3, l3, color = i_bandFill3, display = i_showBand3 and i_Session_enabled ? display.all : display.none)
+
+// Cash VWAP
+cv = cashVWAP1.isActive ? cashVWAP1.vwap : cashVWAP2.vwap
+plot(cv, "Cash VWAP", i_NY_color, i_NY_width, plot.style_linebr, display = cashVWAPdisplay, linestyle = f_getStyle(i_NY_style))
+plot(cashVWAP1.isActive ? cashVWAP1.vwap : na, "C1", i_NY_color, i_NY_width, plot.style_linebr, display = display.pane, linestyle = f_getStyle(i_NY_style))
+plot(cashVWAP2.isActive ? cashVWAP2.vwap : na, "C2", i_NY_color, i_NY_width, plot.style_linebr, display = display.pane, linestyle = f_getStyle(i_NY_style))

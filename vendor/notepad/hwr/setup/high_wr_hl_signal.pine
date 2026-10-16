@@ -1,0 +1,438 @@
+//@version=5
+indicator("HL/LH 구조 [HWR HL]", shorttitle="HWR HL", overlay=true, scale=scale.right, max_labels_count=500, max_lines_count=20, max_boxes_count=40)
+
+// ─────────────────────────────────────────────
+// 상승 구조(저점·고점이 높아짐)에서 HL을 찍고 지키면 롱.
+// 하락 구조(고점·저점이 낮아짐)에서 LH를 찍고 지키면 숏.
+// 고점과 저점이 서로 다른 방향이면 혼조라 거래하지 않음.
+// 봉이 닫힌 뒤에만. Apex와 같이 켜지 말 것.
+// 15분 또는 1시간. 손절은 그 HL/LH 바깥.
+// ─────────────────────────────────────────────
+
+grpP = "1. 구조"
+pivLen = input.int(5, "스윙 봉", minval=2, maxval=20, group=grpP, tooltip="좌우 이 봉 수만큼 지켜본 뒤 고점·저점을 확정합니다. 15분은 5, 1시간은 3~5.")
+holdBars = input.int(12, "리테스트 유효 봉", minval=2, maxval=40, group=grpP, tooltip="HL·LH가 나온 뒤 이 봉 안에 선을 다시 찍어야 진입합니다.")
+needBoth = input.bool(true, "고점·저점 둘 다 같은 방향", group=grpP, tooltip="켜면 롱은 HL과 HH가 같이 있을 때만. 끄면 HL만으로도 롱입니다.")
+touchAtr = input.float(0.35, "접촉 폭 ATR", minval=0.05, step=0.05, group=grpP)
+maxExtAtr = input.float(1.40, "추격 금지 ATR", minval=0.3, step=0.05, group=grpP, tooltip="종가가 HL·LH에서 이 거리보다 멀면 안 들어갑니다.")
+
+grpMom = "2. 확인"
+htfTf = input.timeframe("240", "상위 타임프레임", group=grpMom)
+requireHtf = input.bool(true, "상위 방향 필수", group=grpMom)
+adxMin = input.float(16.0, "최소 ADX", minval=1, step=0.5, group=grpMom)
+requireAdx = input.bool(true, "ADX 필수", group=grpMom)
+cooldownBars = input.int(6, "쿨다운 봉", minval=1, group=grpMom)
+
+grpEx = "3. 손절·익절"
+tp1R = input.float(0.80, "TP1 (R)", minval=0.4, step=0.05, group=grpEx)
+tp2R = input.float(2.00, "TP2 (R)", minval=1.0, step=0.1, group=grpEx)
+q1Pct = input.float(55.0, "TP1 비중 %", minval=10, maxval=90, step=5, group=grpEx, tooltip="나머지는 TP2. TP1 후 손절은 진입가.")
+slPad = 0.15
+slMinAtr = 0.70
+slMaxAtr = 2.20
+
+grpMoney = "4. 테스트 금액"
+betAmt = input.float(100.0, "진입 금액 (달러)", minval=1, step=1, group=grpMoney, tooltip="주문마다 같은 증거금. 손실은 이 금액까지.")
+lev = input.float(1.0, "배율", minval=1, maxval=125, step=0.5, group=grpMoney)
+
+grpStat = "5. 측정"
+statMode = input.string("최근 N일", "측정 방식", options=["전체", "최근 N일", "기간 지정"], group=grpStat)
+statDays = input.int(60, "최근 N일", minval=1, maxval=3650, group=grpStat)
+statFrom = input.time(timestamp("01 Jan 2026 00:00"), "시작", group=grpStat)
+statTo = input.time(timestamp("30 Sep 2026 23:59"), "종료", group=grpStat)
+sessTz = input.string("Asia/Seoul", "타임존", options=["Asia/Seoul", "America/New_York", "Europe/London", "UTC"], group=grpStat)
+
+grpUi = "6. 표시"
+showSwing = input.bool(true, "스윙 선", group=grpUi)
+showDash = input.bool(true, "대시보드", group=grpUi)
+alertEntry = input.bool(false, "진입 알림", group=grpUi)
+alertExit = input.bool(false, "청산 알림", group=grpUi)
+dashPosIn = input.string("오른쪽 위", "테이블 위치", options=["오른쪽 위", "오른쪽 아래", "왼쪽 위", "왼쪽 아래"], group=grpUi)
+bullCol = input.color(color.new(#26a69a, 0), "롱", group=grpUi)
+bearCol = input.color(color.new(#ef5350, 0), "숏", group=grpUi)
+
+f_bias() =>
+    float e = ta.ema(close, 21)
+    float b = close > e and e > e[3] ? 1.0 : close < e and e < e[3] ? -1.0 : 0.0
+    b[1]
+
+htfBias = request.security(syminfo.tickerid, htfTf, f_bias(), barmerge.gaps_off, barmerge.lookahead_off)
+atrVal = ta.atr(14)
+[diPlus, diMinus, adxVal] = ta.dmi(14, 14)
+adxOk = adxVal >= adxMin
+htfLong = htfBias > 0.5
+htfShort = htfBias < -0.5
+
+pivL = ta.pivotlow(low, pivLen, pivLen)
+pivH = ta.pivothigh(high, pivLen, pivLen)
+var float p1L = na
+var float p2L = na
+var float p1H = na
+var float p2H = na
+var int p1LBar = na
+var int p2LBar = na
+var int p1HBar = na
+var int p2HBar = na
+var float hlPx = na
+var float lhPx = na
+var int hlBorn = na
+var int lhBorn = na
+var bool hlUsed = false
+var bool lhUsed = false
+var line lnL = na
+var line lnH = na
+
+if not na(pivL)
+    p2L := p1L
+    p2LBar := p1LBar
+    p1L := pivL
+    p1LBar := bar_index - pivLen
+    if not na(p2L) and p1L > p2L
+        hlPx := p1L
+        hlBorn := bar_index
+        hlUsed := false
+    if not na(p2L) and p1L < p2L
+        hlUsed := true
+    if showSwing and not na(p2L)
+        line.delete(lnL)
+        lnL := line.new(p2LBar, p2L, p1LBar, p1L, xloc=xloc.bar_index, color=p1L > p2L ? bullCol : bearCol, width=2)
+    string lowTag = not na(p2L) and p1L > p2L ? "HL" : not na(p2L) and p1L < p2L ? "LL" : ""
+    if lowTag != ""
+        label.new(p1LBar, p1L, lowTag, xloc=xloc.bar_index, style=label.style_label_up, color=lowTag == "HL" ? bullCol : bearCol, textcolor=color.white, size=size.tiny)
+
+if not na(pivH)
+    p2H := p1H
+    p2HBar := p1HBar
+    p1H := pivH
+    p1HBar := bar_index - pivLen
+    if not na(p2H) and p1H < p2H
+        lhPx := p1H
+        lhBorn := bar_index
+        lhUsed := false
+    if not na(p2H) and p1H > p2H
+        lhUsed := true
+    if showSwing and not na(p2H)
+        line.delete(lnH)
+        lnH := line.new(p2HBar, p2H, p1HBar, p1H, xloc=xloc.bar_index, color=p1H < p2H ? bearCol : bullCol, width=2)
+    string hiTag = not na(p2H) and p1H < p2H ? "LH" : not na(p2H) and p1H > p2H ? "HH" : ""
+    if hiTag != ""
+        label.new(p1HBar, p1H, hiTag, xloc=xloc.bar_index, style=label.style_label_down, color=hiTag == "LH" ? bearCol : bullCol, textcolor=color.white, size=size.tiny)
+
+bool hl = not na(p1L) and not na(p2L) and p1L > p2L
+bool ll = not na(p1L) and not na(p2L) and p1L < p2L
+bool hh = not na(p1H) and not na(p2H) and p1H > p2H
+bool lh = not na(p1H) and not na(p2H) and p1H < p2H
+bool bullStruct = needBoth ? hl and hh : hl
+bool bearStruct = needBoth ? lh and ll : lh
+
+if not na(hlPx) and close < hlPx
+    hlUsed := true
+if not na(lhPx) and close > lhPx
+    lhUsed := true
+
+float rng = high - low
+float body = math.abs(close - open)
+bool candleL = rng > 0 and close > open and body >= rng * 0.25
+bool candleS = rng > 0 and close < open and body >= rng * 0.25
+float band = math.max(atrVal * touchAtr, syminfo.mintick * 2)
+float pierce = atrVal * 0.45
+bool tagL = not na(hlPx) and low <= hlPx + band and low >= hlPx - pierce and close > hlPx and candleL
+bool tagS = not na(lhPx) and high >= lhPx - band and high <= lhPx + pierce and close < lhPx and candleS
+bool freshL = not na(hlBorn) and bar_index - hlBorn <= holdBars and not hlUsed
+bool freshS = not na(lhBorn) and bar_index - lhBorn <= holdBars and not lhUsed
+bool nearL = not na(hlPx) and close > hlPx and (close - hlPx) <= atrVal * maxExtAtr
+bool nearS = not na(lhPx) and close < lhPx and (lhPx - close) <= atrVal * maxExtAtr
+bool htfOkL = not requireHtf or htfLong
+bool htfOkS = not requireHtf or htfShort
+bool adxGate = not requireAdx or adxOk
+
+float distL = na(hlPx) ? 0.0 : close - (hlPx - atrVal * slPad)
+float distS = na(lhPx) ? 0.0 : (lhPx + atrVal * slPad) - close
+bool roomL = distL > syminfo.mintick and distL <= atrVal * slMaxAtr
+bool roomS = distS > syminfo.mintick and distS <= atrVal * slMaxAtr
+
+var bool zLive = false
+var int lastSigBar = na
+bool cooled = na(lastSigBar) or bar_index - lastSigBar >= cooldownBars
+bool gateL = barstate.isconfirmed and bullStruct and not bearStruct and freshL and tagL and nearL and roomL and htfOkL and adxGate and cooled and not zLive and not tagS
+bool gateS = barstate.isconfirmed and bearStruct and not bullStruct and freshS and tagS and nearS and roomS and htfOkS and adxGate and cooled and not zLive and not tagL
+bool longSignal = gateL and not gateS
+bool shortSignal = gateS and not gateL
+
+f_sl(bool isLong) =>
+    float dist = isLong ? distL : distS
+    float adj = math.max(atrVal * slMinAtr, dist)
+    isLong ? close - adj : close + adj
+f_tp(bool isLong, float px, float sl, float rMult) =>
+    float risk = math.max(math.abs(px - sl), syminfo.mintick)
+    isLong ? px + risk * rMult : px - risk * rMult
+
+var int zDir = 0
+var int zBar = na
+var int zLock = na
+var int zTm = na
+var float zEnt = na
+var float zSl = na
+var float zTp1 = na
+var float zTp2 = na
+var bool zHit1 = false
+var bool zFull = false
+var box bTp1 = na
+var box bTp2 = na
+var box bSl = na
+var label tTp1 = na
+var label tTp2 = na
+var label tSl = na
+var label tEn = na
+var int wins = 0
+var int losses = 0
+var int nBe = 0
+var int nFull = 0
+var float sumWinR = 0.0
+var float sumLossR = 0.0
+var float sumUsd = 0.0
+var int firstTradeTime = na
+var int lastCloseTime = na
+int lookFrom = timenow - statDays * 24 * 60 * 60 * 1000
+f_inStat(int t) =>
+    na(t) ? false : statMode == "전체" ? true : statMode == "최근 N일" ? (t >= lookFrom and t <= timenow) : (t >= statFrom and t <= statTo)
+f_zone(float p1, float p2, color bg, color bd) =>
+    box.new(bar_index, math.max(p1, p2), bar_index, math.min(p1, p2), xloc=xloc.bar_index, border_color=bd, border_width=1, bgcolor=bg)
+f_tag(float y, color c, string name) =>
+    label.new(bar_index, y, name, xloc=xloc.bar_index, style=label.style_label_left, color=color.new(c, 15), textcolor=color.white, size=size.tiny)
+
+bool exitNow = false
+bool exitWin = false
+bool exitBe = false
+float exitR = 0.0
+
+if zLive and bar_index > zBar and barstate.isconfirmed
+    bool hitSl = zDir == 1 ? low <= zSl : high >= zSl
+    bool hitTp1 = zDir == 1 ? high >= zTp1 : low <= zTp1
+    bool hitTp2 = zDir == 1 ? high >= zTp2 : low <= zTp2
+    bool hitBe = zDir == 1 ? low <= zEnt : high >= zEnt
+    if not zHit1
+        if hitTp2 and not hitSl
+            exitNow := true
+            exitWin := true
+            zFull := true
+            exitR := tp1R * q1Pct / 100.0 + tp2R * (100.0 - q1Pct) / 100.0
+        else if hitTp1 and not hitSl
+            zHit1 := true
+            zLock := bar_index
+            zSl := zEnt
+        else if hitSl
+            exitNow := true
+            exitR := -1.0
+    else if bar_index > zLock
+        if hitTp2 and not hitBe
+            exitNow := true
+            exitWin := true
+            zFull := true
+            exitR := tp1R * q1Pct / 100.0 + tp2R * (100.0 - q1Pct) / 100.0
+        else if hitTp2 and hitBe
+            bool kept = zDir == 1 ? close >= zEnt : close <= zEnt
+            exitNow := true
+            exitWin := true
+            zFull := kept
+            exitBe := not kept
+            exitR := kept ? tp1R * q1Pct / 100.0 + tp2R * (100.0 - q1Pct) / 100.0 : tp1R * q1Pct / 100.0
+        else if hitBe
+            exitNow := true
+            exitWin := true
+            exitBe := true
+            exitR := tp1R * q1Pct / 100.0
+
+if exitNow
+    if f_inStat(zTm)
+        if exitWin
+            wins += 1
+            sumWinR += exitR
+            if exitBe
+                nBe += 1
+            if zFull
+                nFull += 1
+        else
+            losses += 1
+            sumLossR += 1.0
+        float leg1 = zDir == 1 ? (zTp1 - zEnt) / math.max(zEnt, syminfo.mintick) : (zEnt - zTp1) / math.max(zEnt, syminfo.mintick)
+        float leg2 = zDir == 1 ? (zTp2 - zEnt) / math.max(zEnt, syminfo.mintick) : (zEnt - zTp2) / math.max(zEnt, syminfo.mintick)
+        float legSl = zDir == 1 ? (zSl - zEnt) / math.max(zEnt, syminfo.mintick) : (zEnt - zSl) / math.max(zEnt, syminfo.mintick)
+        float move = not exitWin ? legSl : exitBe ? leg1 * q1Pct / 100.0 : leg1 * q1Pct / 100.0 + leg2 * (100.0 - q1Pct) / 100.0
+        sumUsd += math.max(betAmt * lev * move, -betAmt)
+        if na(firstTradeTime)
+            firstTradeTime := zTm
+        lastCloseTime := time
+    box.delete(bTp1)
+    box.delete(bTp2)
+    box.delete(bSl)
+    label.delete(tTp1)
+    label.delete(tTp2)
+    label.delete(tSl)
+    label.delete(tEn)
+    bTp1 := na
+    bTp2 := na
+    bSl := na
+    tTp1 := na
+    tTp2 := na
+    tSl := na
+    tEn := na
+    string resTxt = zFull ? "TP2" : exitBe ? "본절" : "손절"
+    color resCol = zFull ? bullCol : exitBe ? color.new(#f0c14a, 0) : bearCol
+    bool resBelow = (zDir == 1 and not exitWin) or (zDir == -1 and exitWin)
+    label.new(bar_index, resBelow ? low : high, resTxt, xloc=xloc.bar_index, style=resBelow ? label.style_label_up : label.style_label_down, color=resCol, textcolor=color.white, size=size.tiny)
+    if alertExit
+        alert("HWR HL " + resTxt + "  close=" + str.tostring(close), alert.freq_once_per_bar_close)
+    zLive := false
+    zHit1 := false
+    zFull := false
+
+if longSignal or shortSignal
+    box.delete(bTp1)
+    box.delete(bTp2)
+    box.delete(bSl)
+    label.delete(tTp1)
+    label.delete(tTp2)
+    label.delete(tSl)
+    label.delete(tEn)
+    bool isL = longSignal
+    float px = close
+    float slv = f_sl(isL)
+    float tp1 = f_tp(isL, px, slv, tp1R)
+    float tp2 = f_tp(isL, px, slv, tp2R)
+    zLive := true
+    zDir := isL ? 1 : -1
+    zBar := bar_index
+    zLock := na
+    zTm := time
+    zEnt := px
+    zSl := slv
+    zTp1 := tp1
+    zTp2 := tp2
+    zHit1 := false
+    zFull := false
+    lastSigBar := bar_index
+    if isL
+        hlUsed := true
+    else
+        lhUsed := true
+    bTp1 := f_zone(px, tp1, color.new(#26a69a, 78), color.new(#26a69a, 25))
+    bTp2 := f_zone(tp1, tp2, color.new(#4db6ac, 82), color.new(#26a69a, 35))
+    bSl := f_zone(px, slv, color.new(#ab47bc, 72), color.new(#ab47bc, 18))
+    tEn := f_tag(px, #c8cdd8, "진입  " + str.tostring(px, format.mintick))
+    tTp1 := f_tag(tp1, #26a69a, "TP1 " + str.tostring(q1Pct, "#") + "%  " + str.tostring(tp1, format.mintick))
+    tTp2 := f_tag(tp2, #4db6ac, "TP2 " + str.tostring(100.0 - q1Pct, "#") + "%  " + str.tostring(tp2, format.mintick))
+    tSl := f_tag(slv, #ab47bc, "SL  " + str.tostring(slv, format.mintick))
+    string sideTxt = isL ? "HL 롱" : "LH 숏"
+    label.new(bar_index, isL ? low : high, sideTxt + "  SL " + str.tostring(slv, format.mintick) + "  TP1 " + str.tostring(tp1, format.mintick) + "  TP2 " + str.tostring(tp2, format.mintick), xloc=xloc.bar_index, style=isL ? label.style_label_up : label.style_label_down, color=isL ? bullCol : bearCol, textcolor=color.white, size=size.small)
+    if alertEntry
+        alert("HWR HL " + sideTxt + "  close=" + str.tostring(px) + "  SL=" + str.tostring(slv) + "  TP1=" + str.tostring(tp1) + "  TP2=" + str.tostring(tp2), alert.freq_once_per_bar_close)
+
+if zLive
+    if not na(bTp1)
+        box.set_right(bTp1, bar_index)
+    if not na(bTp2)
+        box.set_right(bTp2, bar_index)
+    if not na(bSl)
+        box.set_right(bSl, bar_index)
+    if zHit1 and not na(tSl)
+        label.set_y(tSl, zSl)
+        label.set_text(tSl, "본절  " + str.tostring(zSl, format.mintick))
+        label.set_color(tSl, color.new(#f0c14a, 15))
+        if not na(bSl)
+            float bePad = math.max(syminfo.mintick * 4, atrVal * 0.04)
+            box.set_top(bSl, zSl + bePad)
+            box.set_bottom(bSl, zSl - bePad)
+            box.set_bgcolor(bSl, color.new(#f0c14a, 70))
+            box.set_border_color(bSl, color.new(#f0c14a, 20))
+    if not na(tTp1)
+        label.set_x(tTp1, bar_index)
+    if not na(tTp2)
+        label.set_x(tTp2, bar_index)
+    if not na(tSl)
+        label.set_x(tSl, bar_index)
+    if not na(tEn)
+        label.set_x(tEn, bar_index)
+
+bgcolor(bullStruct and not bearStruct ? color.new(bullCol, 92) : bearStruct and not bullStruct ? color.new(bearCol, 92) : na)
+
+int closedTrades = wins + losses
+float winRate = closedTrades > 0 ? wins / closedTrades * 100.0 : na
+float avgWinR = wins > 0 ? sumWinR / wins : 0.0
+float avgLossR = losses > 0 ? sumLossR / losses : 0.0
+float expR = closedTrades > 0 ? (sumWinR - sumLossR) / closedTrades : na
+float rrReal = avgLossR > 0 ? avgWinR / avgLossR : na
+
+string structTxt = bullStruct and not bearStruct ? "HL/HH 롱" : bearStruct and not bullStruct ? "LH/LL 숏" : "혼조"
+string job = "대기"
+color jobC = color.gray
+if longSignal
+    job := "지금 HL 롱. 라벨 가격으로 주문"
+    jobC := bullCol
+else if shortSignal
+    job := "지금 LH 숏. 라벨 가격으로 주문"
+    jobC := bearCol
+else if zLive
+    job := zHit1 ? "보유. 손절은 본절, 나머지는 TP2" : "보유. TP1에서 절반 후 본절"
+    jobC := zDir == 1 ? bullCol : bearCol
+else if not bullStruct and not bearStruct
+    job := "고점·저점 방향이 다름. 거래 없음"
+else if bullStruct and not htfOkL
+    job := "HL인데 상위가 롱이 아님"
+else if bearStruct and not htfOkS
+    job := "LH인데 상위가 숏이 아님"
+else if not adxGate
+    job := "횡보. 대기"
+else if bullStruct and not freshL
+    job := "HL/HH. 새 저점 대기"
+    jobC := bullCol
+else if bearStruct and not freshS
+    job := "LH/LL. 새 고점 대기"
+    jobC := bearCol
+else if (bullStruct and freshL and not tagL) or (bearStruct and freshS and not tagS)
+    job := bullStruct ? "HL 리테스트 대기" : "LH 리테스트 대기"
+    jobC := bullStruct ? bullCol : bearCol
+else if (bullStruct and tagL and not roomL) or (bearStruct and tagS and not roomS)
+    job := "손절이 너무 멀어 패스"
+else if not cooled
+    job := "쿨다운"
+
+dashPos = dashPosIn == "오른쪽 아래" ? position.bottom_right : dashPosIn == "왼쪽 위" ? position.top_left : dashPosIn == "왼쪽 아래" ? position.bottom_left : position.top_right
+var table dash = table.new(position.top_right, 2, 14, bgcolor=color.new(#12141c, 12), border_color=color.new(#2a2e3a, 0), border_width=1)
+if barstate.islast
+    table.set_position(dash, dashPos)
+f_cell(int r, string a, string b, color bc) =>
+    table.cell(dash, 0, r, a, text_color=color.new(#c8cdd8, 0), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, r, b, text_color=bc, text_halign=text.align_right, text_size=size.small)
+
+if showDash and barstate.islast
+    string wrTxt = closedTrades > 0 ? str.tostring(wins) + "/" + str.tostring(losses) + "  " + str.tostring(winRate, "#.0") + "%" : "-"
+    if nBe > 0
+        wrTxt := wrTxt + "  본절" + str.tostring(nBe)
+    if nFull > 0
+        wrTxt := wrTxt + "  TP2 " + str.tostring(nFull)
+    if zLive
+        wrTxt := wrTxt + "  진행"
+    string perTxt = statMode == "기간 지정" ? str.format_time(statFrom, "yy.MM.dd HH:mm", sessTz) + " ~ " + str.format_time(statTo, "yy.MM.dd HH:mm", sessTz) : statMode == "최근 N일" ? str.format_time(lookFrom, "yy.MM.dd HH:mm", sessTz) + " ~ " + str.format_time(timenow, "yy.MM.dd HH:mm", sessTz) : na(firstTradeTime) ? "-" : str.format_time(firstTradeTime, "yy.MM.dd HH:mm", sessTz) + " ~ " + (na(lastCloseTime) ? "진행중" : str.format_time(lastCloseTime, "yy.MM.dd HH:mm", sessTz))
+    string htfTxt = htfLong ? "롱" : htfShort ? "숏" : "중립"
+    float eqEnd = betAmt + sumUsd
+    color usdC = sumUsd > 0 ? bullCol : sumUsd < 0 ? bearCol : color.gray
+    table.cell(dash, 0, 0, "HWR HL", text_color=color.white, text_halign=text.align_left, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    table.cell(dash, 1, 0, timeframe.period, text_color=color.new(#8b95a8, 0), text_halign=text.align_right, bgcolor=color.new(#1b1f2a, 0), text_size=size.small)
+    f_cell(1, "할 일", job, jobC)
+    f_cell(2, "구조", structTxt, bullStruct and not bearStruct ? bullCol : bearStruct and not bullStruct ? bearCol : color.gray)
+    f_cell(3, "HL", na(hlPx) ? "-" : str.tostring(hlPx, format.mintick), hl ? bullCol : color.gray)
+    f_cell(4, "LH", na(lhPx) ? "-" : str.tostring(lhPx, format.mintick), lh ? bearCol : color.gray)
+    f_cell(5, "상위", htfTxt + "  ADX " + str.tostring(adxVal, "#.0"), htfLong ? bullCol : htfShort ? bearCol : color.gray)
+    f_cell(6, "승/패", wrTxt, not na(winRate) and winRate >= 55 ? bullCol : not na(winRate) and winRate < 45 ? bearCol : color.gray)
+    f_cell(7, "손익비", na(rrReal) ? "-" : str.tostring(rrReal, "#.##") + "  (" + str.tostring(avgWinR, "#.##") + "/" + str.tostring(avgLossR, "#.##") + "R)", color.new(#c8cdd8, 0))
+    f_cell(8, "거래당 기대 R", na(expR) ? "-" : str.tostring(expR, "#.###"), na(expR) ? color.gray : expR >= 0 ? bullCol : bearCol)
+    f_cell(9, "배팅", "$" + str.tostring(betAmt, "#.##") + "  ×  " + str.tostring(lev, "#.##") + "x", color.new(#c8cdd8, 0))
+    f_cell(10, "기간 손익", closedTrades > 0 ? (sumUsd >= 0 ? "+" : "") + str.tostring(sumUsd, "#.##") + " 달러" : "-", usdC)
+    f_cell(11, "시작+손익", closedTrades > 0 ? "$" + str.tostring(eqEnd, "#.##") + "  /  시작 $" + str.tostring(betAmt, "#.##") : "-", eqEnd >= betAmt ? bullCol : bearCol)
+    f_cell(12, "측정", perTxt, closedTrades > 0 ? color.white : color.gray)
+    f_cell(13, "규칙", "HL 롱 · LH 숏. 라벨 가격만", color.gray)
+
+alertcondition(alertEntry and longSignal, title="HL 롱", message="HWR HL LONG")
+alertcondition(alertEntry and shortSignal, title="LH 숏", message="HWR HL SHORT")
+alertcondition(alertExit and exitNow, title="HL 청산", message="HWR HL EXIT")

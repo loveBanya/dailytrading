@@ -1,0 +1,47 @@
+//@version=6
+indicator("Volume Bubbles", overlay = true)
+
+// --- Inputs ---
+int lookbackInput = input.int(20, "Volume Lookback Length", tooltip = "Used to calculate relative volume")
+color upColor     = input.color(color.new(#089981, 40), "Up Volume Color", group = "Style")
+color downColor   = input.color(color.new(#f23645, 40), "Down Volume Color", group = "Style")
+string posInput   = input.string("hl2", "Bubble Position", options = ["close", "hl2", "high", "low"], group = "Style")
+
+// --- Calculations ---
+// Find max and min volume over the lookback period to normalize
+float maxVol = ta.highest(volume, lookbackInput)
+float minVol = ta.lowest(volume, lookbackInput)
+
+// Normalize volume to a 0-1 scale
+float normVol = maxVol != minVol ? (volume - minVol) / (maxVol - minVol) : 0
+
+// Calculate bubble size (1 to 15)
+int bubbleSize = math.max(1, math.round(normVol * 15))
+
+// Determine the position for the bubbles
+float bubblePos = switch posInput
+    "close" => close
+    "high"  => high
+    "low"   => low
+    => hl2
+
+// Determine the color based on price direction
+color bubbleColor = close >= open ? upColor : downColor
+
+// --- Plotting ---
+// Since `plot` does not support a dynamic (series) linewidth, we use conditional plots
+plot(bubbleSize == 1 ? bubblePos : na, "Size 1", color = bubbleColor, style = plot.style_circles, linewidth = 1)
+plot(bubbleSize == 2 ? bubblePos : na, "Size 2", color = bubbleColor, style = plot.style_circles, linewidth = 2)
+plot(bubbleSize == 3 ? bubblePos : na, "Size 3", color = bubbleColor, style = plot.style_circles, linewidth = 3)
+plot(bubbleSize == 4 ? bubblePos : na, "Size 4", color = bubbleColor, style = plot.style_circles, linewidth = 4)
+plot(bubbleSize == 5 ? bubblePos : na, "Size 5", color = bubbleColor, style = plot.style_circles, linewidth = 5)
+plot(bubbleSize == 6 ? bubblePos : na, "Size 6", color = bubbleColor, style = plot.style_circles, linewidth = 6)
+plot(bubbleSize == 7 ? bubblePos : na, "Size 7", color = bubbleColor, style = plot.style_circles, linewidth = 7)
+plot(bubbleSize == 8 ? bubblePos : na, "Size 8", color = bubbleColor, style = plot.style_circles, linewidth = 8)
+plot(bubbleSize == 9 ? bubblePos : na, "Size 9", color = bubbleColor, style = plot.style_circles, linewidth = 9)
+plot(bubbleSize == 10 ? bubblePos : na, "Size 10", color = bubbleColor, style = plot.style_circles, linewidth = 10)
+plot(bubbleSize == 11 ? bubblePos : na, "Size 11", color = bubbleColor, style = plot.style_circles, linewidth = 11)
+plot(bubbleSize == 12 ? bubblePos : na, "Size 12", color = bubbleColor, style = plot.style_circles, linewidth = 12)
+plot(bubbleSize == 13 ? bubblePos : na, "Size 13", color = bubbleColor, style = plot.style_circles, linewidth = 13)
+plot(bubbleSize == 14 ? bubblePos : na, "Size 14", color = bubbleColor, style = plot.style_circles, linewidth = 14)
+plot(bubbleSize >= 15 ? bubblePos : na, "Size 15+", color = bubbleColor, style = plot.style_circles, linewidth = 15)

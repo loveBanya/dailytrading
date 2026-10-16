@@ -1,0 +1,154 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LuxAlgo
+
+//@version=6
+indicator("LUXQUANT Simple Scalper", overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// --- Constants ---
+const string S_G = "Signals"
+const string V_G = "Visuals"
+const string R_G = "Daily Goal"
+const string SE_G = "Session"
+const color BULL_COLOR = #089981
+const color BEAR_COLOR = #f23645
+const color NEUTRAL_COLOR = #5b9cf6
+
+// --- Inputs ---
+htf_tf   = input.timeframe("60", "Trend Filter Timeframe", group=S_G)
+use_htf  = input.bool(false, "Filter by HTF Trend", group=S_G)
+use_vol  = input.bool(false, "Block Signals in 'CHOPPY'", group=S_G)
+use_ob   = input.bool(false, "Require OB Retest", group=S_G)
+use_adx  = input.bool(false, "Filter by Trend Strength (ADX)", group=S_G)
+use_pb   = input.bool(false, "Require Pullback before Cross", group=S_G)
+pb_look  = input.int(10, "Pullback Lookback (Bars)", minval=1, group=S_G)
+
+ema_f    = input.int(9, "Fast EMA", group=S_G)
+ema_s    = input.int(21, "Slow EMA", group=S_G)
+adx_len  = input.int(14, "ADX Period", minval=1, group=S_G)
+adx_thres = input.int(20, "Strong Trend Threshold", minval=1, group=S_G)
+
+// Session
+use_sess = input.bool(false, "Use Session Filter", group=SE_G)
+sess_inp = input.session("0800-2200:1234567", "Trading Session (UTC)", group=SE_G)
+timeZone = input.string("UTC", "Timezone", group=SE_G)
+
+// Visuals
+show_ribbon  = input.bool(true, "Show 3D Silk Ribbon", group=V_G)
+ribbon_trans = input.int(80, "Ribbon Transparency", minval=0, maxval=100, group=V_G)
+show_obs     = input.bool(true, "Show Order Blocks", group=V_G)
+show_sig_txt = input.bool(true, "Show Signal Text & Price", group=V_G)
+buyColor     = input.color(BULL_COLOR, "Buy Color", group=V_G)
+sellColor    = input.color(BEAR_COLOR, "Sell Color", group=V_G)
+labelOffMult = input.float(0.5, "Label Offset (ATR Mult)", minval=0, step=0.1, group=V_G)
+show_dash    = input.bool(true, "Show Dashboard", group=V_G)
+show_candle  = input.bool(false, "Color Candles by Ribbon Trend", tooltip="Colors candles Green/Red based on the 9/21 EMA Ribbon state.", group=V_G)
+show_pb_zone = input.bool(true, "Highlight Pullback Zone", group=V_G)
+
+// Daily Goal
+tp_pips  = input.float(10.0, "Take Profit (Pips)", group=R_G)
+sl_pips  = input.float(10.0, "Stop Loss (Pips)", group=R_G)
+goal_pips = input.float(20.0, "Daily Goal (Pips)", group=R_G)
+
+// --- Global Logic ---
+is_fx = syminfo.type == "forex" or str.contains(syminfo.ticker, "XAU") or str.contains(syminfo.ticker, "GOLD")
+p_fac = is_fx ? 10.0 : 1.0
+pip_size = syminfo.mintick * p_fac
+
+// Core Signal Data
+h_ema = request.security(syminfo.tickerid, htf_tf, ta.ema(close, 200), lookahead = barmerge.lookahead_off)
+e_f   = ta.ema(close, ema_f)
+e_s   = ta.ema(close, ema_s)
+x_up  = ta.crossover(e_f, e_s)
+x_dn  = ta.crossunder(e_f, e_s)
+
+// Volatility & Global ATR
+atr14   = ta.atr(14)
+atr_avg = ta.sma(atr14, 100)
+is_choppy = atr14 < atr_avg
+labelOffset = atr14 * labelOffMult
+
+// Trend Strength (ADX)
+[diplus, diminus, adxVal] = ta.dmi(adx_len, adx_len)
+is_strong = adxVal > adx_thres
+
+// Pullback Logic
+touched_s = low <= e_s and high >= e_s
+barsSinceTouch = ta.barssince(touched_s)
+pb_ok = not use_pb or (barsSinceTouch <= pb_look)
+
+// Order Blocks Detection
+var float b_top = na, var float b_bot = na, var box b_box = na
+var float s_top = na, var float s_bot = na, var box s_box = na
+
+displaced_up = close > high[1] and (close - open) > atr14 * 1.5
+displaced_dn = close < low[1] and (open - close) > atr14 * 1.5
+
+if displaced_up
+    box.delete(b_box)
+    b_top := high[1], b_bot := low[1]
+    if show_obs
+        b_box := box.new(bar_index-1, b_top, bar_index+10, b_bot, bgcolor=color.new(buyColor, 90), border_color=color.new(buyColor, 70))
+if displaced_dn
+    box.delete(s_box)
+    s_top := high[1], s_bot := low[1]
+    if show_obs
+        s_box := box.new(bar_index-1, s_top, bar_index+10, s_bot, bgcolor=color.new(sellColor, 90), border_color=color.new(sellColor, 70))
+
+// Mitigation
+if not na(b_box) and close < b_bot
+    box.delete(b_box), b_box := na, b_top := na, b_bot := na
+if not na(s_box) and close > s_top
+    box.delete(s_box), s_box := na, s_top := na, s_bot := na
+
+in_bull_ob = not na(b_top) and low <= b_top and high >= b_bot
+in_bear_ob = not na(s_top) and high >= s_bot and low <= s_top
+
+// Signal Permissions
+htf_ok = not use_htf or (close > h_ema)
+htf_ok_s = not use_htf or (close < h_ema)
+vol_ok = not use_vol or not is_choppy
+ob_ok  = not use_ob or in_bull_ob
+ob_ok_s = not use_ob or in_bear_ob
+adx_ok = not use_adx or is_strong
+in_s = not use_sess or not na(time(timeframe.period, sess_inp, timeZone))
+
+// Final Triggers
+long_sig = x_up and htf_ok and vol_ok and ob_ok and adx_ok and in_s and pb_ok
+short_sig = x_dn and htf_ok_s and vol_ok and ob_ok_s and adx_ok and in_s and pb_ok
+
+// --- Alerts & Labels ---
+if long_sig
+    txt = show_sig_txt ? "BUY @ " + str.tostring(close, format.mintick) + (in_bull_ob ? "\n(BULL OB)" : "") : ""
+    label.new(bar_index, low - labelOffset, txt, color=buyColor, style=label.style_label_up, textcolor=color.white, size=size.small)
+    alert("LUXQUANT: Buy Signal Confirmed")
+
+if short_sig
+    txt = show_sig_txt ? "SELL @ " + str.tostring(close, format.mintick) + (in_bear_ob ? "\n(BEAR OB)" : "") : ""
+    label.new(bar_index, high + labelOffset, txt, color=sellColor, style=label.style_label_down, textcolor=color.white, size=size.small)
+    alert("LUXQUANT: Sell Signal Confirmed")
+
+if ta.change(in_s)
+    alert(in_s ? "LUXQUANT: Session Started" : "LUXQUANT: Session Ended")
+
+// --- Visuals ---
+// Candle coloring based on Silk Ribbon (e_f vs e_s)
+barcolor(show_candle ? (is_choppy ? color.white : (e_f > e_s ? buyColor : sellColor)) : na)
+
+rib_c = e_f > e_s ? color.new(buyColor, ribbon_trans) : color.new(sellColor, ribbon_trans)
+fill(plot(e_f, color=buyColor, display=display.none), plot(e_s, color=sellColor, display=display.none), e_f, e_s, rib_c, rib_c)
+plot(h_ema, "HTF Filter", color=color.new(NEUTRAL_COLOR, 50))
+bgcolor(show_pb_zone and high >= math.min(e_f, e_s) and low <= math.max(e_f, e_s) ? color.new(NEUTRAL_COLOR, 92) : na)
+
+// Dashboard
+var table tbl = table.new(position.top_right, 2, 7, bgcolor = color.new(chart.bg_color, 10), border_color = chart.fg_color, border_width = 1)
+if show_dash and (barstate.islast or barstate.islastconfirmedhistory)
+    table.cell(tbl, 0, 0, "HTF Trend", text_size=size.large)
+    table.cell(tbl, 1, 0, close > h_ema ? "BULL" : "BEAR", bgcolor=close > h_ema ? buyColor : sellColor, text_color=color.white)
+    table.cell(tbl, 0, 1, "Session", text_size=size.large)
+    table.cell(tbl, 1, 1, in_s ? "OPEN" : "CLOSED", bgcolor=in_s ? buyColor : sellColor, text_color=color.white)
+    table.cell(tbl, 0, 2, "Trend Strength", text_size=size.large)
+    table.cell(tbl, 1, 2, str.format("{0} ({1,number,#.##})", is_strong ? "STRONG" : "WEAK", adxVal), bgcolor=is_strong ? buyColor : NEUTRAL_COLOR, text_color=color.white)
+    table.cell(tbl, 0, 6, "Market", text_size=size.large)
+    table.cell(tbl, 1, 6, is_choppy ? "CHOPPY" : "STABLE", bgcolor=is_choppy ? NEUTRAL_COLOR : buyColor, text_color=color.white)
+else if not show_dash
+    table.clear(tbl, 0, 0, 1, 6)

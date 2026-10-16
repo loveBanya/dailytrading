@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { chartWindow, fetchKlines } from "@/lib/exchanges/klines";
+import {
+  chartWindow,
+  fetchKlineHistory,
+  fetchKlines,
+} from "@/lib/exchanges/klines";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const preferredRegion = ["sin1", "hnd1", "icn1"];
@@ -19,6 +23,21 @@ export async function GET(req: NextRequest) {
     let start = sp.get("start") ? Number(sp.get("start")) : undefined;
     let end = sp.get("end") ? Number(sp.get("end")) : undefined;
     const limit = sp.get("limit") ? Number(sp.get("limit")) : 200;
+    const barsRaw = sp.get("bars");
+
+    if (barsRaw) {
+      const candles = await fetchKlineHistory({
+        symbol,
+        interval: interval ?? "15",
+        bars: Number(barsRaw),
+        prefer: sp.get("exchange") === "binance" ? "binance" : "bybit",
+      });
+      return NextResponse.json({
+        symbol,
+        interval: interval ?? "15",
+        candles,
+      });
+    }
 
     if (entry && exit) {
       const win = chartWindow(entry, Math.max(exit, entry + 60_000));

@@ -1,0 +1,187 @@
+//@version=5
+indicator("VWAP 지지저항 [HWR VWAP]", shorttitle="HWR VWAP", overlay=true, scale=scale.right, max_labels_count=500, max_lines_count=20, max_boxes_count=40)
+
+// ─────────────────────────────────────────────
+// VWAP을 지지·저항으로만 봄.
+// 위에서 내려와 선을 찍고 종가가 다시 위면 롱.
+// 아래에서 올라와 선을 찍고 종가가 다시 아래면 숏.
+// 확정봉만. 선을 종가로 완전히 넘기면 패스.
+// ─────────────────────────────────────────────
+
+grpMa = "1. VWAP"
+touchAtr = input.float(0.25, "접촉 폭 ATR", minval=0.05, step=0.05, group=grpMa, tooltip="저점·고점이 VWAP에서 이 거리 안이면 닿은 것으로 봅니다.")
+useEma   = input.bool(true, "이평 방향 맞을 때만", group=grpMa, tooltip="롱은 9 EMA가 21 위, 숏은 아래일 때만.")
+emaFastLen = input.int(9, "빠른 EMA", minval=2, group=grpMa)
+emaSlowLen = input.int(21, "느린 EMA", minval=3, group=grpMa)
+
+grpVol = "2. 손절·익절"
+atrLen   = input.int(14, "ATR", minval=1, group=grpVol)
+slPadAtr = input.float(0.10, "손절 여유 ATR", minval=0.0, step=0.02, group=grpVol)
+slMinAtr = input.float(0.80, "손절 최소 ATR", minval=0.3, step=0.05, group=grpVol)
+slMaxAtr = input.float(1.80, "손절 최대 ATR", minval=0.6, step=0.05, group=grpVol)
+tp1R     = input.float(1.00, "TP1 (R)", minval=0.5, step=0.05, group=grpVol)
+tp2R     = input.float(2.00, "TP2 (R)", minval=1.0, step=0.1, group=grpVol)
+cooldown = input.int(6, "쿨다운 봉", minval=1, group=grpVol)
+
+grpUi = "3. 표시"
+showDash = input.bool(true, "대시보드", group=grpUi)
+bullCol  = input.color(color.new(#26a69a, 0), "롱", group=grpUi)
+bearCol  = input.color(color.new(#ef5350, 0), "숏", group=grpUi)
+
+emaF = ta.ema(close, emaFastLen)
+emaS = ta.ema(close, emaSlowLen)
+vwapV = ta.vwap(hlc3)
+atrV = ta.atr(atrLen)
+
+stackL = emaF > emaS
+stackS = emaF < emaS
+band = math.max(atrV * touchAtr, syminfo.mintick * 2)
+// 지지: 저가가 선에 닿고, 종가는 선 위. 직전에도 선 위였거나 이번 꼬리만 침.
+holdSup = low <= vwapV + band and low >= vwapV - band and close > vwapV and close[1] >= vwapV[1]
+// 저항: 고가가 선에 닿고, 종가는 선 아래.
+holdRes = high >= vwapV - band and high <= vwapV + band and close < vwapV and close[1] <= vwapV[1]
+emaOkL = not useEma or stackL
+emaOkS = not useEma or stackS
+bullBar = close > open
+bearBar = close < open
+
+longRaw = barstate.isconfirmed and holdSup and bullBar and emaOkL
+shortRaw = barstate.isconfirmed and holdRes and bearBar and emaOkS
+
+var int lastSig = na
+cooled = na(lastSig) or bar_index - lastSig >= cooldown
+longSignal = longRaw and not shortRaw and cooled
+shortSignal = shortRaw and not longRaw and cooled
+if longSignal or shortSignal
+    lastSig := bar_index
+
+f_sl(bool isLong, float px) =>
+    raw = isLong ? math.min(low, vwapV) - atrV * slPadAtr : math.max(high, vwapV) + atrV * slPadAtr
+    dist = math.abs(px - raw)
+    adj = math.max(atrV * slMinAtr, math.min(atrV * slMaxAtr, dist))
+    isLong ? px - adj : px + adj
+f_tp(bool isLong, float px, float sl, float rMult) =>
+    risk = math.max(math.abs(px - sl), syminfo.mintick)
+    isLong ? px + risk * rMult : px - risk * rMult
+
+plot(emaF, "EMA 9", color=color.new(#26a69a, 10), linewidth=2)
+plot(emaS, "EMA 21", color=color.new(#f0c14a, 0), linewidth=2)
+plot(vwapV, "VWAP", color=color.new(#4da3ff, 0), linewidth=2)
+
+if longSignal
+    label.new(bar_index, low, "지지 롱", style=label.style_label_up, color=bullCol, textcolor=color.white, size=size.tiny)
+if shortSignal
+    label.new(bar_index, high, "저항 숏", style=label.style_label_down, color=bearCol, textcolor=color.white, size=size.tiny)
+
+// 가상 승률: TP1이 손절보다 먼저
+var int wins = 0
+var int losses = 0
+var int[] dA = array.new_int()
+var float[] eA = array.new_float()
+var float[] sA = array.new_float()
+var float[] tA = array.new_float()
+
+if longSignal
+    float sln = f_sl(true, close)
+    array.push(dA, 1)
+    array.push(eA, close)
+    array.push(sA, sln)
+    array.push(tA, f_tp(true, close, sln, tp1R))
+if shortSignal
+    float sls = f_sl(false, close)
+    array.push(dA, -1)
+    array.push(eA, close)
+    array.push(sA, sls)
+    array.push(tA, f_tp(false, close, sls, tp1R))
+
+if array.size(dA) > 0
+    for i = array.size(dA) - 1 to 0
+        int d = array.get(dA, i)
+        float slv = array.get(sA, i)
+        float tpv = array.get(tA, i)
+        bool hitSl = d == 1 ? low <= slv : high >= slv
+        bool hitTp = d == 1 ? high >= tpv : low <= tpv
+        if hitSl or hitTp
+            bool w = hitSl and hitTp ? (d == 1 ? close >= array.get(eA, i) : close <= array.get(eA, i)) : hitTp
+            if w
+                wins += 1
+            else
+                losses += 1
+            array.remove(dA, i)
+            array.remove(eA, i)
+            array.remove(sA, i)
+            array.remove(tA, i)
+
+// 최근 박스
+var box bTp = na
+var box bSl = na
+var label tTp = na
+var label tSl = na
+var label tEn = na
+var bool zLive = false
+var int zDir = 0
+var float zEntry = na
+var float zSl = na
+var float zTp1 = na
+var float zTp2 = na
+var bool zHit1 = false
+
+if longSignal or shortSignal
+    box.delete(bTp)
+    box.delete(bSl)
+    label.delete(tTp)
+    label.delete(tSl)
+    label.delete(tEn)
+    bool isL = longSignal
+    float px = close
+    float slv = f_sl(isL, px)
+    float tp1 = f_tp(isL, px, slv, tp1R)
+    float tp2 = f_tp(isL, px, slv, tp2R)
+    zLive := true
+    zDir := isL ? 1 : -1
+    zEntry := px
+    zSl := slv
+    zTp1 := tp1
+    zTp2 := tp2
+    zHit1 := false
+    bTp := box.new(bar_index, math.max(px, tp2), bar_index, math.min(px, tp1), bgcolor=color.new(#26a69a, 82), border_color=color.new(#26a69a, 30))
+    bSl := box.new(bar_index, math.max(px, slv), bar_index, math.min(px, slv), bgcolor=color.new(#ef5350, 82), border_color=color.new(#ef5350, 30))
+    tEn := label.new(bar_index, px, "진입", style=label.style_label_left, color=color.new(#c8cdd8, 20), textcolor=color.white, size=size.tiny)
+    tTp := label.new(bar_index, tp1, "TP1", style=label.style_label_left, color=color.new(#26a69a, 20), textcolor=color.white, size=size.tiny)
+    tSl := label.new(bar_index, slv, "SL", style=label.style_label_left, color=color.new(#ef5350, 20), textcolor=color.white, size=size.tiny)
+
+if zLive
+    box.set_right(bTp, bar_index)
+    box.set_right(bSl, bar_index)
+    bool touch1 = zDir == 1 ? high >= zTp1 : low <= zTp1
+    bool touch2 = zDir == 1 ? high >= zTp2 : low <= zTp2
+    bool touchSl = zDir == 1 ? low <= zSl : high >= zSl
+    if touch1 and not zHit1
+        zHit1 := true
+        zSl := zEntry
+        box.delete(bSl)
+        label.delete(tSl)
+        float bePad = math.max(syminfo.mintick * 4, atrV * 0.04)
+        bSl := box.new(bar_index, zEntry + bePad, bar_index, zEntry - bePad, bgcolor=color.new(#f0c14a, 75), border_color=color.new(#f0c14a, 20))
+        tSl := label.new(bar_index, zEntry, "본절", style=label.style_label_left, color=color.new(#f0c14a, 20), textcolor=color.white, size=size.tiny)
+    if (zHit1 and touch2) or touchSl
+        zLive := false
+
+var table dash = table.new(position.top_right, 2, 6, bgcolor=color.new(#12141c, 12), border_color=color.new(#2a2e3a, 0), border_width=1)
+if showDash and barstate.islast
+    int n = wins + losses
+    float wr = n > 0 ? wins / n * 100.0 : na
+    table.cell(dash, 0, 0, "HWR VWAP", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 0, "지지·저항", text_color=color.new(#8b95a8, 0), text_size=size.small)
+    table.cell(dash, 0, 1, "이평", text_color=color.new(#c8cdd8, 0), text_size=size.small)
+    table.cell(dash, 1, 1, stackL ? "9 > 21" : stackS ? "9 < 21" : "혼조", text_color=stackL ? bullCol : stackS ? bearCol : color.gray, text_size=size.small)
+    table.cell(dash, 0, 2, "VWAP", text_color=color.new(#c8cdd8, 0), text_size=size.small)
+    string sideTxt = close > vwapV ? "지지 쪽" : close < vwapV ? "저항 쪽" : "선 위"
+    table.cell(dash, 1, 2, sideTxt, text_color=close > vwapV ? bullCol : close < vwapV ? bearCol : color.gray, text_size=size.small)
+    table.cell(dash, 0, 3, "접촉", text_color=color.new(#c8cdd8, 0), text_size=size.small)
+    bool touching = math.abs(close - vwapV) <= band or low <= vwapV + band and high >= vwapV - band
+    table.cell(dash, 1, 3, touching ? "닿음" : "이탈", text_color=touching ? color.white : color.gray, text_size=size.small)
+    table.cell(dash, 0, 4, "승/패", text_color=color.new(#c8cdd8, 0), text_size=size.small)
+    table.cell(dash, 1, 4, n > 0 ? str.tostring(wins) + "/" + str.tostring(losses) + "  " + str.tostring(wr, "#.0") + "%" : "-", text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 5, "기준", text_color=color.new(#c8cdd8, 0), text_size=size.small)
+    table.cell(dash, 1, 5, "TP1 " + str.tostring(tp1R, "#.##") + "R 먼저", text_color=color.new(#8b95a8, 0), text_size=size.small)

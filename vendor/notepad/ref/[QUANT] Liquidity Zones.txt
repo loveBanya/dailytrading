@@ -1,0 +1,474 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © QUANT
+//@version=6
+indicator("[QUANT] Liquidity Zones", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// -----------------------------------------------------------------------------
+// 1. SETTINGS & INPUTS
+// -----------------------------------------------------------------------------
+grp_snr  = "Structure Settings"
+grp_ema  = "Trend Confluence (EMA)"
+grp_disp = "Display & Colors"
+grp_dash = "Dashboard Settings"
+
+// --- Structure Inputs ---
+lookback       = input.int(10,   "Structure Lookback",    minval=5, group=grp_snr,
+     tooltip="Bars to the left/right to define a pivot. Higher = stronger, longer-term levels.")
+max_zones      = input.int(10,   "Max Active Zones",      group=grp_snr,
+     tooltip="Total cap on stored zones before old ones are dropped.")
+atr_period     = input.int(14,   "Zone Width (ATR)",      group=grp_snr)
+atr_mult       = input.float(1.0,"ATR Multiplier",        group=grp_snr)
+show_bk        = input.bool(false, "Show Broken Zones?",  group=grp_snr)
+
+// --- Overlap & Display Count ---
+filter_overlap = input.bool(true,  "Hide Overlapping Zones", group=grp_snr,
+     tooltip="Prevents creating a new zone if it overlaps an existing active zone of the same type.")
+limit_display  = input.bool(true,  "Limit Visible Zones Per Side", group=grp_snr,
+     tooltip="When enabled, only the N highest-probability zones per side are drawn.")
+display_count  = input.int(3,      "Zones to Show Per Side", minval=1, maxval=10, group=grp_snr,
+     tooltip="Number of resistance AND support zones shown. Probabilities split to sum to 100% across visible zones per side.")
+
+// --- EMA Inputs ---
+use_ema  = input.bool(false, "Enable Trend Filter (EMA)?", group=grp_ema,
+     tooltip="Plots EMA lines and Buy/Sell signals to help confirm structure entries.")
+len_fast = input.int(9,  "Fast EMA Length", group=grp_ema)
+len_slow = input.int(21, "Slow EMA Length", group=grp_ema)
+
+// --- Colors ---
+c_res   = input.color(#ef4444, "Resistance Color",         group=grp_disp)
+c_sup   = input.color(#22c55e, "Support Color",            group=grp_disp)
+c_top   = input.color(#f59e0b, "Top Zone Highlight Color", group=grp_disp,
+     tooltip="Color applied to the single highest-probability zone on each side. Defaults to gold.")
+c_fast  = input.color(color.white,  "Fast EMA Color", group=grp_disp)
+c_slow  = input.color(color.yellow, "Slow EMA Color", group=grp_disp)
+
+// --- Dashboard ---
+show_dash  = input.bool(true, "Show Dashboard?",   group=grp_dash)
+show_count = input.bool(true, "Show Zone Counts?", group=grp_dash,
+     tooltip="Shows total active and visible zone counts in the dashboard.")
+dash_pos   = input.string(position.top_right, "Dashboard Position",
+     options=[position.top_right, position.top_left, position.bottom_right, position.bottom_left],
+     group=grp_dash)
+
+
+// -----------------------------------------------------------------------------
+// 2. ANCHOR
+// -----------------------------------------------------------------------------
+plot(close, display=display.none, editable=false)
+
+
+// -----------------------------------------------------------------------------
+// 3. TREND LOGIC (EMA)
+// -----------------------------------------------------------------------------
+ema_fast = ta.ema(close, len_fast)
+ema_slow = ta.ema(close, len_slow)
+
+plot(use_ema ? ema_fast : na, "Fast EMA", color=c_fast, linewidth=1)
+plot(use_ema ? ema_slow : na, "Slow EMA", color=c_slow, linewidth=2)
+
+bull_cross = ta.crossover(ema_fast, ema_slow)
+bear_cross = ta.crossunder(ema_fast, ema_slow)
+
+// Label arrays — keep only last 2 BUY and last 2 SELL signals
+var array<label> buy_labels  = array.new_label()
+var array<label> sell_labels = array.new_label()
+
+if use_ema
+    if bull_cross
+        label lb = label.new(bar_index, low,  "BUY",
+             style=label.style_label_up, color=c_sup,
+             textcolor=color.white, size=size.tiny)
+        array.push(buy_labels, lb)
+        // Delete oldest if more than 2
+        while array.size(buy_labels) > 2
+            label.delete(array.shift(buy_labels))
+
+    if bear_cross
+        label lb = label.new(bar_index, high, "SELL",
+             style=label.style_label_down, color=c_res,
+             textcolor=color.white, size=size.tiny)
+        array.push(sell_labels, lb)
+        while array.size(sell_labels) > 2
+            label.delete(array.shift(sell_labels))
+
+// Clear all signal labels when EMA filter is turned off
+if not use_ema
+    if array.size(buy_labels) > 0
+        for i = 0 to array.size(buy_labels) - 1
+            label.delete(array.get(buy_labels, i))
+        array.clear(buy_labels)
+    if array.size(sell_labels) > 0
+        for i = 0 to array.size(sell_labels) - 1
+            label.delete(array.get(sell_labels, i))
+        array.clear(sell_labels)
+
+
+// -----------------------------------------------------------------------------
+// 4. STRUCTURE LOGIC
+// -----------------------------------------------------------------------------
+ph  = ta.pivothigh(high, lookback, lookback)
+pl  = ta.pivotlow(low,  lookback, lookback)
+atr = ta.atr(atr_period)
+
+// UDT — line+linefill gradient zones
+type SnRLevel
+    float    price
+    float    sl_price
+    float    raw_score   // internal ranking score (displacement-based, not shown)
+    float    disp_pct    // displayed shared probability (sums to 100% per side)
+    line     l_main
+    line     l_sl
+    linefill f_zone
+    label    lbl
+    bool     is_sell
+    bool     is_active
+
+var levels = array.new<SnRLevel>()
+
+// --- Overlap check ---
+is_overlapping(float price, float current_atr, bool is_sell) =>
+    overlap = false
+    float sl_dist = current_atr * atr_mult
+    if array.size(levels) > 0
+        for i = 0 to array.size(levels) - 1
+            lvl = array.get(levels, i)
+            if lvl.is_active and lvl.is_sell == is_sell
+                float upper = math.max(lvl.price, lvl.sl_price)
+                float lower = math.min(lvl.price, lvl.sl_price)
+                if price <= upper + sl_dist and price >= lower - sl_dist
+                    overlap := true
+                    break
+    overlap
+
+// --- Zone creation ---
+// raw_score is a displacement-based value used purely for ranking.
+// disp_pct (the shared %) is computed and updated later each bar.
+create_level(float price, bool is_sell_setup, float current_atr) =>
+    float sl_dist  = current_atr * atr_mult
+    float sl_price = is_sell_setup ? (price + sl_dist) : (price - sl_dist)
+
+    float displacement = math.abs(price - close)
+    float disp_ratio   = displacement / current_atr
+    // Raw score: higher = stronger/further displaced pivot (used for ranking only)
+    float raw_score    = math.max(0.01, disp_ratio)
+
+    color col_main = is_sell_setup ? c_res : c_sup
+    color col_line = color.new(col_main, 0)
+    color col_sl   = color.new(col_main, 55)
+    color col_fill = color.new(col_main, 82)
+
+    lbl_text = (is_sell_setup ? "SELL\n" : "BUY\n") + "—%"
+
+    int t1 = time[lookback]
+    int t2 = time
+
+    line l_m = line.new(t1, price,    t2, price,
+         xloc=xloc.bar_time, color=col_line, style=line.style_solid, width=2)
+    line l_s = line.new(t1, sl_price, t2, sl_price,
+         xloc=xloc.bar_time, color=col_sl,   style=line.style_dashed, width=1)
+    linefill f_z = linefill.new(l_m, l_s, col_fill)
+
+    label lb = label.new(t2, price, text=lbl_text,
+         xloc=xloc.bar_time, style=label.style_none,
+         textcolor=col_main, size=size.small)
+
+    SnRLevel.new(price, sl_price, raw_score, 0.0, l_m, l_s, f_z, lb, is_sell_setup, true)
+
+// --- Helper: fully hide a zone ---
+f_hide_zone(SnRLevel lvl) =>
+    color invis = color.new(color.black, 100)
+    line.set_color(lvl.l_main,     invis)
+    line.set_color(lvl.l_sl,       invis)
+    linefill.set_color(lvl.f_zone, invis)
+    label.set_text(lvl.lbl,        "")
+    label.set_textcolor(lvl.lbl,   invis)
+
+// --- Helper: apply color + shared probability label to a visible zone ---
+// is_top = true  → use gold highlight color
+// shared_pct     → the zone's share of 100% among visible zones on this side
+f_apply_zone(SnRLevel lvl, float shared_pct, bool is_top) =>
+    color col_main = is_top ? c_top : (lvl.is_sell ? c_res : c_sup)
+    color col_line = color.new(col_main, 0)
+    color col_sl   = color.new(col_main, is_top ? 30 : 55)
+    // Top zone gets a richer fill; others fade proportionally to their share
+    int fill_transp = is_top ? 72 : math.max(78, 92 - int(shared_pct * 0.18))
+    color col_fill  = color.new(col_main, fill_transp)
+    line.set_color(lvl.l_main,     col_line)
+    line.set_color(lvl.l_sl,       col_sl)
+    line.set_width(lvl.l_main,     is_top ? 3 : 2)
+    linefill.set_color(lvl.f_zone, col_fill)
+    string side_txt = lvl.is_sell ? "SELL" : "BUY"
+    string top_mark = is_top ? " ★" : ""
+    string lbl_text = side_txt + top_mark + "\n" + str.tostring(shared_pct, "#.1") + "%"
+    label.set_text(lvl.lbl,      lbl_text)
+    label.set_textcolor(lvl.lbl, col_main)
+
+// --- Helper: Nth-highest raw_score cutoff for top-N filter ---
+f_nth_score(array<float> scores, int n) =>
+    float cutoff = 0.0
+    int   sz     = array.size(scores)
+    if sz > 0
+        copy      = scores.copy()
+        int limit = math.min(n, sz)
+        for k = 0 to limit - 1
+            int bestIdx = k
+            if k < sz - 1
+                for j = k + 1 to sz - 1
+                    if array.get(copy, j) > array.get(copy, bestIdx)
+                        bestIdx := j
+            if bestIdx != k
+                float tmp = array.get(copy, k)
+                array.set(copy, k, array.get(copy, bestIdx))
+                array.set(copy, bestIdx, tmp)
+        cutoff := array.get(copy, limit - 1)
+    cutoff
+
+
+// -----------------------------------------------------------------------------
+// 5. EXECUTION & ARRAY MANAGEMENT
+// -----------------------------------------------------------------------------
+if not na(ph)
+    if not filter_overlap or not is_overlapping(ph, atr, true)
+        array.push(levels, create_level(ph, true, atr))
+
+if not na(pl)
+    if not filter_overlap or not is_overlapping(pl, atr, false)
+        array.push(levels, create_level(pl, false, atr))
+
+// Cap total stored zones
+if array.size(levels) > max_zones
+    int to_remove = array.size(levels) - max_zones
+    for i = 0 to to_remove - 1
+        SnRLevel old_lvl = array.shift(levels)
+        line.delete(old_lvl.l_main)
+        line.delete(old_lvl.l_sl)
+        linefill.delete(old_lvl.f_zone)
+        label.delete(old_lvl.lbl)
+
+
+// -----------------------------------------------------------------------------
+// 6. UPDATE, BREAK & DISPLAY LOGIC
+// -----------------------------------------------------------------------------
+active_res     = 0
+active_sup     = 0
+visible_res    = 0
+visible_sup    = 0
+float top_res_pct = 0.0   // shared % of the top resistance zone (for dashboard)
+float top_sup_pct = 0.0   // shared % of the top support zone
+
+// --- Step 1: extend lines, detect breaks ---
+if array.size(levels) > 0
+    for i = array.size(levels) - 1 to 0
+        SnRLevel lvl = array.get(levels, i)
+        if lvl.is_active
+            line.set_x2(lvl.l_main, time)
+            line.set_x2(lvl.l_sl,   time)
+            label.set_x(lvl.lbl,    time)
+            label.set_y(lvl.lbl,    lvl.price)
+
+            if lvl.is_sell
+                active_res += 1
+            else
+                active_sup += 1
+
+            bool broken = false
+            if lvl.is_sell
+                if close > lvl.sl_price
+                    broken := true
+            else
+                if close < lvl.sl_price
+                    broken := true
+
+            if broken
+                lvl.is_active := false
+                if not show_bk
+                    line.delete(lvl.l_main)
+                    line.delete(lvl.l_sl)
+                    linefill.delete(lvl.f_zone)
+                    label.delete(lvl.lbl)
+                    array.remove(levels, i)
+                else
+                    line.set_color(lvl.l_main,     color.new(color.gray, 60))
+                    line.set_style(lvl.l_main,     line.style_dotted)
+                    line.set_color(lvl.l_sl,       color.new(color.gray, 80))
+                    linefill.set_color(lvl.f_zone, color.new(color.gray, 92))
+                    label.delete(lvl.lbl)
+
+// --- Step 2: gather active zones into per-side buckets ---
+// We collect (index, raw_score) pairs, sort to find top-N,
+// then compute softmax-style shared probabilities that sum to 100%.
+
+var array<int>   sell_idx    = array.new_int()
+var array<float> sell_scores = array.new_float()
+var array<int>   buy_idx     = array.new_int()
+var array<float> buy_scores  = array.new_float()
+
+array.clear(sell_idx)
+array.clear(sell_scores)
+array.clear(buy_idx)
+array.clear(buy_scores)
+
+if array.size(levels) > 0
+    for i = 0 to array.size(levels) - 1
+        SnRLevel lvl = array.get(levels, i)
+        if lvl.is_active
+            if lvl.is_sell
+                array.push(sell_idx,    i)
+                array.push(sell_scores, lvl.raw_score)
+            else
+                array.push(buy_idx,    i)
+                array.push(buy_scores, lvl.raw_score)
+
+// --- Step 3: for each side, pick top-N, compute shared %, apply visuals ---
+f_apply_side(array<int> idxs, array<float> scores, int n_show) =>
+    int sz = array.size(idxs)
+    if sz == 0
+        [0, 0.0]
+    else
+        // Sort indices descending by score (selection sort on parallel arrays)
+        sidx    = idxs.copy()
+        sscores = scores.copy()
+        for k = 0 to sz - 1
+            int bestK = k
+            if k < sz - 1
+                for j = k + 1 to sz - 1
+                    if array.get(sscores, j) > array.get(sscores, bestK)
+                        bestK := j
+            if bestK != k
+                int   ti = array.get(sidx, k)
+                float ts = array.get(sscores, k)
+                array.set(sidx,    k,     array.get(sidx,    bestK))
+                array.set(sscores, k,     array.get(sscores, bestK))
+                array.set(sidx,    bestK, ti)
+                array.set(sscores, bestK, ts)
+
+        // Hide zones outside top-N
+        int limit = math.min(n_show, sz)
+        if sz > limit
+            for k = limit to sz - 1
+                SnRLevel lvl = array.get(levels, array.get(sidx, k))
+                f_hide_zone(lvl)
+
+        // Sum of scores across visible zones (for proportional split)
+        float score_sum = 0.0
+        for k = 0 to limit - 1
+            score_sum += array.get(sscores, k)
+
+        // Compute shared % and apply visuals; track top zone's pct for dashboard
+        float top_pct = 0.0
+        for k = 0 to limit - 1
+            int   zi    = array.get(sidx, k)
+            float sc    = array.get(sscores, k)
+            float pct   = score_sum > 0 ? math.round(sc / score_sum * 1000.0) / 10.0 : math.round(100.0 / limit * 10.0) / 10.0
+            bool  is_top = k == 0
+            SnRLevel lvl = array.get(levels, zi)
+            lvl.disp_pct := pct
+            array.set(levels, zi, lvl)
+            f_apply_zone(lvl, pct, is_top)
+            if is_top
+                top_pct := pct
+        [limit, top_pct]
+
+int  vis_res_n  = 0
+int  vis_sup_n  = 0
+
+if limit_display
+    [vr, trp] = f_apply_side(sell_idx, sell_scores, display_count)
+    vis_res_n  := vr
+    top_res_pct := trp
+    [vs, tsp] = f_apply_side(buy_idx,  buy_scores,  display_count)
+    vis_sup_n  := vs
+    top_sup_pct := tsp
+else
+    [vr2, trp2] = f_apply_side(sell_idx, sell_scores, array.size(sell_idx))
+    vis_res_n   := vr2
+    top_res_pct := trp2
+    [vs2, tsp2] = f_apply_side(buy_idx,  buy_scores,  array.size(buy_idx))
+    vis_sup_n   := vs2
+    top_sup_pct := tsp2
+
+visible_res := vis_res_n
+visible_sup := vis_sup_n
+
+
+// -----------------------------------------------------------------------------
+// 7. DASHBOARD
+// -----------------------------------------------------------------------------
+var table dash = table.new(dash_pos, 3, 5,
+     bgcolor=color.new(#0b1220, 15),
+     border_width=1,
+     border_color=color.new(#38bdf8, 60),
+     frame_color=color.new(#1e3a5f, 40),
+     frame_width=1)
+
+if barstate.islast and show_dash
+    color hdr_bg  = color.new(#1e3a5f, 30)
+    color row_bg1 = color.new(#111827, 20)
+    color row_bg2 = color.new(#172033, 20)
+    color c_muted = color.new(#94a3b8, 0)
+    color c_txt   = color.new(#e5e7eb, 0)
+
+    // Row 0: Header
+    table.cell(dash, 0, 0, "LIQUIDITY ZONES", text_color=c_txt,   bgcolor=hdr_bg, text_size=size.small)
+    table.cell(dash, 1, 0, "[QUANT]",          text_color=#38bdf8, bgcolor=hdr_bg, text_size=size.small)
+    table.cell(dash, 2, 0, limit_display ? "Top " + str.tostring(display_count) + " per side" : "All zones",
+         text_color=c_muted, bgcolor=hdr_bg, text_size=size.tiny)
+
+    if show_count
+        // Row 1: Resistance
+        table.cell(dash, 0, 1, "Resistance",
+             text_color=c_muted, bgcolor=row_bg1, text_size=size.small)
+        table.cell(dash, 1, 1, str.tostring(visible_res) + " shown / " + str.tostring(active_res) + " active",
+             text_color=c_res, bgcolor=row_bg1, text_size=size.small)
+        table.cell(dash, 2, 1, "★ " + (visible_res > 0 ? str.tostring(top_res_pct, "#.1") + "%" : "N/A"),
+             text_color=c_top, bgcolor=row_bg1, text_size=size.small)
+
+        // Row 2: Support
+        table.cell(dash, 0, 2, "Support",
+             text_color=c_muted, bgcolor=row_bg2, text_size=size.small)
+        table.cell(dash, 1, 2, str.tostring(visible_sup) + " shown / " + str.tostring(active_sup) + " active",
+             text_color=c_sup, bgcolor=row_bg2, text_size=size.small)
+        table.cell(dash, 2, 2, "★ " + (visible_sup > 0 ? str.tostring(top_sup_pct, "#.1") + "%" : "N/A"),
+             text_color=c_top, bgcolor=row_bg2, text_size=size.small)
+
+        // Row 3: Total
+        table.cell(dash, 0, 3, "Total Active",
+             text_color=c_muted, bgcolor=row_bg1, text_size=size.small)
+        table.cell(dash, 1, 3, str.tostring(active_res + active_sup) + " zones",
+             text_color=c_txt,  bgcolor=row_bg1, text_size=size.small)
+        table.merge_cells(dash, 1, 3, 2, 3)
+
+        // Row 4: Mode
+        table.cell(dash, 0, 4, "Mode",
+             text_color=c_muted, bgcolor=row_bg2, text_size=size.small)
+        table.cell(dash, 1, 4, limit_display ? "Top " + str.tostring(display_count) + " per side" : "Show All",
+             text_color=#38bdf8, bgcolor=row_bg2, text_size=size.small)
+        table.merge_cells(dash, 1, 4, 2, 4)
+    else
+        table.cell(dash, 0, 1, "★ Top Resistance",
+             text_color=c_top, bgcolor=row_bg1, text_size=size.small)
+        table.cell(dash, 1, 1, visible_res > 0 ? str.tostring(top_res_pct, "#.1") + "%" : "N/A",
+             text_color=c_top, bgcolor=row_bg1, text_size=size.small)
+        table.merge_cells(dash, 1, 1, 2, 1)
+
+        table.cell(dash, 0, 2, "★ Top Support",
+             text_color=c_top, bgcolor=row_bg2, text_size=size.small)
+        table.cell(dash, 1, 2, visible_sup > 0 ? str.tostring(top_sup_pct, "#.1") + "%" : "N/A",
+             text_color=c_top, bgcolor=row_bg2, text_size=size.small)
+        table.merge_cells(dash, 1, 2, 2, 2)
+
+        table.cell(dash, 0, 3, "Visible",
+             text_color=c_muted, bgcolor=row_bg1, text_size=size.small)
+        table.cell(dash, 1, 3, str.tostring(visible_res) + "R  " + str.tostring(visible_sup) + "S",
+             text_color=c_txt, bgcolor=row_bg1, text_size=size.small)
+        table.merge_cells(dash, 1, 3, 2, 3)
+
+        table.cell(dash, 0, 4, "Mode",
+             text_color=c_muted, bgcolor=row_bg2, text_size=size.small)
+        table.cell(dash, 1, 4, limit_display ? "Top " + str.tostring(display_count) + " per side" : "Show All",
+             text_color=#38bdf8, bgcolor=row_bg2, text_size=size.small)
+        table.merge_cells(dash, 1, 4, 2, 4)
+
+// -----------------------------------------------------------------------------
+// END OF Structural Liquidity Zones [QUANT]
+// -----------------------------------------------------------------------------

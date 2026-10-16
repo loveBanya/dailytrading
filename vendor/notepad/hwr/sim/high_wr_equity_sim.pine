@@ -1,0 +1,665 @@
+//@version=5
+indicator("HWR 시뮬 [Equity]", shorttitle="HWR 시뮬", overlay=false, precision=2, max_labels_count=50)
+
+// ─────────────────────────────────────────────
+// 콤보·변곡·데이·단타·스윙 가상 매매.
+// 청산 1·2·3, 수량은 리스크% 또는 시드×배율.
+// 과거 참고용. 실전 손익이 아님.
+// ─────────────────────────────────────────────
+
+grpPick = "1. 지표"
+pSys = input.string("콤보", "지표", options=["콤보", "변곡", "데이", "단타", "스윙"], group=grpPick)
+pMode = input.string("1. 박스 TP/SL", "청산", options=["1. 박스 TP/SL", "2. 박스 + %트레일", "3. 신호 청산"], group=grpPick, tooltip="콤보 설정과 같음. 1=TP/SL, 2=트레일, 3=합의 소멸.")
+isSigX = pMode == "3. 신호 청산"
+isTrailX = pMode == "2. 박스 + %트레일"
+isCombo = pSys == "콤보"
+
+grpPeriod = "2. 기간"
+statMode = input.string("기간 지정", "측정 방식", options=["전체", "최근 N일", "기간 지정"], group=grpPeriod, tooltip="기간 지정: 아래 시작·종료를 씁니다. 최근 N일: 오늘부터 거꾸로 N일.")
+statDays = input.int(60, "최근 N일", minval=1, maxval=3650, group=grpPeriod)
+statFrom = input.time(timestamp("01 Jan 2026 00:00"), "시작 시각", group=grpPeriod)
+statTo   = input.time(timestamp("08 Sep 2026 23:59"), "종료 시각", group=grpPeriod)
+
+grpMoney = "3. 금액"
+startCap = input.float(100.0, "시작 금액 (달러)", minval=1, step=1, group=grpMoney, tooltip="예: 100이면 100달러로 시작합니다.")
+sizeMode = input.string("리스크 %", "수량", options=["리스크 %", "시드% × 배율"], group=grpMoney, tooltip="리스크%=손절 거리로 한 방 %. 시드×배율=증거금에 레버리지.")
+riskPct  = input.float(1.0, "한 방 리스크 %", minval=0.1, maxval=5.0, step=0.1, group=grpMoney)
+seedPct  = input.float(100.0, "진입 시드 비율 %", minval=1, maxval=100, step=1, group=grpMoney, tooltip="시드% × 배율 모드. 100이면 잔고 전부.")
+lev      = input.float(5.0, "배율", minval=1, maxval=125, step=0.5, group=grpMoney)
+sizeLev  = sizeMode == "시드% × 배율"
+dayCapPct = input.float(2.0, "하루 손실 한도 %", minval=0.5, maxval=10.0, step=0.5, group=grpMoney)
+feePct   = input.float(0.04, "편도 수수료 %", minval=0.0, step=0.01, group=grpMoney)
+skipC    = input.bool(true, "C등급 제외", group=grpMoney)
+skipB    = input.bool(false, "B등급도 제외 (A만)", group=grpMoney)
+onePos   = input.bool(true, "한 포지션만 (실전처럼)", group=grpMoney)
+
+grpSigX = "3b. 신호 청산 (방식 3)"
+exitOnOpp  = input.bool(true, "반대 합의면 청산", group=grpSigX)
+exitOnFade = input.bool(true, "아군 합의가 꺼지면 청산", group=grpSigX)
+holdNeedIn = input.int(2, "유지 최소 합의", minval=1, maxval=8, group=grpSigX)
+minHoldBars = input.int(1, "최소 보유 봉", minval=1, maxval=20, group=grpSigX)
+flipOnOpp  = input.bool(true, "반대 합의면 뒤집기", group=grpSigX)
+
+grpTpsl = "4. TP·SL·트레일"
+useTpslIn = input.bool(false, "방식 3에서도 TPSL", group=grpTpsl, tooltip="신호 청산일 때 TP/SL도 같이 쓸지.")
+inTp1R   = input.float(0.80, "TP1 (R)", minval=0.3, step=0.05, group=grpTpsl, tooltip="손절 거리 대비. 콤보 기본 0.8")
+inTp2R   = input.float(2.00, "TP2 (R)", minval=0.5, step=0.1, group=grpTpsl, tooltip="콤보 기본 2.0")
+inTp3R   = input.float(3.20, "TP3 (R)", minval=0.8, step=0.1, group=grpTpsl, tooltip="콤보 기본 3.2. 비중 0이면 안 씀")
+q1Pct    = input.float(30.0, "TP1 비중 %", minval=0, maxval=100, step=5, group=grpTpsl)
+q2Pct    = input.float(40.0, "TP2 비중 %", minval=0, maxval=100, step=5, group=grpTpsl)
+slToBe   = input.bool(true, "TP1 후 손절을 본절로", group=grpTpsl)
+useTrail = input.bool(true, "트레일링 스탑 사용", group=grpTpsl)
+useTpsl  = not isSigX or useTpslIn
+usePctTrail = isTrailX and useTrail
+trailPct = input.float(20.0, "트레일 콜백 %", minval=0.5, maxval=50, step=0.5, group=grpTpsl, tooltip="고점(숏은 저점)에서 이 %만큼 되밀리면 청산. 20이면 거래소 트레일 20%와 같음. 15분은 2~5가 더 타이트합니다.")
+trailWhen = input.string("TP1 이후", "트레일 시작", options=["TP1 이후", "진입 즉시", "수익 중"], group=grpTpsl)
+
+grpUi = "5. 표시"
+showDash  = input.bool(true, "결과 테이블", group=grpUi)
+dashPosIn = input.string("오른쪽 위", "테이블 위치", options=["오른쪽 위", "오른쪽 아래", "왼쪽 위", "왼쪽 아래", "가운데 위", "가운데 아래", "오른쪽 중간", "왼쪽 중간"], group=grpUi)
+bullCol   = input.color(color.new(#26a69a, 0), "수익 색", group=grpUi)
+bearCol   = input.color(color.new(#ef5350, 0), "손실 색", group=grpUi)
+
+// ===== 공통 =====
+atrVal = ta.atr(14)
+[diPlus, diMinus, adxVal] = ta.dmi(14, 14)
+adxOk16 = adxVal > 16.0
+adxOk18 = adxVal > 18.0
+volAvg = ta.sma(volume, 20)
+volOk = not na(volume) and volume >= volAvg
+rsiVal = ta.rsi(close, 14)
+vwapVal = ta.vwap(hlc3)
+
+htf60Ema = request.security(syminfo.tickerid, "60", ta.ema(close, 21)[1], barmerge.gaps_off, barmerge.lookahead_off)
+htf60Cls = request.security(syminfo.tickerid, "60", close[1], barmerge.gaps_off, barmerge.lookahead_off)
+htf15Ema = request.security(syminfo.tickerid, "15", ta.ema(close, 21)[1], barmerge.gaps_off, barmerge.lookahead_off)
+htf15Cls = request.security(syminfo.tickerid, "15", close[1], barmerge.gaps_off, barmerge.lookahead_off)
+htfDEma  = request.security(syminfo.tickerid, "D", ta.ema(close, 21)[1], barmerge.gaps_off, barmerge.lookahead_off)
+htfDCls  = request.security(syminfo.tickerid, "D", close[1], barmerge.gaps_off, barmerge.lookahead_off)
+htfD50   = request.security(syminfo.tickerid, "D", ta.ema(close, 50)[1], barmerge.gaps_off, barmerge.lookahead_off)
+htfD50p  = request.security(syminfo.tickerid, "D", ta.ema(close, 50)[2], barmerge.gaps_off, barmerge.lookahead_off)
+wkEma    = request.security(syminfo.tickerid, "W", ta.ema(close, 21)[1], barmerge.gaps_off, barmerge.lookahead_off)
+wkCls    = request.security(syminfo.tickerid, "W", close[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+htf60Bull = htf60Cls > htf60Ema
+htf60Bear = htf60Cls < htf60Ema
+htf15Bull = htf15Cls > htf15Ema
+htf15Bear = htf15Cls < htf15Ema
+htfDBull  = htfDCls > htfDEma
+htfDBear  = htfDCls < htfDEma
+htfD50Bull = htfDCls > htfD50
+htfD50Bear = htfDCls < htfD50
+htfRising = htfD50 > htfD50p
+htfFalling = htfD50 < htfD50p
+wkBull = wkCls > wkEma
+wkBear = wkCls < wkEma
+
+rng = high - low
+body = math.abs(close - open)
+upperWick = high - math.max(close, open)
+lowerWick = math.min(close, open) - low
+midPx = (high + low) * 0.5
+bullClose = close > open
+bearClose = close < open
+bodyOk28 = rng > 0 and body >= rng * 0.28
+bodyOk30 = rng > 0 and body >= rng * 0.30
+bullPin = rng > 0 and lowerWick >= rng * 0.34 and close >= midPx
+bearPin = rng > 0 and upperWick >= rng * 0.34 and close <= midPx
+bullPin36 = rng > 0 and lowerWick >= rng * 0.36 and close >= midPx
+bearPin36 = rng > 0 and upperWick >= rng * 0.36 and close <= midPx
+bullEngulf = bullClose and close > high[1] and open <= math.max(open[1], close[1])
+bearEngulf = bearClose and close < low[1] and open >= math.min(open[1], close[1])
+rejectL = bullPin or bullEngulf or (bullClose and bodyOk28)
+rejectS = bearPin or bearEngulf or (bearClose and bodyOk28)
+realRejL = bullPin or bullEngulf
+realRejS = bearPin or bearEngulf
+
+f_grade(int c) =>
+    c >= 75 ? "A" : c >= 60 ? "B" : "C"
+
+lookFrom = timenow - statDays * 24 * 60 * 60 * 1000
+inWin = statMode == "전체" ? true : statMode == "최근 N일" ? (time >= lookFrom and time <= timenow) : (time >= statFrom and time <= statTo)
+
+// ===== 콤보 =====
+cTrailOff = 1.20 * ta.atr(10)
+var float cTrail = na
+float prevTr = nz(cTrail, close)
+if close > prevTr and close[1] > prevTr
+    cTrail := math.max(prevTr, close - cTrailOff)
+else if close < prevTr and close[1] < prevTr
+    cTrail := math.min(prevTr, close + cTrailOff)
+else
+    cTrail := close > prevTr ? close - cTrailOff : close + cTrailOff
+cTrailBull = close > cTrail
+cVTrail = cTrailBull ? 1 : -1
+[stF, dF] = ta.supertrend(2.00, 7)
+[stM, dM] = ta.supertrend(3.00, 10)
+[stS, dS] = ta.supertrend(4.00, 14)
+cUpN = (dF < 0 ? 1 : 0) + (dM < 0 ? 1 : 0) + (dS < 0 ? 1 : 0)
+cVTrip = cUpN >= 2 ? 1 : -1
+cSrPh = ta.pivothigh(high, 12, 12)
+cSrPl = ta.pivotlow(low, 12, 12)
+var float cSrSup = na
+var float cSrRes = na
+if not na(cSrPl) and volOk
+    cSrSup := cSrPl
+if not na(cSrPh) and volOk
+    cSrRes := cSrPh
+cSrRollHi = ta.highest(high, 12)[1]
+cSrRollLo = ta.lowest(low, 12)[1]
+cBreakRes = (not na(cSrRes) and ta.crossover(close, cSrRes)) or ta.crossover(close, cSrRollHi)
+cBreakSup = (not na(cSrSup) and ta.crossunder(close, cSrSup)) or ta.crossunder(close, cSrRollLo)
+cHoldSup = not na(cSrSup) and low <= cSrSup and close > cSrSup and bullClose
+cHoldRes = not na(cSrRes) and high >= cSrRes and close < cSrRes and bearClose
+cSrNow = (cBreakRes or cHoldSup) and not (cBreakSup or cHoldRes) ? 1 : (cBreakSup or cHoldRes) and not (cBreakRes or cHoldSup) ? -1 : 0
+f_hold(int nowVote, int prevVote, int prevBar) =>
+    int v = nowVote != 0 ? nowVote : prevVote
+    int b = nowVote != 0 ? bar_index : prevBar
+    if not na(b) and bar_index - b > 5
+        v := 0
+    [v, b]
+var int cVSr = 0
+var int cBSr = na
+[cVSrH, cBSrH] = f_hold(cSrNow, cVSr, cBSr)
+cVSr := cVSrH
+cBSr := cBSrH
+cRsiSig = ta.sma(rsiVal, 14)
+[cBbMid, cBbUp, cBbDn] = ta.bb(close, 20, 2.00)
+cRsiLong = ta.crossover(rsiVal, cRsiSig) and rsiVal <= 42
+cRsiShort = ta.crossunder(rsiVal, cRsiSig) and rsiVal >= 58
+cRsiMomL = rsiVal > rsiVal[1] and rsiVal >= 48 and rsiVal <= 78 and close > cBbMid
+cRsiMomS = rsiVal < rsiVal[1] and rsiVal <= 52 and rsiVal >= 22 and close < cBbMid
+cBbLong = (ta.crossover(close, cBbDn) or (low <= cBbDn and close > cBbDn and close > close[1])) and rsiVal <= 55
+cBbShort = (ta.crossunder(close, cBbUp) or (high >= cBbUp and close < cBbUp and close < close[1])) and rsiVal >= 45
+cBbFadeS = cBbShort and not cTrailBull and close <= ta.highest(high, 16)[1]
+cRbNow = (cRsiLong or cBbLong or cRsiMomL) and not (cRsiShort or cBbFadeS) ? 1 : (cRsiShort or cBbFadeS or cRsiMomS) and not (cRsiLong or cBbLong or cRsiMomL) ? -1 : 0
+var int cVRb = 0
+var int cBRb = na
+[cVRbH, cBRbH] = f_hold(cRbNow, cVRb, cBRb)
+cVRb := cVRbH
+cBRb := cBRbH
+cEnvMid = ta.ema(close, 55)
+cEnvUp = cEnvMid + atrVal * 2.80
+cEnvDn = cEnvMid - atrVal * 2.80
+var int cOutUp = 0
+var int cOutDn = 0
+if close > cEnvUp
+    cOutUp += 1
+    cOutDn := 0
+else if close < cEnvDn
+    cOutDn += 1
+    cOutUp := 0
+else
+    cOutUp := 0
+    cOutDn := 0
+cTrapS = high > cEnvUp and close < cEnvUp and nz(cOutUp[1]) <= 8 and bearClose
+cTrapL = low < cEnvDn and close > cEnvDn and nz(cOutDn[1]) <= 8 and bullClose
+cTrNow = cTrapL and not cTrapS ? 1 : cTrapS and not cTrapL ? -1 : 0
+var int cVTr = 0
+var int cBTr = na
+[cVTrH, cBTrH] = f_hold(cTrNow, cVTr, cBTr)
+cVTr := cVTrH
+cBTr := cBTrH
+cDevSma = ta.sma(close, 50)
+cDevBull = (cDevSma - cDevSma[5]) > 0
+cDevBear = (cDevSma - cDevSma[5]) < 0
+cPriorHi = ta.highest(high, 16)[1]
+cPriorLo = ta.lowest(low, 16)[1]
+cRngRank = ta.percentrank(rng, 40)
+cBodyAtr = atrVal > 0 ? body / atrVal : 0.0
+cRawExpUp = close > cPriorHi and bullClose and (cRngRank >= 48 or cBodyAtr >= 0.65 or close - close[3] >= atrVal * 0.80)
+cRawExpDn = close < cPriorLo and bearClose and (cRngRank >= 48 or cBodyAtr >= 0.65 or close[3] - close >= atrVal * 0.80)
+cExpUp = cRawExpUp and (dF < 0 or rsiVal >= 48 or volOk or close > nz(cSrRes, cPriorHi))
+cExpDn = cRawExpDn and (dF > 0 or rsiVal <= 52 or volOk or close < nz(cSrSup, cPriorLo))
+cExpNow = cExpUp and not cExpDn ? 1 : cExpDn and not cExpUp ? -1 : 0
+var int cVExp = 0
+var int cBExp = na
+[cVExpH, cBExpH] = f_hold(cExpNow, cVExp, cBExp)
+cVExp := cVExpH
+cBExp := cBExpH
+cIsExpL = cVExp == 1
+cIsExpS = cVExp == -1
+cVTrailUse = cIsExpL and cVTrail == -1 ? 0 : cIsExpS and cVTrail == 1 ? 0 : cVTrail
+cVTripUse  = cIsExpL and cVTrip == -1 ? 0 : cIsExpS and cVTrip == 1 ? 0 : cVTrip
+cVRbUse    = cIsExpL and cVRb == -1 ? 0 : cIsExpS and cVRb == 1 ? 0 : cVRb
+cVTrUse    = cIsExpL and cVTr == -1 ? 0 : cIsExpS and cVTr == 1 ? 0 : cVTr
+cVotesL = (cVTrailUse == 1 ? 1 : 0) + (cVTripUse == 1 ? 1 : 0) + (cVSr == 1 ? 1 : 0) + (cVRbUse == 1 ? 1 : 0) + (cVTrUse == 1 ? 1 : 0) + (cVExp == 1 ? 1 : 0)
+cVotesS = (cVTrailUse == -1 ? 1 : 0) + (cVTripUse == -1 ? 1 : 0) + (cVSr == -1 ? 1 : 0) + (cVRbUse == -1 ? 1 : 0) + (cVTrUse == -1 ? 1 : 0) + (cVExp == -1 ? 1 : 0)
+cNeed = cIsExpL or cIsExpS ? 2 : 3
+cAgreeL = cVotesL >= cNeed
+cAgreeS = cVotesS >= cNeed
+cConfL = math.min(100, (cIsExpL ? int(cVotesL / math.max(cNeed, 1) * 24.0) : int(cVotesL / 6.0 * 40.0)) + (cIsExpL ? 22 : 0) + (htf60Bull ? 12 : 0) + (adxOk16 ? 10 : 2) + (realRejL ? 10 : 0) + (cVotesL >= cNeed + 1 ? 12 : 0) + (adxVal >= 22 ? 8 : 0) + (cDevBull ? 8 : 0))
+cConfS = math.min(100, (cIsExpS ? int(cVotesS / math.max(cNeed, 1) * 24.0) : int(cVotesS / 6.0 * 40.0)) + (cIsExpS ? 22 : 0) + (htf60Bear ? 12 : 0) + (adxOk16 ? 10 : 2) + (realRejS ? 10 : 0) + (cVotesS >= cNeed + 1 ? 12 : 0) + (adxVal >= 22 ? 8 : 0) + (cDevBear ? 8 : 0))
+var int cLast = na
+cCooled = na(cLast) or (bar_index - cLast >= 6)
+cAdxGate = adxOk16 or ((cIsExpL or cIsExpS) and adxVal >= nz(adxVal[1], adxVal))
+cBase = barstate.isconfirmed and cCooled and cAdxGate
+cLong = cBase and cAgreeL and not cAgreeS and rejectL and (htf60Bull or cIsExpL) and cConfL >= 60
+cShort = cBase and cAgreeS and not cAgreeL and rejectS and (htf60Bear or cIsExpS) and cConfS >= 60
+cBaseFlip = barstate.isconfirmed and cAdxGate
+cLongFlip = cBaseFlip and cAgreeL and not cAgreeS and rejectL and (htf60Bull or cIsExpL) and cConfL >= 60
+cShortFlip = cBaseFlip and cAgreeS and not cAgreeL and rejectS and (htf60Bear or cIsExpS) and cConfS >= 60
+holdNeed = math.max(1, math.min(holdNeedIn, 6))
+if (cLong and not cShort) or (cShort and not cLong)
+    cLast := bar_index
+
+// ===== 변곡 =====
+tEma = ta.ema(close, 20)
+tSwHi = ta.highest(high, 20)
+tSwLo = ta.lowest(low, 20)
+tWashed = (tSwHi - tSwLo) >= atrVal * 2.00
+tFromLo = ta.barssince(low == tSwLo)
+tFromHi = ta.barssince(high == tSwHi)
+tWaitL = tFromLo >= 3 and tFromLo <= 12
+tWaitS = tFromHi >= 3 and tFromHi <= 12
+tKnifeL = close < close[1] and close < close[2] and (low == tSwLo or close < close[3])
+tKnifeS = close > close[1] and close > close[2] and (high == tSwHi or close > close[3])
+tRsiL = rsiVal > rsiVal[1] and rsiVal[1] <= 42 and rsiVal <= 58
+tRsiS = rsiVal < rsiVal[1] and rsiVal[1] >= 58 and rsiVal >= 42
+tMicroL = close > ta.highest(high, 2)[1]
+tMicroS = close < ta.lowest(low, 2)[1]
+tCntL = (tRsiL ? 1 : 0) + (tMicroL ? 1 : 0) + (realRejL ? 1 : 0) + (close > tEma ? 1 : 0)
+tCntS = (tRsiS ? 1 : 0) + (tMicroS ? 1 : 0) + (realRejS ? 1 : 0) + (close < tEma ? 1 : 0)
+tSetupL = tWashed and tWaitL and low > tSwLo[1] and close > tSwLo + atrVal * 0.12 and (close - tSwLo) <= atrVal * 1.50 and not tKnifeL
+tSetupS = tWashed and tWaitS and high < tSwHi[1] and close < tSwHi - atrVal * 0.12 and (tSwHi - close) <= atrVal * 1.50 and not tKnifeS
+tCandleL = bullPin36 or bullEngulf or (bullClose and bodyOk28)
+tCandleS = bearPin36 or bearEngulf or (bearClose and bodyOk28)
+tConfL = math.min(100, (tWashed ? 16 : 0) + (tWaitL ? 14 : 0) + (not tKnifeL ? 8 : 0) + (tRsiL ? 14 : 0) + (tMicroL ? 14 : 0) + (realRejL ? 10 : 0) + (close > tEma ? 10 : 0) + ((close - tSwLo) <= atrVal * 1.50 ? 8 : 0) + (adxOk16 ? 6 : 0))
+tConfS = math.min(100, (tWashed ? 16 : 0) + (tWaitS ? 14 : 0) + (not tKnifeS ? 8 : 0) + (tRsiS ? 14 : 0) + (tMicroS ? 14 : 0) + (realRejS ? 10 : 0) + (close < tEma ? 10 : 0) + ((tSwHi - close) <= atrVal * 1.50 ? 8 : 0) + (adxOk16 ? 6 : 0))
+var int tLast = na
+tCooled = na(tLast) or (bar_index - tLast >= 6)
+tBase = barstate.isconfirmed and tCooled
+tLong = tBase and tSetupL and tCandleL and tCntL >= 2 and tMicroL and tConfL >= 60
+tShort = tBase and tSetupS and tCandleS and tCntS >= 2 and tMicroS and tConfS >= 60
+if (tLong and not tShort) or (tShort and not tLong)
+    tLast := bar_index
+
+// ===== 데이 =====
+dEmaF = ta.ema(close, 21)
+dEmaM = ta.ema(close, 50)
+dEmaS = ta.ema(close, 200)
+[dSt, dStDir] = ta.supertrend(3.5, 14)
+dStBull = dStDir < 0
+dStBear = dStDir > 0
+dDiL = diPlus > diMinus
+dDiS = diMinus > diPlus
+dPullLo = ta.lowest(low, 8)
+dPullHi = ta.highest(high, 8)
+dLocL = (dPullLo <= dEmaM or dPullLo <= vwapVal) and (close - vwapVal) <= atrVal * 0.75
+dLocS = (dPullHi >= dEmaM or dPullHi >= vwapVal) and (vwapVal - close) <= atrVal * 0.75
+dCoreL = dEmaF > dEmaM and close > dEmaM and (bullPin or (bullClose and bodyOk30))
+dCoreS = dEmaF < dEmaM and close < dEmaM and (bearPin or (bearClose and bodyOk30))
+dRsiLOk = rsiVal >= 45 and rsiVal <= 66
+dRsiSOk = rsiVal <= 55 and rsiVal >= 34
+dConfN_L = (close > vwapVal ? 1 : 0) + (htf60Bull ? 1 : 0) + (dStBull ? 1 : 0) + (adxOk18 ? 1 : 0) + (dDiL ? 1 : 0) + (dRsiLOk ? 1 : 0)
+dConfN_S = (close < vwapVal ? 1 : 0) + (htf60Bear ? 1 : 0) + (dStBear ? 1 : 0) + (adxOk18 ? 1 : 0) + (dDiS ? 1 : 0) + (dRsiSOk ? 1 : 0)
+dStackL = dEmaF > dEmaM and dEmaM > dEmaS
+dStackS = dEmaF < dEmaM and dEmaM < dEmaS
+dPtsL = math.min(100, (dStackL ? 14 : 7) + (close > dEmaS ? 8 : 0) + (close > vwapVal ? 14 : 0) + (htf60Bull ? 16 : 0) + (dStBull ? 8 : 0) + (adxOk18 ? 8 : 0) + (dDiL ? 8 : 0) + (dRsiLOk ? 6 : 0) + (dLocL ? 8 : 0) + ((close - vwapVal) <= atrVal * 0.55 ? 6 : 0) + (volOk ? 8 : 0) + (realRejL ? 4 : 0))
+dPtsS = math.min(100, (dStackS ? 14 : 7) + (close < dEmaS ? 8 : 0) + (close < vwapVal ? 14 : 0) + (htf60Bear ? 16 : 0) + (dStBear ? 8 : 0) + (adxOk18 ? 8 : 0) + (dDiS ? 8 : 0) + (dRsiSOk ? 6 : 0) + (dLocS ? 8 : 0) + ((vwapVal - close) <= atrVal * 0.55 ? 6 : 0) + (volOk ? 8 : 0) + (realRejS ? 4 : 0))
+var int dLast = na
+dCooled = na(dLast) or (bar_index - dLast >= 10)
+dBase = barstate.isconfirmed and dCooled
+dLong = dBase and dCoreL and dLocL and rejectL and dConfN_L >= 3 and dPtsL >= 66 and htf60Bull and dDiL and close > dEmaS and close > vwapVal
+dShort = dBase and dCoreS and dLocS and rejectS and dConfN_S >= 3 and dPtsS >= 66 and htf60Bear and dDiS and close < dEmaS and close < vwapVal
+if (dLong and not dShort) or (dShort and not dLong)
+    dLast := bar_index
+
+// ===== 단타 =====
+kEmaF = ta.ema(close, 8)
+kEmaM = ta.ema(close, 21)
+kEmaS = ta.ema(close, 50)
+[kSt, kStDir] = ta.supertrend(3.0, 10)
+kStBull = kStDir < 0
+kStBear = kStDir > 0
+kPullLo = ta.lowest(low, 6)
+kPullHi = ta.highest(high, 6)
+kLocL = (kPullLo <= kEmaF or kPullLo <= kEmaM or kPullLo <= vwapVal) and (close - kEmaF) <= atrVal * 0.70
+kLocS = (kPullHi >= kEmaF or kPullHi >= kEmaM or kPullHi >= vwapVal) and (kEmaF - close) <= atrVal * 0.70
+kCoreL = kEmaF > kEmaM and close > kEmaM and bullClose and bodyOk28
+kCoreS = kEmaF < kEmaM and close < kEmaM and bearClose and bodyOk28
+kRsiLOk = rsiVal >= 40 and rsiVal <= 64
+kRsiSOk = rsiVal <= 60 and rsiVal >= 36
+kDiL = diPlus > diMinus
+kDiS = diMinus > diPlus
+kN_L = (close > vwapVal ? 1 : 0) + (htf15Bull ? 1 : 0) + (kStBull ? 1 : 0) + (adxOk18 ? 1 : 0) + (kDiL ? 1 : 0) + (kRsiLOk ? 1 : 0)
+kN_S = (close < vwapVal ? 1 : 0) + (htf15Bear ? 1 : 0) + (kStBear ? 1 : 0) + (adxOk18 ? 1 : 0) + (kDiS ? 1 : 0) + (kRsiSOk ? 1 : 0)
+kStackL = kEmaF > kEmaM and kEmaM > kEmaS
+kStackS = kEmaF < kEmaM and kEmaM < kEmaS
+kPtsL = math.min(100, (kStackL ? 16 : 8) + (close > vwapVal ? 10 : 0) + (htf15Bull ? 14 : 0) + (kStBull ? 10 : 0) + (adxOk18 ? 8 : 0) + (kDiL ? 8 : 0) + (kRsiLOk ? 8 : 0) + (kLocL ? 10 : 0) + ((close - kEmaF) <= atrVal * 0.45 ? 6 : 0) + (volOk ? 5 : 0) + (realRejL ? 5 : 0))
+kPtsS = math.min(100, (kStackS ? 16 : 8) + (close < vwapVal ? 10 : 0) + (htf15Bear ? 14 : 0) + (kStBear ? 10 : 0) + (adxOk18 ? 8 : 0) + (kDiS ? 8 : 0) + (kRsiSOk ? 8 : 0) + (kLocS ? 10 : 0) + ((kEmaF - close) <= atrVal * 0.45 ? 6 : 0) + (volOk ? 5 : 0) + (realRejS ? 5 : 0))
+var int kLast = na
+kCooled = na(kLast) or (bar_index - kLast >= 8)
+kBase = barstate.isconfirmed and kCooled
+kLong = kBase and kCoreL and kLocL and rejectL and kN_L >= 3 and kPtsL >= 62 and htf15Bull and kDiL and close > vwapVal
+kShort = kBase and kCoreS and kLocS and rejectS and kN_S >= 3 and kPtsS >= 62 and htf15Bear and kDiS and close < vwapVal
+if (kLong and not kShort) or (kShort and not kLong)
+    kLast := bar_index
+
+// ===== 스윙 =====
+wEmaF = ta.ema(close, 20)
+wEmaM = ta.ema(close, 50)
+wEmaS = ta.ema(close, 200)
+[wSt, wStDir] = ta.supertrend(4.0, 14)
+wStBull = wStDir < 0
+wStBear = wStDir > 0
+wPivL = ta.pivotlow(low, 5, 5)
+wPivH = ta.pivothigh(high, 5, 5)
+var float wP1L = na
+var float wP2L = na
+var float wP1H = na
+var float wP2H = na
+if not na(wPivL)
+    wP2L := wP1L
+    wP1L := wPivL
+if not na(wPivH)
+    wP2H := wP1H
+    wP1H := wPivH
+wPullLo = ta.lowest(low, 12)
+wPullHi = ta.highest(high, 12)
+wLocL = (wPullLo <= wEmaM or wPullLo <= wEmaS) and (close - wEmaM) <= atrVal * 1.10
+wLocS = (wPullHi >= wEmaM or wPullHi >= wEmaS) and (wEmaM - close) <= atrVal * 1.10
+wCoreL = close > wEmaM and (bullPin36 or bullEngulf or (bullClose and bodyOk28))
+wCoreS = close < wEmaM and (bearPin36 or bearEngulf or (bearClose and bodyOk28))
+wRsiLOk = rsiVal >= 40 and rsiVal <= 68
+wRsiSOk = rsiVal <= 60 and rsiVal >= 32
+wN_L = (htfD50Bull ? 1 : 0) + (wkBull ? 1 : 0) + (wStBull ? 1 : 0) + (adxOk18 ? 1 : 0) + (diPlus > diMinus ? 1 : 0) + (wRsiLOk ? 1 : 0)
+wN_S = (htfD50Bear ? 1 : 0) + (wkBear ? 1 : 0) + (wStBear ? 1 : 0) + (adxOk18 ? 1 : 0) + (diMinus > diPlus ? 1 : 0) + (wRsiSOk ? 1 : 0)
+wStackL = wEmaF > wEmaM and wEmaM > wEmaS
+wStackS = wEmaF < wEmaM and wEmaM < wEmaS
+wRangeOk = math.abs(wEmaF - wEmaM) >= atrVal * 0.40
+wPtsL = math.min(100, (wStackL ? 12 : 4) + (close > wEmaS ? 10 : 0) + (htfD50Bull ? 12 : 0) + (htfRising ? 8 : 0) + (wkBull ? 12 : 0) + (wStBull ? 6 : 0) + (adxOk18 ? 6 : 0) + (diPlus > diMinus ? 6 : 0) + (wRsiLOk ? 6 : 0) + (wLocL ? 8 : 0) + ((close - wEmaM) <= atrVal * 0.70 ? 6 : 0) + (realRejL ? 4 : 0))
+wPtsS = math.min(100, (wStackS ? 12 : 4) + (close < wEmaS ? 10 : 0) + (htfD50Bear ? 12 : 0) + (htfFalling ? 8 : 0) + (wkBear ? 12 : 0) + (wStBear ? 6 : 0) + (adxOk18 ? 6 : 0) + (diMinus > diPlus ? 6 : 0) + (wRsiSOk ? 6 : 0) + (wLocS ? 8 : 0) + ((wEmaM - close) <= atrVal * 0.70 ? 6 : 0) + (realRejS ? 4 : 0))
+var int wLast = na
+wCooled = na(wLast) or (bar_index - wLast >= 5)
+wBase = barstate.isconfirmed and wCooled and adxOk18 and wRangeOk
+wLong = wBase and wCoreL and wLocL and rejectL and wN_L >= 2 and wPtsL >= 62 and htfD50Bull and htfRising and close > wEmaS
+wShort = wBase and wCoreS and wLocS and rejectS and wN_S >= 2 and wPtsS >= 62 and htfD50Bear and htfFalling and close < wEmaS
+if (wLong and not wShort) or (wShort and not wLong)
+    wLast := bar_index
+
+// ===== 선택 =====
+sigL = isCombo ? cLong and not cShort : pSys == "변곡" ? tLong and not tShort : pSys == "데이" ? dLong and not dShort : pSys == "단타" ? kLong and not kShort : wLong and not wShort
+sigS = isCombo ? cShort and not cLong : pSys == "변곡" ? tShort and not tLong : pSys == "데이" ? dShort and not dLong : pSys == "단타" ? kShort and not kLong : wShort and not wLong
+confUse = isCombo ? (sigL ? cConfL : cConfS) : pSys == "변곡" ? (sigL ? tConfL : tConfS) : pSys == "데이" ? (sigL ? dPtsL : dPtsS) : pSys == "단타" ? (sigL ? kPtsL : kPtsS) : (sigL ? wPtsL : wPtsS)
+gradeUse = f_grade(confUse)
+passGrade = (not skipC or gradeUse != "C") and (not skipB or gradeUse == "A")
+
+tp1R = inTp1R
+tp2R = inTp2R
+tp3R = inTp3R
+q1 = math.max(0.0, q1Pct)
+q2 = math.max(0.0, q2Pct)
+q3 = math.max(0.0, 100.0 - q1 - q2)
+qSum = math.max(q1 + q2 + q3, 1.0)
+tQ1n = q1 / qSum
+tQ2n = q2 / qSum
+tQ3n = q3 / qSum
+useTp1 = tQ1n > 0.001
+useTp2 = tQ2n > 0.001
+useTp3 = tQ3n > 0.001
+slPad = pSys == "스윙" ? 0.25 : pSys == "변곡" ? 0.20 : pSys == "데이" ? 0.15 : 0.12
+slMin = pSys == "단타" ? 0.55 : pSys == "스윙" ? 1.80 : pSys == "변곡" ? 1.20 : pSys == "데이" ? 1.05 : 0.90
+slMax = pSys == "단타" ? 1.15 : pSys == "스윙" ? 3.20 : pSys == "변곡" ? 2.60 : pSys == "데이" ? 1.65 : 2.00
+swLen = pSys == "단타" ? 6 : pSys == "스윙" ? 20 : pSys == "데이" ? 10 : 8
+swLo = ta.lowest(low, swLen)
+swHi = ta.highest(high, swLen)
+
+f_slPx(bool isLong, float px) =>
+    float structPx = isCombo ? (isLong ? math.min(swLo, math.min(nz(cTrail, swLo), nz(cSrSup, swLo))) : math.max(swHi, math.max(nz(cTrail, swHi), nz(cSrRes, swHi)))) : pSys == "스윙" ? (isLong ? math.min(nz(wP1L, swLo), swLo) : math.max(nz(wP1H, swHi), swHi)) : (isLong ? swLo : swHi)
+    raw = isLong ? structPx - atrVal * slPad : structPx + atrVal * slPad
+    dist = math.abs(px - raw)
+    adj = math.max(atrVal * slMin, math.min(atrVal * slMax, dist))
+    isLong ? px - adj : px + adj
+
+f_fee(float notional) =>
+    math.abs(notional) * feePct * 0.01
+
+// ===== 자금 엔진 =====
+var float eq = na
+var float eqPeak = na
+var bool inT = false
+var int tDir = 0
+var float tEnt = na
+var float tSl = na
+var float tSlOrig = na
+var float tTp1 = na
+var float tTp2 = na
+var float tTp3 = na
+var float tQty0 = na
+var float tLeft = na
+var bool tHit1 = false
+var bool tHit2 = false
+var bool tHit3 = false
+var int tLockBar = na
+var int tBar = na
+var float tPeak = na
+var float tPnlAcc = 0.0
+var float tRiskUsd = 0.0
+var float tRiskPx = na
+var float tMargin = na
+var int nTr = 0
+var int nWin = 0
+var int nLoss = 0
+var int nBe = 0
+var float grossWin = 0.0
+var float grossLoss = 0.0
+var float sumWinR = 0.0
+var float sumLossR = 0.0
+var float dayEq = na
+var int dayId = na
+var float maxDd = 0.0
+bool wantFlip = false
+int flipDir = 0
+
+if na(eq)
+    eq := startCap
+    eqPeak := startCap
+    dayEq := startCap
+
+int thisDay = int(time / 86400000)
+if na(dayId) or thisDay != dayId
+    dayId := thisDay
+    dayEq := eq
+
+dayUsed = dayEq > 0 ? (dayEq - eq) / dayEq * 100.0 : 0.0
+dayBlock = dayUsed >= dayCapPct
+afterWin = not inWin
+
+f_closeSlice(float q, float px) =>
+    float pnl = tDir == 1 ? q * (px - tEnt) : q * (tEnt - px)
+    pnl - f_fee(q * px)
+
+bool doBook = false
+
+if inT
+    tPeak := tDir == 1 ? math.max(nz(tPeak, tEnt), high) : math.min(nz(tPeak, tEnt), low)
+    bool ended = false
+    bool slArmed = na(tLockBar) or bar_index > tLockBar
+    if useTpsl
+        bool trailOnNow = usePctTrail and (trailWhen == "진입 즉시" or (trailWhen == "TP1 이후" and tHit1) or (trailWhen == "수익 중" and ((tDir == 1 and tPeak > tEnt) or (tDir == -1 and tPeak < tEnt))))
+        if trailOnNow
+            float trPx = tDir == 1 ? tPeak * (1.0 - trailPct * 0.01) : tPeak * (1.0 + trailPct * 0.01)
+            float floorPx = slToBe and tHit1 ? tEnt : tSlOrig
+            tSl := tDir == 1 ? math.max(floorPx, trPx) : math.min(floorPx, trPx)
+        else if slToBe and tHit1
+            tSl := tDir == 1 ? math.max(tSl, tEnt) : math.min(tSl, tEnt)
+        bool hitSl = tDir == 1 ? low <= tSl : high >= tSl
+        bool hit1 = tDir == 1 ? (useTp1 and high >= tTp1) : (useTp1 and low <= tTp1)
+        bool hit2 = tDir == 1 ? (useTp2 and high >= tTp2) : (useTp2 and low <= tTp2)
+        bool hit3 = tDir == 1 ? (useTp3 and high >= tTp3) : (useTp3 and low <= tTp3)
+        if hitSl and slArmed
+            float pL = f_closeSlice(tLeft, tSl)
+            eq += pL
+            tPnlAcc += pL
+            ended := true
+        if not ended
+            if hit1 and not tHit1 and tQ1n > 0
+                tHit1 := true
+                tLockBar := bar_index
+                float p1 = f_closeSlice(tQty0 * tQ1n, tTp1)
+                eq += p1
+                tPnlAcc += p1
+                tLeft := math.max(tLeft - tQty0 * tQ1n, 0.0)
+                if slToBe
+                    tSl := tEnt
+                    tSlOrig := tEnt
+            if hit2 and not tHit2 and tQ2n > 0 and tLeft > 0
+                tHit2 := true
+                float p2 = f_closeSlice(tQty0 * tQ2n, tTp2)
+                eq += p2
+                tPnlAcc += p2
+                tLeft := math.max(tLeft - tQty0 * tQ2n, 0.0)
+            if hit3 and not tHit3 and tQ3n > 0 and tLeft > 0
+                tHit3 := true
+                float p3 = f_closeSlice(tLeft, tTp3)
+                eq += p3
+                tPnlAcc += p3
+                tLeft := 0.0
+                ended := true
+            if tLeft <= tQty0 * 0.001
+                ended := true
+    if not ended
+        float worstPx = tDir == 1 ? low : high
+        float uPnl = tDir == 1 ? tLeft * (worstPx - tEnt) : tLeft * (tEnt - worstPx)
+        if not na(tMargin) and uPnl <= -tMargin
+            float liqPx = tDir == 1 ? tEnt - tMargin / math.max(tLeft, syminfo.mintick) : tEnt + tMargin / math.max(tLeft, syminfo.mintick)
+            float pLiq = f_closeSlice(tLeft, liqPx)
+            eq += pLiq
+            tPnlAcc += pLiq
+            ended := true
+    if not ended and barstate.isconfirmed and bar_index - tBar >= minHoldBars
+        int ownV = tDir == 1 ? cVotesL : cVotesS
+        bool oppA = tDir == 1 ? cAgreeS : cAgreeL
+        bool fadeNow = isSigX and isCombo and exitOnFade and ownV < holdNeed
+        bool oppNow = isSigX and isCombo and exitOnOpp and oppA
+        bool oppSig = isSigX and not isCombo and not useTpsl and ((tDir == 1 and sigS) or (tDir == -1 and sigL))
+        if fadeNow or oppNow or oppSig
+            float pS = f_closeSlice(tLeft, close)
+            eq += pS
+            tPnlAcc += pS
+            ended := true
+            bool flipOk = flipOnOpp and (oppNow or oppSig) and (tDir == 1 ? (isCombo ? cShortFlip : sigS) : (isCombo ? cLongFlip : sigL))
+            if flipOk
+                wantFlip := true
+                flipDir := tDir == 1 ? -1 : 1
+    if ended
+        doBook := true
+
+if afterWin and inT and not doBook
+    float pX = f_closeSlice(tLeft, close)
+    eq += pX
+    tPnlAcc += pX
+    doBook := true
+
+if doBook
+    nTr += 1
+    float rMult = tRiskUsd > 0 ? tPnlAcc / tRiskUsd : 0.0
+    if rMult > 0.08
+        nWin += 1
+        grossWin += tPnlAcc
+        sumWinR += rMult
+    else if rMult < -0.08
+        nLoss += 1
+        grossLoss += math.abs(tPnlAcc)
+        sumLossR += math.abs(rMult)
+    else
+        nBe += 1
+    inT := false
+
+canEnter = inWin and barstate.isconfirmed and not inT and not dayBlock and eq > startCap * 0.15
+bool openNow = false
+int openSide = 0
+if wantFlip and canEnter
+    float flipConf = flipDir == 1 ? cConfL : cConfS
+    string flipGr = f_grade(int(math.round(flipConf)))
+    bool flipPass = (not skipC or flipGr != "C") and (not skipB or flipGr == "A")
+    if flipPass
+        openNow := true
+        openSide := flipDir
+if not openNow and canEnter and (sigL or sigS) and passGrade
+    openNow := true
+    openSide := sigL ? 1 : -1
+
+if openNow
+    bool isL = openSide == 1
+    float px = close
+    float slv = f_slPx(isL, px)
+    float risk = math.max(math.abs(px - slv), syminfo.mintick)
+    float margin = sizeLev ? eq * seedPct * 0.01 : na
+    float riskUsd = eq * riskPct * 0.01
+    float qty = sizeLev ? (px > 0 ? margin * lev / px : 0.0) : (risk > 0 ? riskUsd / risk : 0.0)
+    bool sizeOk = sizeLev ? (qty > 0 and margin > 0) : (qty > 0 and risk / px <= 0.08)
+    if sizeOk
+        float feeIn = f_fee(qty * px)
+        inT := true
+        tDir := isL ? 1 : -1
+        tEnt := px
+        tSl := slv
+        tSlOrig := slv
+        tTp1 := isL ? px + risk * tp1R : px - risk * tp1R
+        tTp2 := isL ? px + risk * tp2R : px - risk * tp2R
+        tTp3 := isL ? px + risk * tp3R : px - risk * tp3R
+        tQty0 := qty
+        tLeft := qty
+        tHit1 := false
+        tHit2 := false
+        tHit3 := false
+        tLockBar := na
+        tBar := bar_index
+        tPeak := px
+        tPnlAcc := -feeIn
+        tRiskUsd := sizeLev ? qty * risk : riskUsd
+        tRiskPx := risk
+        tMargin := margin
+        eq -= feeIn
+
+eq := math.max(eq, 0.0)
+eqPeak := math.max(nz(eqPeak, eq), eq)
+float ddNow = eqPeak > 0 ? (eqPeak - eq) / eqPeak * 100.0 : 0.0
+maxDd := math.max(maxDd, ddNow)
+
+plot(eq, "자산 (달러)", color=eq >= startCap ? bullCol : bearCol, linewidth=2)
+hline(startCap, "시작 금액", color=color.new(#8b95a8, 40), linestyle=hline.style_dotted)
+
+plotshape(canEnter and sigL and passGrade, "롱", shape.triangleup, location.bottom, bullCol, size=size.tiny)
+plotshape(canEnter and sigS and passGrade, "숏", shape.triangledown, location.top, bearCol, size=size.tiny)
+
+pnl = eq - startCap
+retPct = startCap > 0 ? pnl / startCap * 100.0 : 0.0
+wr = nTr > 0 ? nWin / nTr * 100.0 : na
+avgWinR = nWin > 0 ? sumWinR / nWin : 0.0
+avgLossR = nLoss > 0 ? sumLossR / nLoss : 0.0
+rrReal = avgLossR > 0 ? avgWinR / avgLossR : na
+pf = grossLoss > 0 ? grossWin / grossLoss : na
+expR = nTr > 0 ? (nWin * avgWinR - nLoss * avgLossR) / nTr : na
+beWr = avgWinR + avgLossR > 0 ? avgLossR / (avgWinR + avgLossR) * 100.0 : na
+
+var table dash = table.new(position.top_right, 2, 20, bgcolor=color.new(#12141c, 8), border_color=color.new(#2a2e3a, 0), border_width=1)
+dashPos = dashPosIn == "오른쪽 아래" ? position.bottom_right : dashPosIn == "왼쪽 위" ? position.top_left : dashPosIn == "왼쪽 아래" ? position.bottom_left : dashPosIn == "가운데 위" ? position.top_center : dashPosIn == "가운데 아래" ? position.bottom_center : dashPosIn == "오른쪽 중간" ? position.middle_right : dashPosIn == "왼쪽 중간" ? position.middle_left : position.top_right
+if barstate.islast
+    table.set_position(dash, dashPos)
+f_cell(int r, string a, string b, color bc) =>
+    table.cell(dash, 0, r, a, text_color=color.new(#c8cdd8, 0), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, r, b, text_color=bc, text_halign=text.align_right, text_size=size.small)
+if showDash and barstate.islast
+    color pnlC = pnl >= 0 ? bullCol : bearCol
+    f_cell(0, "HWR 시뮬", pSys + "  ·  " + pMode, color.new(#e8ecf4, 0))
+    f_cell(1, "기간", statMode == "최근 N일" ? str.tostring(statDays) + "일" : statMode, color.new(#c8cdd8, 0))
+    f_cell(2, "시작", str.tostring(startCap, "#.00") + " 달러", color.new(#c8cdd8, 0))
+    f_cell(3, "현재", str.tostring(eq, "#.00") + " 달러", pnlC)
+    f_cell(4, "손익", (pnl >= 0 ? "+" : "") + str.tostring(pnl, "#.00") + " 달러", pnlC)
+    f_cell(5, "수익률", str.tostring(retPct, "#.1") + "%", pnlC)
+    f_cell(6, "수량", sizeLev ? (str.tostring(seedPct, "#") + "%  ×  " + str.tostring(lev, "#.##") + "x") : ("리스크 " + str.tostring(riskPct, "#.##") + "%"), color.new(#c8cdd8, 0))
+    f_cell(7, "거래", str.tostring(nTr), color.new(#c8cdd8, 0))
+    f_cell(8, "승/패/본절", str.tostring(nWin) + " / " + str.tostring(nLoss) + " / " + str.tostring(nBe), color.new(#c8cdd8, 0))
+    f_cell(9, "승률", nTr > 0 ? str.tostring(wr, "#.1") + "%" : "-", color.new(#c8cdd8, 0))
+    f_cell(10, "손익 균형 승률", na(beWr) ? "-" : str.tostring(beWr, "#.0") + "%", color.new(#c8cdd8, 0))
+    f_cell(11, "평균 R 승/패", str.tostring(avgWinR, "#.##") + " / " + str.tostring(avgLossR, "#.##"), color.new(#c8cdd8, 0))
+    f_cell(12, "손익비", na(rrReal) ? "-" : str.tostring(rrReal, "#.##"), na(rrReal) ? color.gray : rrReal >= 1.3 ? bullCol : bearCol)
+    f_cell(13, "거래당 기대 R", na(expR) ? "-" : str.tostring(expR, "#.###"), na(expR) ? color.gray : expR >= 0 ? bullCol : bearCol)
+    f_cell(14, "PF", na(pf) ? "-" : str.tostring(pf, "#.##"), na(pf) ? color.gray : pf >= 1 ? bullCol : bearCol)
+    f_cell(15, "최대낙폭", str.tostring(maxDd, "#.1") + "%", bearCol)
+    f_cell(16, "TPSL", useTpsl ? str.tostring(tp1R, "#.##") + "/" + str.tostring(tp2R, "#.##") + "/" + str.tostring(tp3R, "#.##") + "R  ·  " + (usePctTrail ? str.tostring(trailPct, "#.#") + "%" : "트레일 꺼짐") : "꺼짐 (신호 청산)", color.new(#c8cdd8, 0))
+    f_cell(17, "신호 청산", isSigX ? (isCombo ? ((exitOnOpp ? "반대합의 " : "") + (exitOnFade ? "유지" + str.tostring(holdNeed) + "표" : "") + (flipOnOpp ? " 뒤집기" : "")) : (useTpsl ? "TPSL + 반대신호" : "반대신호")) : "꺼짐", color.new(#c8cdd8, 0))
+    f_cell(18, "참고", "과거 시뮬 · 실전 아님", color.new(#8b95a8, 0))

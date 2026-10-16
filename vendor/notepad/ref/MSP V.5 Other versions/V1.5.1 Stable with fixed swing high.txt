@@ -1,0 +1,346 @@
+V1.5.1 Stable with fixed swing high low
+
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+indicator("Market Structure Precision Pro - CBLuxPro V1.5.1", "MS Precision CBLuxPro V1.5.1", overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// --- Groups ---
+g_ms      = "Market Structure Settings"
+g_sig     = "Signal (Entry) Settings"
+g_tp      = "Take Profit (Exit) Settings"
+g_style   = "Visual Settings"
+
+// --- Inputs ---
+pivotLen      = input.int(5, "Pivot Length", minval = 1, group = g_ms)
+showStructure = input.bool(true, "Show Swing High/Low Labels", group = g_ms)
+showBreaks    = input.bool(true, "Show Internal Market Structure Labels", group = g_ms)
+filterByStruct = input.bool(true, "Filter Longs by LH / Shorts by HL", tooltip = "If a LH forms, Longs are disabled until a Bullish BOS. If a HL forms, Shorts are disabled until a Bearish BOS.", group = g_ms)
+
+enableLong    = input.bool(true, "Enable Long Signals", group = g_sig)
+enableShort   = input.bool(true, "Enable Short Signals", group = g_sig)
+enableDiamond = input.bool(true, "Enable Diamond Signals", group = g_sig)
+hedgeTrendFilter = input.bool(true, "Filter Hedge by Market Trend", group = g_sig)
+closeOnSignal = input.bool(true, "Close on Opposite Signal", group = g_sig)
+signalCloseProfitOnly = input.bool(false, "Close on Signal: Only if in Profit", group = g_sig)
+signalDelay   = input.int(5, "Signal Delay (Bars)", minval = 1, group = g_sig)
+sigFilterThresh = input.float(0.15, "Signal Proximity Filter (%)", minval = 0.0, step = 0.01, tooltip = "Avoids Longs if high is near a previous Peak (LH) or Shorts if low is near a previous Bottom (HL).", group = g_sig) / 100.0
+
+// --- Take Profit & Exit Settings ---
+useStructTP       = input.bool(true, "Use Structure TP (Signal Based)", group = g_tp)
+tpDelay           = input.int(5, "Struct TP: Min Bars After Entry", minval = 1, group = g_tp)
+tpSpacing         = input.int(5, "Struct TP: Min Bars Between TPs", minval = 0, group = g_tp)
+minTpDistIn       = input.float(0.3, "Struct TP: Min Dist from Entry (%)", minval = 0.0, step = 0.1, group = g_tp)
+onlyProfit        = input.bool(true, "Struct TP: Exit ONLY at Profit", group = g_tp)
+useBosTpClose     = input.bool(true, "TP at BOS Body Close", group = g_tp)
+enableChochExit   = input.bool(true, "Enable CHOCH Trend Change Exit", group = g_tp)
+
+colorTrend        = input.bool(true, "Color Candles by Trend", group = g_style)
+bullColor         = input.color(#089981, "Bullish Color", group = g_style)
+bearColor         = input.color(#f23645, "Bearish Color", group = g_style)
+textColor         = input.color(#ffffff, "Text Color", group = g_style)
+setupColor        = input.color(color.new(#5b9cf6, 80), "Setup Zone Color", group = g_style)
+
+// --- Market Structure ---
+var float phy = na
+var float ply = na
+var float currentPH = na, var float currentPL = na
+var int lastPH_idx = na, var int lastPL_idx = na
+var int marketTrend = 0 
+var bool longSuppressed = false
+var bool shortSuppressed = false
+
+// Sequence tracking
+var string lastPivotSide = "" // "High" or "Low"
+
+// Prevention of overlapping labels
+var label lastBarLabel = na
+var int lastBarLabelIdx = -1
+
+// History for feedback
+var int[] allPivotIndices = array.new_int()
+
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+bool isLHConfirmed = false
+bool isHHConfirmed = false
+bool isHLConfirmed = false
+bool isLLConfirmed = false
+
+// --- Alternating Pivot Logic ---
+if not na(ph)
+    bool canAcceptHigh = lastPivotSide != "High"
+    bool canUpdateHigh = lastPivotSide == "High" and ph > phy
+    
+    if canAcceptHigh or canUpdateHigh
+        if canUpdateHigh and showStructure and lastBarLabelIdx == lastPH_idx
+            label.delete(lastBarLabel)
+            
+        lastPH_idx := bar_index[pivotLen]
+        array.push(allPivotIndices, lastPH_idx)
+        currentPH  := ph
+        bool isLH = not na(phy) and ph < phy
+        bool isHH = na(phy) or ph >= phy
+        
+        isLHConfirmed := isLH
+        isHHConfirmed := isHH
+        if isLH
+            longSuppressed := true
+        
+        if showStructure
+            lastBarLabel := label.new(lastPH_idx, ph, isLH ? "LH" : "HH", color = #00000000, textcolor = bearColor, style = label.style_label_down, size = size.small)
+            lastBarLabelIdx := lastPH_idx
+
+        phy := ph
+        lastPivotSide := "High"
+
+if not na(pl)
+    bool canAcceptLow = lastPivotSide != "Low"
+    bool canUpdateLow = lastPivotSide == "Low" and pl < ply
+    
+    if canAcceptLow or canUpdateLow
+        if canUpdateLow and showStructure and lastBarLabelIdx == lastPL_idx
+            label.delete(lastBarLabel)
+
+        lastPL_idx := bar_index[pivotLen]
+        array.push(allPivotIndices, lastPL_idx)
+        currentPL  := pl
+        bool isHL = not na(ply) and pl > ply
+        bool isLL = na(ply) or pl <= ply
+        
+        isHLConfirmed := isHL
+        isLLConfirmed := isLL
+        if isHL
+            shortSuppressed := true
+        
+        if showStructure
+            lastBarLabel := label.new(lastPL_idx, pl, isHL ? "HL" : "LL", color = #00000000, textcolor = bullColor, style = label.style_label_up, size = size.small)
+            lastBarLabelIdx := lastPL_idx
+
+        ply := pl
+        lastPivotSide := "Low"
+
+// Maintain history size
+if array.size(allPivotIndices) > 100
+    array.remove(allPivotIndices, 0)
+
+// --- Break Detection ---
+bool bullBreak = false, bool bearBreak = false
+
+if not na(currentPH) and close > currentPH
+    bullBreak := true
+    marketTrend := 1
+    longSuppressed := false 
+    midX = math.round((lastPH_idx + bar_index) / 2)
+    if showBreaks
+        line.new(lastPH_idx, currentPH, bar_index, currentPH, color = bullColor, style = line.style_dashed)
+        label.new(midX, currentPH, marketTrend[1] == -1 ? "CHoCH" : "BOS", color = #00000000, textcolor = bullColor, style = label.style_label_down, size = size.tiny)
+    currentPH := na 
+
+if not na(currentPL) and close < currentPL
+    bearBreak := true
+    marketTrend := -1
+    shortSuppressed := false 
+    midX = math.round((lastPL_idx + bar_index) / 2)
+    if showBreaks
+        line.new(lastPL_idx, currentPL, bar_index, currentPL, color = bearColor, style = line.style_dashed)
+        label.new(midX, currentPL, marketTrend[1] == 1 ? "CHoCH" : "BOS", color = #00000000, textcolor = bearColor, style = label.style_label_up, size = size.tiny)
+    currentPL := na
+
+crossUpVal = ta.crossover(close, phy)
+crossDownVal = ta.crossunder(close, ply)
+isBullBodyCross = not na(phy) and crossUpVal
+isBearBodyCross = not na(ply) and crossDownVal
+
+// --- State Management ---
+type PositionState
+    bool bosDone = false
+    int lastMainEntryBar = 0
+    int lastFillBar = 0
+    int lastTpBar = 0
+    int validCandles = 0
+    float posSize = 0.0
+    float avgPrice = 0.0
+
+var ps = PositionState.new()
+
+// --- Signal Logic ---
+var bool waitingForHH = false
+var bool waitingForLL = false
+var bool hhReady = false
+var bool llReady = false
+
+if bullBreak
+    waitingForHH := true, hhReady := false
+    waitingForLL := false, llReady := false
+if bearBreak
+    waitingForLL := true, llReady := false
+    waitingForHH := false, hhReady := false
+
+if isHHConfirmed and waitingForHH
+    hhReady := true, waitingForHH := false
+if isLLConfirmed and waitingForLL
+    llReady := true, waitingForLL := false
+
+buySignalTrigger = hhReady and (close > open)
+sellSignalTrigger = llReady and (close < open)
+
+if buySignalTrigger
+    hhReady := false
+if sellSignalTrigger
+    llReady := false
+
+isNearHighRes = not na(phy) and high < phy and (phy - high) / phy <= sigFilterThresh
+isNearLowSup  = not na(ply) and low > ply and (low - ply) / ply <= sigFilterThresh
+
+isBodyTooLarge = math.abs(close - open) / open > 0.006
+
+canSignalNow = (bar_index - ps.lastMainEntryBar) >= signalDelay or (ps.posSize == 0)
+isLongBlocked  = isNearHighRes or (filterByStruct and longSuppressed)
+isShortBlocked = isNearLowSup or (filterByStruct and shortSuppressed)
+
+// --- Diamond & Avoidance Logic ---
+var float diamondLongLevel = na
+var float diamondShortLevel = na
+var float activeSetupHigh = na
+var float activeSetupLow = na
+var int activeSetupBar = 0
+var box[] setupBoxes = array.new_box()
+var int[] setupBoxIndices = array.new_int()
+
+if not na(ph) or not na(pl)
+    pivotBarIdx = bar_index[pivotLen]
+    if array.size(setupBoxIndices) > 0
+        for i = array.size(setupBoxIndices) - 1 to 0
+            if array.get(setupBoxIndices, i) == pivotBarIdx
+                box.delete(array.get(setupBoxes, i))
+                array.remove(setupBoxes, i)
+                array.remove(setupBoxIndices, i)
+
+if not na(ph) or not na(pl)
+    idx = pivotLen - 1
+    targetIdx = bar_index[idx]
+    activeSetupHigh := high[idx]
+    activeSetupLow := low[idx]
+    activeSetupBar := bar_index
+    
+    bool isTargetAPivot = array.includes(allPivotIndices, targetIdx)
+    if not isTargetAPivot
+        bx = box.new(targetIdx, activeSetupHigh, targetIdx, activeSetupLow, 
+                 border_color = color.new(setupColor, 0), 
+                 border_width = 1, 
+                 bgcolor = setupColor,
+                 extend = extend.none)
+        array.push(setupBoxes, bx)
+        array.push(setupBoxIndices, targetIdx)
+        
+    if array.size(setupBoxes) > 50
+        array.remove(setupBoxes, 0)
+        array.remove(setupBoxIndices, 0)
+    
+    if not na(ph)
+        diamondShortLevel := math.max(open[idx], close[idx])
+    if not na(pl)
+        diamondLongLevel := math.max(open[idx], close[idx])
+
+if bar_index - activeSetupBar > 15
+    activeSetupHigh := na
+    activeSetupLow := na
+
+barcolor(colorTrend ? (marketTrend == 1 ? bullColor : marketTrend == -1 ? bearColor : na) : na)
+
+bool finalHedgeLong = enableDiamond and not na(diamondLongLevel) and low <= diamondLongLevel and (not hedgeTrendFilter or marketTrend == 1) and not bullBreak and not bearBreak
+bool finalHedgeShort = enableDiamond and not na(diamondShortLevel) and high >= diamondShortLevel and (not hedgeTrendFilter or marketTrend == -1) and not bullBreak and not bearBreak
+
+if finalHedgeLong or bullBreak or bearBreak
+    diamondLongLevel := na
+if finalHedgeShort or bullBreak or bearBreak
+    diamondShortLevel := na
+
+isInsideActiveRange = not na(activeSetupHigh) and high >= activeSetupLow and low <= activeSetupHigh
+
+finalBuySignal  = enableLong and buySignalTrigger and (canSignalNow or ps.posSize == 0) and not isBodyTooLarge and not bullBreak and not isInsideActiveRange
+finalSellSignal = enableShort and sellSignalTrigger and (canSignalNow or ps.posSize == 0) and not isBodyTooLarge and not bearBreak and not isInsideActiveRange
+
+if finalBuySignal or finalSellSignal
+    activeSetupHigh := na
+    activeSetupLow := na
+    ps.lastMainEntryBar := bar_index
+
+bool isAnyEntry = finalBuySignal or finalSellSignal or finalHedgeLong or finalHedgeShort
+
+// --- Exits ---
+bool isBullChoch = bullBreak and marketTrend[1] == -1
+bool isBearChoch = bearBreak and marketTrend[1] == 1
+bool chochExitLong  = enableChochExit and ps.posSize > 0 and isBearChoch
+bool chochExitShort = enableChochExit and ps.posSize < 0 and isBullChoch
+
+isProfit = ps.posSize > 0 ? close > ps.avgPrice : close < ps.avgPrice
+oppositeCloseLong  = closeOnSignal and ps.posSize > 0 and sellSignalTrigger and not bearBreak
+oppositeCloseShort = closeOnSignal and ps.posSize < 0 and buySignalTrigger and not bullBreak
+
+showLongX  = not isAnyEntry and ((ps.posSize == 0 and buySignalTrigger and isLongBlocked) or (ps.posSize > 0 and isProfit and isLHConfirmed))
+showShortX = not isAnyEntry and ((ps.posSize == 0 and sellSignalTrigger and isShortBlocked) or (ps.posSize < 0 and isProfit and isHLConfirmed))
+
+var bool suppressionActive = false
+if isAnyEntry
+    suppressionActive := false
+if (chochExitLong or chochExitShort)
+    suppressionActive := false
+
+bool canShowExits = not suppressionActive
+if (showLongX or showShortX or chochExitLong or chochExitShort) and canShowExits
+    suppressionActive := true
+
+// TP Logic
+bool bosCloseHit = false
+bool tpLong = false, bool tpShort = false
+
+if ps.posSize != 0 and bar_index > ps.lastFillBar and not isAnyEntry and canShowExits
+    if useBosTpClose and not ps.bosDone and (not onlyProfit or isProfit)
+        if (ps.posSize > 0 and isBullBodyCross) or (ps.posSize < 0 and isBearBodyCross)
+            bosCloseHit := true, ps.bosDone := true
+            tpLong := ps.posSize > 0, tpShort := ps.posSize < 0
+            
+    if useStructTP
+        ps.validCandles := ps.posSize > 0 ? (close > open ? ps.validCandles + 1 : ps.validCandles) : (ps.posSize < 0 ? (close < open ? ps.validCandles + 1 : ps.validCandles) : ps.validCandles)
+        distFromLatest = ps.posSize > 0 ? (close - ps.avgPrice)/ps.avgPrice : (ps.avgPrice - close)/ps.avgPrice
+        if bar_index >= ps.lastTpBar + tpSpacing and distFromLatest >= (minTpDistIn/100) and ps.validCandles >= 5
+            if (not onlyProfit or isProfit) and bar_index >= ps.lastFillBar + tpDelay
+                ps.lastTpBar := bar_index
+                tpLong := ps.posSize > 0, tpShort := ps.posSize < 0
+
+// Execution
+if isAnyEntry
+    ps.avgPrice := close
+    ps.lastFillBar := bar_index
+    ps.bosDone := false
+    ps.validCandles := 0
+    ps.posSize := (finalBuySignal or finalHedgeLong) ? 1.0 : -1.0
+else if (oppositeCloseLong or oppositeCloseShort) and (not signalCloseProfitOnly or isProfit)
+    ps.posSize := 0
+else if chochExitLong or chochExitShort
+    ps.posSize := 0
+
+// Visuals
+plotshape(finalBuySignal, "LONG", shape.triangleup, location.belowbar, bullColor, size = size.small, text = "LONG")
+plotshape(finalSellSignal, "SHORT", shape.triangledown, location.abovebar, bearColor, size = size.small, text = "SHORT")
+plotshape(finalHedgeLong, "H-LONG", shape.diamond, location.belowbar, bullColor, size = size.small, text = "H-LONG")
+plotshape(finalHedgeShort, "H-SHORT", shape.diamond, location.abovebar, bearColor, size = size.small, text = "H-SHORT")
+plotshape(showLongX and canShowExits, "Exit/Avoid LONG X", shape.xcross, location.abovebar, bullColor, size = size.small)
+plotshape(showShortX and canShowExits, "Exit/Avoid SHORT X", shape.xcross, location.belowbar, bearColor, size = size.small)
+plotshape(chochExitLong and canShowExits, "CHoCH Exit Long", shape.labeldown, location.abovebar, bearColor, size = size.small, text = "Exit", textcolor = textColor)
+plotshape(chochExitShort and canShowExits, "CHoCH Exit Short", shape.labelup, location.belowbar, bullColor, size = size.small, text = "Exit", textcolor = textColor)
+plotshape(tpLong and canShowExits, "Struct TP L", shape.circle, location.abovebar, #5b9cf6, size = size.tiny, text = "TP")
+plotshape(tpShort and canShowExits, "Struct TP S", shape.circle, location.belowbar, #5b9cf6, size = size.tiny, text = "TP")
+plotshape(tpLong and bosCloseHit and canShowExits, "BOS TP L", shape.diamond, location.abovebar, #2196f3, size = size.small, text = "BOS TP")
+plotshape(tpShort and bosCloseHit and canShowExits, "BOS TP S", shape.diamond, location.belowbar, #2196f3, size = size.small, text = "BOS TP")
+
+// Alerts
+if barstate.isconfirmed
+    if finalBuySignal or finalSellSignal or finalHedgeLong or finalHedgeShort
+        alert(syminfo.ticker + " Entry: " + (finalBuySignal or finalHedgeLong ? "Long" : "Short"), alert.freq_once_per_bar_close)
+    if (showLongX or showShortX) and canShowExits
+        alert(syminfo.ticker + " WARNING/X", alert.freq_once_per_bar_close)
+    if (chochExitLong or chochExitShort) and canShowExits
+        alert(syminfo.ticker + " CHoCH Exit", alert.freq_once_per_bar_close)

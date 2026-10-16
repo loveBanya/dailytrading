@@ -8,16 +8,32 @@ import {
   runBacktest,
   STRATEGIES,
 } from "@/lib/backtest/run";
-import { toBars, type BacktestOutput, type Bar } from "@/lib/backtest/types";
+import {
+  buildIndicatorOverlays,
+  CHART_INDICATORS,
+  STRATEGY_COLORS,
+} from "@/lib/backtest/overlays";
+import {
+  toBars,
+  type BacktestOutput,
+  type BacktestTrade,
+  type Bar,
+  type Overlay,
+} from "@/lib/backtest/types";
 
 const INTERVALS = [
+  { id: "1", label: "1분" },
+  { id: "3", label: "3분" },
   { id: "5", label: "5분" },
   { id: "15", label: "15분" },
+  { id: "30", label: "30분" },
   { id: "60", label: "1시간" },
+  { id: "120", label: "2시간" },
   { id: "240", label: "4시간" },
+  { id: "D", label: "일봉" },
 ];
 
-const BAR_CHOICES = [1000, 2000, 4000];
+const BAR_CHOICES = [500, 1000, 2000, 4000, 8000];
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 
 const RUNNABLE: Record<string, string> = {
@@ -45,7 +61,15 @@ interface CandleJson {
   volume?: number;
 }
 
-async function loadBars(symbol: string, interval: string, bars: number): Promise<Bar[]> {
+interface TaggedTrade extends BacktestTrade {
+  source: string;
+}
+
+async function loadBars(
+  symbol: string,
+  interval: string,
+  bars: number
+): Promise<Bar[]> {
   const params = new URLSearchParams({
     symbol,
     interval,
@@ -71,7 +95,8 @@ function fmtTime(sec: number): string {
 }
 
 function fmtPx(value: number): string {
-  if (value >= 1000) return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  if (value >= 1000)
+    return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
   if (value >= 1) return value.toFixed(4).replace(/\.?0+$/, "");
   return value.toPrecision(4);
 }
@@ -81,8 +106,13 @@ function fmtUsd(value: number): string {
   return `${sign}$${value.toFixed(2)}`;
 }
 
+function toggleId(list: string[], id: string): string[] {
+  return list.includes(id) ? list.filter((item) => item !== id) : [...list, id];
+}
+
 export function ChartBacktestPanel() {
-  const [strategyId, setStrategyId] = useState("apex");
+  const [strategyIds, setStrategyIds] = useState<string[]>(["apex"]);
+  const [indicatorIds, setIndicatorIds] = useState<string[]>(["ema21", "vwap"]);
   const [interval, setInterval] = useState("15");
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [bars, setBars] = useState(2000);
@@ -93,22 +123,23 @@ export function ChartBacktestPanel() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chartBars, setChartBars] = useState<Bar[]>([]);
-  const [output, setOutput] = useState<BacktestOutput | null>(null);
+  const [outputs, setOutputs] = useState<
+    { id: string; name: string; output: BacktestOutput }[]
+  >([]);
   const [files, setFiles] = useState<NotepadFile[]>([]);
   const [scriptPath, setScriptPath] = useState("");
   const [scriptQuery, setScriptQuery] = useState("");
   const [source, setSource] = useState<string | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
 
-  const strategy = STRATEGIES.find((item) => item.id === strategyId) ?? STRATEGIES[0];
-  const runnableId = scriptPath ? RUNNABLE[scriptPath] : strategyId;
-  const readingSource = Boolean(scriptPath) && !RUNNABLE[scriptPath];
-
   useEffect(() => {
     let cancelled = false;
     void fetch("/api/notepad")
       .then(async (res) => {
-        const data = (await res.json()) as { files?: NotepadFile[]; error?: string };
+        const data = (await res.json()) as {
+          files?: NotepadFile[];
+          error?: string;
+        };
         if (cancelled) return;
         if (!res.ok || data.error) return;
         setFiles(data.files ?? []);
@@ -122,7 +153,7 @@ export function ChartBacktestPanel() {
   }, []);
 
   useEffect(() => {
-    if (!readingSource) {
+    if (!scriptPath) {
       setSource(null);
       setSourceError(null);
       return;
@@ -142,19 +173,14 @@ export function ChartBacktestPanel() {
       })
       .catch((err: unknown) => {
         if (ac.signal.aborted) return;
-        setSourceError(err instanceof Error ? err.message : "스크립트를 읽지 못했습니다.");
+        setSourceError(
+          err instanceof Error ? err.message : "스크립트를 읽지 못했습니다."
+        );
       });
     return () => ac.abort();
-  }, [readingSource, scriptPath]);
+  }, [scriptPath]);
 
   useEffect(() => {
-    if (readingSource) {
-      setOutput(null);
-      setChartBars([]);
-      setLoading(false);
-      setError(null);
-      return;
-    }
     const ac = new AbortController();
     const timer = window.setTimeout(() => {
       const clean = symbol.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -164,10 +190,16 @@ export function ChartBacktestPanel() {
       }
       setLoading(true);
       setError(null);
-      const extras = extraIntervals(runnableId, interval);
+      const extrasNeeded = new Set<string>();
+      for (const id of strategyIds) {
+        for (const htf of extraIntervals(id, interval)) extrasNeeded.add(htf);
+      }
+      const extras = [...extrasNeeded];
       Promise.all([
         loadBars(clean, interval, bars),
-        ...extras.map((htf) => loadBars(clean, htf, htfBars(interval, bars, htf))),
+        ...extras.map((htf) =>
+          loadBars(clean, htf, htfBars(interval, bars, htf))
+        ),
       ])
         .then((packs) => {
           if (ac.signal.aborted) return;
@@ -176,20 +208,28 @@ export function ChartBacktestPanel() {
           extras.forEach((htf, index) => {
             extra[htf] = packs[index + 1];
           });
-          const result = runBacktest({
-            id: runnableId,
-            interval,
-            chart,
-            extra,
-            scalp,
-            money: {
-              bet: Number.isFinite(bet) && bet > 0 ? bet : 100,
-              lev: Number.isFinite(lev) && lev > 0 ? lev : 1,
-              feePct: Number.isFinite(feePct) && feePct >= 0 ? feePct : 0,
-            },
+          const money = {
+            bet: Number.isFinite(bet) && bet > 0 ? bet : 100,
+            lev: Number.isFinite(lev) && lev > 0 ? lev : 1,
+            feePct: Number.isFinite(feePct) && feePct >= 0 ? feePct : 0,
+          };
+          const next = strategyIds.map((id) => {
+            const meta = STRATEGIES.find((item) => item.id === id);
+            return {
+              id,
+              name: meta?.name ?? id,
+              output: runBacktest({
+                id,
+                interval,
+                chart,
+                extra,
+                scalp: id === "apex" ? scalp : false,
+                money,
+              }),
+            };
           });
           setChartBars(chart);
-          setOutput(result);
+          setOutputs(next);
         })
         .catch((err: unknown) => {
           if (ac.signal.aborted) return;
@@ -203,11 +243,45 @@ export function ChartBacktestPanel() {
       ac.abort();
       window.clearTimeout(timer);
     };
-  }, [readingSource, runnableId, interval, symbol, bars, scalp, bet, lev, feePct]);
+  }, [strategyIds, interval, symbol, bars, scalp, bet, lev, feePct]);
+
+  const indicatorOverlays = useMemo(
+    () => buildIndicatorOverlays(chartBars, indicatorIds),
+    [chartBars, indicatorIds]
+  );
+
+  const strategyOverlays = useMemo(() => {
+    const out: Overlay[] = [];
+    outputs.forEach((item, index) => {
+      const tint = STRATEGY_COLORS[index % STRATEGY_COLORS.length] ?? "#34d399";
+      for (const overlay of item.output.overlays) {
+        out.push({
+          ...overlay,
+          name: `${item.name} · ${overlay.name}`,
+          color: overlay.color || tint,
+        });
+      }
+    });
+    return out;
+  }, [outputs]);
+
+  const chartOverlays = useMemo(
+    () => [...indicatorOverlays, ...strategyOverlays],
+    [indicatorOverlays, strategyOverlays]
+  );
+
+  const allTrades = useMemo(() => {
+    const out: TaggedTrade[] = [];
+    for (const item of outputs) {
+      for (const trade of item.output.trades) {
+        out.push({ ...trade, source: item.name });
+      }
+    }
+    return out.sort((a, b) => a.entryTime - b.entryTime);
+  }, [outputs]);
 
   const summary = useMemo(() => {
-    const trades = output?.trades ?? [];
-    const closed = trades.filter((trade) => trade.exitTime != null);
+    const closed = allTrades.filter((trade) => trade.exitTime != null);
     const wins = closed.filter((trade) => trade.win === true).length;
     const losses = closed.filter((trade) => trade.win === false).length;
     const be = closed.filter((trade) => trade.win == null).length;
@@ -226,7 +300,7 @@ export function ChartBacktestPanel() {
     }
     return {
       closed: closed.length,
-      open: trades.length - closed.length,
+      open: allTrades.length - closed.length,
       wins,
       losses,
       be,
@@ -235,22 +309,23 @@ export function ChartBacktestPanel() {
       sumUsd,
       dd,
     };
-  }, [output]);
+  }, [allTrades]);
 
   const groups = useMemo(() => {
     const names = new Set(files.map((file) => file.group));
     return [...names].sort((a, b) => a.localeCompare(b, "ko"));
   }, [files]);
 
-  const rows = [...(output?.trades ?? [])].reverse().slice(0, 40);
+  const rows = [...allTrades].reverse().slice(0, 60);
+  const runnableScript = scriptPath ? RUNNABLE[scriptPath] : undefined;
 
   return (
     <div className="space-y-4">
       <p className="text-sm leading-relaxed text-zinc-400">
-        메모장의 스크립트를 모두 불러 둡니다. 체결 규칙을 이 화면에 옮겨 둔
-        시그널은 과거 봉으로 손익을 계산하고, 나머지는 원문을 보여 줍니다. 수수료는
-        편도 기준으로 진입과 청산에 각각 한 번 빼며, 0으로 두면 수수료 전
-        금액입니다. 과거 결과이고 앞으로의 수익이 아닙니다.
+        지표는 차트에 겹쳐 그릴 수 있고, 백테스트 시그널도 여러 개를 동시에
+        켤 수 있습니다. 메모장 원문은 아래에서 읽고, 체결 규칙을 옮겨 둔
+        시그널은 손익까지 계산합니다. 수수료는 편도 기준으로 진입·청산에 각각
+        한 번 뺍니다.
       </p>
 
       <div className="flex flex-wrap items-end gap-2">
@@ -268,16 +343,16 @@ export function ChartBacktestPanel() {
               const next = event.target.value;
               setScriptPath(next);
               const mapped = RUNNABLE[next];
-              if (mapped) {
-                setStrategyId(mapped);
+              if (mapped && !strategyIds.includes(mapped)) {
+                setStrategyIds((prev) => [...prev, mapped]);
                 const found = STRATEGIES.find((item) => item.id === mapped);
                 if (found) setInterval(found.interval);
               }
             }}
-            size={8}
+            size={7}
             className="mt-1 block w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100"
           >
-            <option value="">백테스트 시그널만 보기</option>
+            <option value="">원문 안 보기</option>
             {groups.map((group) => (
               <optgroup key={group} label={group}>
                 {files
@@ -293,7 +368,7 @@ export function ChartBacktestPanel() {
                   .map((file) => (
                     <option key={file.path} value={file.path}>
                       {file.name}
-                      {RUNNABLE[file.path] ? " · 백테스트" : ""}
+                      {RUNNABLE[file.path] ? " · 차트·백테스트" : " · 원문"}
                     </option>
                   ))}
               </optgroup>
@@ -302,27 +377,59 @@ export function ChartBacktestPanel() {
         </label>
       </div>
 
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="text-xs text-zinc-500">
-          시그널
-          <select
-            value={strategyId}
-            onChange={(event) => {
-              const next = event.target.value;
-              setScriptPath("");
-              setStrategyId(next);
-              const found = STRATEGIES.find((item) => item.id === next);
-              if (found) setInterval(found.interval);
-            }}
-            className="mt-1 block rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100"
-          >
-            {STRATEGIES.map((item) => (
-              <option key={item.id} value={item.id}>
+      <div>
+        <p className="mb-1.5 text-xs text-zinc-500">차트 지표 (여러 개)</p>
+        <div className="flex flex-wrap gap-1.5">
+          {CHART_INDICATORS.map((item) => {
+            const on = indicatorIds.includes(item.id);
+            return (
+              <button
+                key={item.id}
+                type="button"
+                title={item.blurb}
+                onClick={() =>
+                  setIndicatorIds((prev) => toggleId(prev, item.id))
+                }
+                className={`rounded-md border px-2.5 py-1.5 text-xs ${
+                  on
+                    ? "border-sky-500/50 bg-sky-500/10 text-sky-200"
+                    : "border-zinc-700 text-zinc-400"
+                }`}
+              >
                 {item.name}
-              </option>
-            ))}
-          </select>
-        </label>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div>
+        <p className="mb-1.5 text-xs text-zinc-500">백테스트 시그널 (여러 개)</p>
+        <div className="flex flex-wrap gap-1.5">
+          {STRATEGIES.map((item) => {
+            const on = strategyIds.includes(item.id);
+            return (
+              <button
+                key={item.id}
+                type="button"
+                title={item.blurb}
+                onClick={() =>
+                  setStrategyIds((prev) => toggleId(prev, item.id))
+                }
+                className={`rounded-md border px-2.5 py-1.5 text-xs ${
+                  on
+                    ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300"
+                    : "border-zinc-700 text-zinc-400"
+                }`}
+              >
+                {item.name}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-2">
         <label className="text-xs text-zinc-500">
           심볼
           <input
@@ -362,6 +469,9 @@ export function ChartBacktestPanel() {
             {item.label}
           </button>
         ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
         {BAR_CHOICES.map((item) => (
           <button
             key={item}
@@ -376,7 +486,7 @@ export function ChartBacktestPanel() {
             {item.toLocaleString()}봉
           </button>
         ))}
-        {strategyId === "apex" && (
+        {strategyIds.includes("apex") && (
           <button
             type="button"
             onClick={() => setScalp((value) => !value)}
@@ -386,7 +496,7 @@ export function ChartBacktestPanel() {
                 : "border-zinc-700 text-zinc-400"
             }`}
           >
-            알트 단타 {scalp ? "켜짐" : "꺼짐"}
+            Apex 알트 단타 {scalp ? "켜짐" : "꺼짐"}
           </button>
         )}
       </div>
@@ -426,34 +536,47 @@ export function ChartBacktestPanel() {
         </label>
       </div>
 
-      <p className="text-sm text-zinc-300">
-        {readingSource
-          ? "이 스크립트는 원문으로 불러 왔습니다. 체결 규칙을 이 화면에 옮기지 않아 손익은 계산하지 않습니다."
-          : strategy.blurb}
-      </p>
-      {readingSource && sourceError && (
-        <p className="text-sm text-rose-300">{sourceError}</p>
+      {scriptPath && (
+        <div className="space-y-2">
+          <p className="text-sm text-zinc-300">
+            {runnableScript
+              ? "이 스크립트는 차트·백테스트에 올릴 수 있습니다. 위 시그널 버튼에 이미 켜져 있으면 그대로 겹칩니다."
+              : "이 스크립트는 원문으로 보여 줍니다. 위 차트 지표로 비슷한 선을 같이 켤 수 있습니다."}
+          </p>
+          {sourceError && <p className="text-sm text-rose-300">{sourceError}</p>}
+          {source && (
+            <pre className="max-h-64 overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-[11px] leading-relaxed text-zinc-300">
+              {source}
+            </pre>
+          )}
+          {!source && !sourceError && (
+            <p className="text-sm text-zinc-400">스크립트를 읽는 중…</p>
+          )}
+        </div>
       )}
-      {readingSource && source && (
-        <pre className="max-h-[32rem] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-[11px] leading-relaxed text-zinc-300">
-          {source}
-        </pre>
+
+      {outputs.map((item) =>
+        item.output.note ? (
+          <p key={item.id} className="text-xs text-zinc-500">
+            {item.name}: {item.output.note}
+          </p>
+        ) : null
       )}
-      {readingSource && !source && !sourceError && (
-        <p className="text-sm text-zinc-400">스크립트를 읽는 중…</p>
-      )}
-      {!readingSource && output?.note && (
-        <p className="text-xs text-zinc-500">{output.note}</p>
-      )}
-      {!readingSource && loading && (
+      {loading && (
         <p className="text-sm text-zinc-400">봉을 가져와 계산하는 중…</p>
       )}
-      {!readingSource && error && <p className="text-sm text-rose-300">{error}</p>}
+      {error && <p className="text-sm text-rose-300">{error}</p>}
 
-      {!readingSource && output && !error && (
+      {!error && chartBars.length > 0 && (
         <>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
-            <Stat label="청산" value={`${summary.closed}건`} sub={summary.open > 0 ? `진행 ${summary.open}` : "진행 없음"} />
+            <Stat
+              label="청산"
+              value={`${summary.closed}건`}
+              sub={
+                summary.open > 0 ? `진행 ${summary.open}` : "진행 없음"
+              }
+            />
             <Stat
               label="승률"
               value={summary.wr == null ? "—" : `${summary.wr.toFixed(1)}%`}
@@ -462,14 +585,18 @@ export function ChartBacktestPanel() {
             <Stat
               label="합계 R"
               value={`${summary.sumR >= 0 ? "+" : ""}${summary.sumR.toFixed(2)}R`}
-              sub="수수료 전 가격 기준"
+              sub="선택된 시그널 합"
             />
             <Stat
               label="손익"
               value={fmtUsd(summary.sumUsd)}
               sub={`$${bet} × ${lev}배`}
             />
-            <Stat label="최대 낙폭" value={fmtUsd(summary.dd)} sub="청산 손익을 쌓은 곡선" />
+            <Stat
+              label="최대 낙폭"
+              value={fmtUsd(summary.dd)}
+              sub="청산 손익을 쌓은 곡선"
+            />
             <Stat
               label="봉"
               value={chartBars.length.toLocaleString()}
@@ -479,17 +606,38 @@ export function ChartBacktestPanel() {
                   : "—"
               }
             />
-            <Stat label="시그널" value={strategy.name} sub={INTERVALS.find((item) => item.id === interval)?.label ?? interval} />
+            <Stat
+              label="켜진 것"
+              value={`시그널 ${strategyIds.length}`}
+              sub={`지표 ${indicatorIds.length} · ${INTERVALS.find((item) => item.id === interval)?.label ?? interval}`}
+            />
           </div>
 
-          {chartBars.length > 0 && (
-            <BacktestChart bars={chartBars} overlays={output.overlays} trades={output.trades} />
+          <BacktestChart
+            bars={chartBars}
+            overlays={chartOverlays}
+            trades={allTrades}
+          />
+
+          {chartOverlays.length > 0 && (
+            <div className="flex flex-wrap gap-2 text-[11px] text-zinc-500">
+              {chartOverlays.map((overlay) => (
+                <span key={overlay.name} className="inline-flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ background: overlay.color }}
+                  />
+                  {overlay.name}
+                </span>
+              ))}
+            </div>
           )}
 
           <div className="pretty-scroll overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left text-xs">
+            <table className="w-full min-w-[780px] text-left text-xs">
               <thead className="text-zinc-500">
                 <tr>
+                  <th className="py-2 pr-3 font-medium">시그널</th>
                   <th className="py-2 pr-3 font-medium">진입</th>
                   <th className="py-2 pr-3 font-medium">방향</th>
                   <th className="py-2 pr-3 font-medium">가격</th>
@@ -504,30 +652,53 @@ export function ChartBacktestPanel() {
               <tbody>
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="py-4 text-zinc-500">
-                      이 구간에는 진입이 없습니다.
+                    <td colSpan={10} className="py-4 text-zinc-500">
+                      이 구간에는 진입이 없습니다. 지표만 켠 상태면 차트 선만
+                      보입니다.
                     </td>
                   </tr>
                 )}
                 {rows.map((trade, index) => (
-                  <tr key={`${trade.entryTime}-${index}`} className="border-t border-zinc-800 text-zinc-200">
-                    <td className="py-2 pr-3 tabular-nums">{fmtTime(trade.entryTime)}</td>
-                    <td className={`py-2 pr-3 ${trade.side === 1 ? "text-rose-300" : "text-sky-300"}`}>
+                  <tr
+                    key={`${trade.source}-${trade.entryTime}-${index}`}
+                    className="border-t border-zinc-800 text-zinc-200"
+                  >
+                    <td className="py-2 pr-3 text-zinc-400">{trade.source}</td>
+                    <td className="py-2 pr-3 tabular-nums">
+                      {fmtTime(trade.entryTime)}
+                    </td>
+                    <td
+                      className={`py-2 pr-3 ${
+                        trade.side === 1 ? "text-rose-300" : "text-sky-300"
+                      }`}
+                    >
                       {trade.side === 1 ? "롱" : "숏"}
                     </td>
-                    <td className="py-2 pr-3 tabular-nums">{fmtPx(trade.entry)}</td>
-                    <td className="py-2 pr-3 tabular-nums">{fmtPx(trade.sl)}</td>
-                    <td className="py-2 pr-3 tabular-nums">{fmtPx(trade.tp)}</td>
+                    <td className="py-2 pr-3 tabular-nums">
+                      {fmtPx(trade.entry)}
+                    </td>
+                    <td className="py-2 pr-3 tabular-nums">
+                      {fmtPx(trade.sl)}
+                    </td>
+                    <td className="py-2 pr-3 tabular-nums">
+                      {fmtPx(trade.tp)}
+                    </td>
                     <td className="py-2 pr-3 tabular-nums">
                       {trade.exitTime ? fmtTime(trade.exitTime) : "진행"}
                     </td>
                     <td className="py-2 pr-3">{trade.exitReason}</td>
                     <td className="py-2 pr-3 tabular-nums">
-                      {trade.r == null ? "—" : `${trade.r >= 0 ? "+" : ""}${trade.r.toFixed(2)}`}
+                      {trade.r == null
+                        ? "—"
+                        : `${trade.r >= 0 ? "+" : ""}${trade.r.toFixed(2)}`}
                     </td>
                     <td
                       className={`py-2 tabular-nums ${
-                        trade.usd == null ? "text-zinc-500" : trade.usd >= 0 ? "text-rose-300" : "text-sky-300"
+                        trade.usd == null
+                          ? "text-zinc-500"
+                          : trade.usd >= 0
+                            ? "text-rose-300"
+                            : "text-sky-300"
                       }`}
                     >
                       {trade.usd == null ? "—" : fmtUsd(trade.usd)}
@@ -543,11 +714,21 @@ export function ChartBacktestPanel() {
   );
 }
 
-function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
+function Stat({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+}) {
   return (
     <div className="rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2">
       <p className="text-[11px] text-zinc-500">{label}</p>
-      <p className="mt-1 text-sm font-medium tabular-nums text-zinc-100">{value}</p>
+      <p className="mt-1 text-sm font-medium tabular-nums text-zinc-100">
+        {value}
+      </p>
       <p className="mt-0.5 text-[11px] text-zinc-500">{sub}</p>
     </div>
   );

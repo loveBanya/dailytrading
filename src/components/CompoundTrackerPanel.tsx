@@ -69,13 +69,6 @@ function later(a: string, b: string): string {
   return a > b ? a : b;
 }
 
-function usd(n: number): string {
-  return `$${n.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
 export function CompoundTrackerPanel({
   wallet,
   walletLoading,
@@ -229,6 +222,10 @@ export function CompoundTrackerPanel({
     todayActual != null && todayTargetEnd != null
       ? todayActual - todayTargetEnd
       : null;
+  const earned =
+    todayActual != null && seed > 0 ? todayActual - seed : null;
+  const earnedPct =
+    earned != null && seed > 0 ? (earned / seed) * 100 : null;
   const achieved = todayOnPath && todayGap != null && todayGap >= 0;
   const progress =
     todayOnPath && todayActual != null && todayTargetEnd != null && todayTargetEnd > 0
@@ -279,7 +276,10 @@ export function CompoundTrackerPanel({
         <div className="rounded-md border border-zinc-800 bg-zinc-950/50 px-3 py-2">
           <p className="text-[11px] text-zinc-500">시작 기준</p>
           <p className="mt-0.5 text-sm tabular-nums text-zinc-100">
-            {start} · 시드 {usd(seed)} · 하루 {ratePct}%
+            {start} · 시드 {money(seed)} · 하루 {ratePct}%
+          </p>
+          <p className="text-[11px] tabular-nums text-zinc-600">
+            {altMoney(seed)}
           </p>
         </div>
         <button
@@ -410,16 +410,40 @@ export function CompoundTrackerPanel({
         </div>
       )}
 
-      <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
         <Stat
           label="오늘"
           value={todayOnPath ? `${daysApart(start, today) + 1}일차` : "시작 전"}
           sub={today}
         />
         <Stat
+          label="번 금액"
+          value={
+            walletLoading && earned == null
+              ? "…"
+              : earned != null
+                ? money(earned, true)
+                : "—"
+          }
+          sub={
+            earned != null
+              ? `${altMoney(earned)} · 시드 대비 ${
+                  earnedPct != null && earnedPct >= 0 ? "+" : ""
+                }${earnedPct?.toFixed(1) ?? "—"}%`
+              : "실제 보유 − 시드"
+          }
+          tone={
+            earned == null ? "neutral" : earned >= 0 ? "up" : "down"
+          }
+        />
+        <Stat
           label="오늘 목표 수익"
           value={todayOnPath ? money(targetStart(today) * rate) : "—"}
-          sub={todayOnPath ? `실현 ${money(todayPnl, true)}` : undefined}
+          sub={
+            todayOnPath
+              ? `${altMoney(targetStart(today) * rate)} · 실현 ${money(todayPnl, true)}`
+              : undefined
+          }
         />
         <Stat
           label="오늘 목표 최종"
@@ -436,19 +460,30 @@ export function CompoundTrackerPanel({
                 : "—"
           }
           sub={
-            todaySaved
-              ? "저장됨"
-              : today in draftActual
-                ? "저장 전"
-                : live > 0
-                  ? `${walletFollowLabel(followId)} 지갑 · 저장 전`
-                  : "직접 입력"
+            todayActual != null
+              ? `${altMoney(todayActual)} · ${
+                  todaySaved
+                    ? "저장됨"
+                    : today in draftActual
+                      ? "저장 전"
+                      : live > 0
+                        ? `${walletFollowLabel(followId)} 지갑 · 저장 전`
+                        : "직접 입력"
+                }`
+              : todaySaved
+                ? "저장됨"
+                : today in draftActual
+                  ? "저장 전"
+                  : live > 0
+                    ? `${walletFollowLabel(followId)} 지갑 · 저장 전`
+                    : "직접 입력"
           }
           tone="actual"
         />
         <Stat
           label="목표 대비"
           value={todayGap != null ? money(todayGap, true) : "—"}
+          sub={todayGap != null ? altMoney(todayGap) : undefined}
           tone={todayGap == null ? "neutral" : todayGap >= 0 ? "up" : "down"}
         />
         <Stat
@@ -572,11 +607,18 @@ export function CompoundTrackerPanel({
                       {date}
                       {isToday ? " 오늘" : ""}
                     </td>
-                    <td className="px-2 py-1.5 tabular-nums">{money(open)}</td>
-                    <td className="px-2 py-1.5 tabular-nums text-zinc-300">
-                      {money(profit)}
+                    <td className="px-2 py-1.5 tabular-nums">
+                      <div>{money(open)}</div>
+                      <div className="text-[10px] text-zinc-600">{altMoney(open)}</div>
                     </td>
-                    <td className="px-2 py-1.5 tabular-nums">{money(close)}</td>
+                    <td className="px-2 py-1.5 tabular-nums text-zinc-300">
+                      <div>{money(profit)}</div>
+                      <div className="text-[10px] text-zinc-600">{altMoney(profit)}</div>
+                    </td>
+                    <td className="px-2 py-1.5 tabular-nums">
+                      <div>{money(close)}</div>
+                      <div className="text-[10px] text-zinc-600">{altMoney(close)}</div>
+                    </td>
                     <td className="px-2 py-1.5 tabular-nums text-zinc-300">
                       {dayRate.toFixed(1)}%
                     </td>
@@ -610,7 +652,16 @@ export function CompoundTrackerPanel({
                             : "text-rose-400"
                       }`}
                     >
-                      {gap == null ? "—" : money(gap, true)}
+                      {gap == null ? (
+                        "—"
+                      ) : (
+                        <>
+                          <div>{money(gap, true)}</div>
+                          <div className="text-[10px] text-zinc-600">
+                            {altMoney(gap)}
+                          </div>
+                        </>
+                      )}
                     </td>
                   </tr>
                 );

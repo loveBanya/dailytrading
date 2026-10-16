@@ -92,9 +92,16 @@ export function extraIntervals(id: string, interval: string): string[] {
   return out;
 }
 
+export function intervalMinutes(interval: string): number {
+  if (interval === "D") return 1440;
+  if (interval === "W") return 10080;
+  const n = Number(interval);
+  return Number.isFinite(n) && n > 0 ? n : 15;
+}
+
 export function htfBars(chartInterval: string, chartBars: number, htf: string): number {
-  const chartMin = Number(chartInterval) || 15;
-  const htfMin = Number(htf) || 60;
+  const chartMin = intervalMinutes(chartInterval);
+  const htfMin = intervalMinutes(htf);
   return Math.min(8000, Math.ceil((chartBars * chartMin) / htfMin) + 320);
 }
 

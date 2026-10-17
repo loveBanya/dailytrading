@@ -226,6 +226,37 @@ export function CompoundTrackerPanel({
     todayActual != null && seed > 0 ? todayActual - seed : null;
   const earnedPct =
     earned != null && seed > 0 ? (earned / seed) * 100 : null;
+  const prevSavedDate = Object.keys(prefs.trackActual)
+    .filter((date) => date >= start && date < today)
+    .sort()
+    .pop();
+  const dayBase: { amount: number; label: string } | null = !todayOnPath
+    ? null
+    : prevSavedDate != null
+      ? {
+          amount: prefs.trackActual[prevSavedDate]!,
+          label: `${prevSavedDate.slice(5).replace("-", "/")} 보유 기준`,
+        }
+      : today === start
+        ? { amount: seed, label: "시드 기준" }
+        : null;
+  const todayEarned =
+    !todayOnPath
+      ? null
+      : dayBase != null
+        ? todayActual != null
+          ? todayActual - dayBase.amount
+          : null
+        : todayPnl;
+  const todayEarnedBase = dayBase?.amount ?? targetStart(today);
+  const todayEarnedPct =
+    todayEarned != null && todayEarnedBase > 0
+      ? (todayEarned / todayEarnedBase) * 100
+      : null;
+  const todayVsTarget =
+    todayEarnedPct != null && ratePct > 0
+      ? (todayEarnedPct / ratePct) * 100
+      : null;
   const achieved = todayOnPath && todayGap != null && todayGap >= 0;
   const progress =
     todayOnPath && todayActual != null && todayTargetEnd != null && todayTargetEnd > 0
@@ -410,14 +441,38 @@ export function CompoundTrackerPanel({
         </div>
       )}
 
-      <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+      <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8">
         <Stat
           label="오늘"
           value={todayOnPath ? `${daysApart(start, today) + 1}일차` : "시작 전"}
           sub={today}
         />
         <Stat
-          label="번 금액"
+          label="오늘 번 금액"
+          value={
+            walletLoading && todayEarned == null
+              ? "…"
+              : todayEarned != null
+                ? money(todayEarned, true)
+                : "—"
+          }
+          sub={
+            todayEarned != null
+              ? `${altMoney(todayEarned)} · ${
+                  todayEarnedPct != null && todayEarnedPct >= 0 ? "+" : ""
+                }${todayEarnedPct?.toFixed(2) ?? "—"}% (목표 ${ratePct}%) · ${
+                  dayBase?.label ?? "실현 손익 기준"
+                }`
+              : todayOnPath
+                ? "실제 보유를 적으면 계산합니다"
+                : undefined
+          }
+          tone={
+            todayEarned == null ? "neutral" : todayEarned >= 0 ? "up" : "down"
+          }
+        />
+        <Stat
+          label="누적 번 금액"
           value={
             walletLoading && earned == null
               ? "…"
@@ -505,6 +560,42 @@ export function CompoundTrackerPanel({
                 achieved ? "bg-amber-300" : "bg-emerald-400"
               }`}
               style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {todayEarnedPct != null && todayVsTarget != null && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-[11px] text-zinc-500">
+            <span>
+              오늘 수익률{" "}
+              <span
+                className={`tabular-nums ${
+                  todayEarnedPct >= 0 ? "text-emerald-300" : "text-rose-300"
+                }`}
+              >
+                {todayEarnedPct >= 0 ? "+" : ""}
+                {todayEarnedPct.toFixed(2)}%
+              </span>{" "}
+              / 목표 {ratePct}%
+            </span>
+            <span className="tabular-nums text-zinc-300">
+              목표의 {todayVsTarget.toFixed(0)}%
+            </span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-zinc-800">
+            <div
+              className={`h-2 rounded-full transition-all ${
+                todayVsTarget >= 100
+                  ? "bg-amber-300"
+                  : todayVsTarget >= 0
+                    ? "bg-sky-400"
+                    : "bg-rose-400"
+              }`}
+              style={{
+                width: `${Math.max(0, Math.min(100, Math.abs(todayVsTarget)))}%`,
+              }}
             />
           </div>
         </div>

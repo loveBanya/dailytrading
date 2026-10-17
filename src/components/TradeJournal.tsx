@@ -30,7 +30,7 @@ import { DemandSupplyPanel } from "./screener/DemandSupplyPanel";
 import { EquityCurvePanel } from "./EquityCurvePanel";
 import { fetchFxRate } from "@/lib/fx/client";
 import { ReviewCommentsFeed } from "./ReviewCommentsFeed";
-import { CompoundTrackerPanel } from "./CompoundTrackerPanel";
+import { CompoundChallenges } from "./CompoundChallenges";
 import { ChartBacktestPanel } from "./ChartBacktestPanel";
 import { UpbitPanel } from "./UpbitPanel";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
@@ -1084,7 +1084,7 @@ export function TradeJournal() {
             if (id === "monthly_goal") {
               return (
                 <Section key={id} title="복리 목표">
-                  <CompoundTrackerPanel
+                  <CompoundChallenges
                     prefs={goalPrefs}
                     onPrefsChange={patchGoalPrefs}
                     wallet={walletOverview}

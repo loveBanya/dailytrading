@@ -191,6 +191,18 @@ export interface GoalChallengePrefs {
   trackDailyRatePct: number;
   /** 날짜 → 실제 보유액. 없는 오늘은 지갑을 본다 */
   trackActual: Record<string, number>;
+  /** 첫 복리 챌린지 말고 따로 굴리는 챌린지들 */
+  extraTracks: ExtraTrack[];
+}
+
+export interface ExtraTrack {
+  id: string;
+  name: string;
+  trackSeedUsdt: number;
+  trackStart: string;
+  trackDailyRatePct: number;
+  trackActual: Record<string, number>;
+  walletFollow: string;
 }
 
 const GOAL_KEY = "dailytrading.goal.challenge.v1";
@@ -217,6 +229,7 @@ export const DEFAULT_GOAL_CHALLENGE: GoalChallengePrefs = {
   trackStart: "",
   trackDailyRatePct: 2,
   trackActual: {},
+  extraTracks: [],
 };
 
 export function loadGoalChallenge(): GoalChallengePrefs {
@@ -284,10 +297,35 @@ export function loadGoalChallenge(): GoalChallengePrefs {
           ? Number(saved.trackDailyRatePct)
           : DEFAULT_GOAL_CHALLENGE.trackDailyRatePct,
       trackActual: readTrackActual(saved.trackActual),
+      extraTracks: readExtraTracks(saved.extraTracks),
     };
   } catch {
     return { ...DEFAULT_GOAL_CHALLENGE, dailyHits: {} };
   }
+}
+
+function readExtraTracks(raw: unknown): ExtraTrack[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ExtraTrack[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Partial<ExtraTrack>;
+    if (typeof row.id !== "string" || !row.id) continue;
+    out.push({
+      id: row.id,
+      name: typeof row.name === "string" ? row.name : "챌린지",
+      trackSeedUsdt: Number(row.trackSeedUsdt) > 0 ? Number(row.trackSeedUsdt) : 200,
+      trackStart: typeof row.trackStart === "string" ? row.trackStart : "",
+      trackDailyRatePct:
+        Number(row.trackDailyRatePct) > 0 ? Number(row.trackDailyRatePct) : 3,
+      trackActual: readTrackActual(row.trackActual),
+      walletFollow:
+        typeof row.walletFollow === "string" && row.walletFollow
+          ? row.walletFollow
+          : DEFAULT_GOAL_CHALLENGE.walletFollow,
+    });
+  }
+  return out;
 }
 
 function readTrackActual(raw: unknown): Record<string, number> {

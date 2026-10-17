@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
-import type { GoalChallengePrefs } from "@/lib/prefs";
+import type { ExtraTrack, GoalChallengePrefs } from "@/lib/prefs";
 import type { DailyPnl } from "@/lib/stats/compute";
 import {
   followedEquity,
@@ -22,7 +22,17 @@ interface CompoundTrackerPanelProps {
     prefs: GoalChallengePrefs | ((p: GoalChallengePrefs) => GoalChallengePrefs)
   ) => void;
   onGoalUsdtChange?: (goalUsdt: number | null) => void;
+  /** 있으면 prefs.extraTracks 의 그 챌린지를 그린다 */
+  extraId?: string;
 }
+
+const TRACK_KEYS = [
+  "trackSeedUsdt",
+  "trackStart",
+  "trackDailyRatePct",
+  "trackActual",
+  "walletFollow",
+] as const;
 
 function kstToday(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
@@ -73,10 +83,15 @@ export function CompoundTrackerPanel({
   wallet,
   walletLoading,
   daily,
-  prefs,
+  prefs: rootPrefs,
   onPrefsChange,
   onGoalUsdtChange,
+  extraId,
 }: CompoundTrackerPanelProps) {
+  const extra = extraId
+    ? rootPrefs.extraTracks.find((track) => track.id === extraId)
+    : undefined;
+  const prefs: GoalChallengePrefs = extra ? { ...rootPrefs, ...extra } : rootPrefs;
   const today = kstToday();
   const [viewMonth, setViewMonth] = useState(() => monthKey(today));
   const [editingBase, setEditingBase] = useState(false);
@@ -87,7 +102,8 @@ export function CompoundTrackerPanel({
   const [draftActual, setDraftActual] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(prefs.trackStart)) return;
+    if (extraId) return;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(rootPrefs.trackStart)) return;
     onPrefsChange((p) => {
       if (/^\d{4}-\d{2}-\d{2}$/.test(p.trackStart)) return p;
       return {
@@ -97,7 +113,7 @@ export function CompoundTrackerPanel({
         trackDailyRatePct: p.trackDailyRatePct > 0 ? p.trackDailyRatePct : 2,
       };
     });
-  }, [prefs.trackStart, onPrefsChange]);
+  }, [extraId, rootPrefs.trackStart, onPrefsChange]);
 
   const start = /^\d{4}-\d{2}-\d{2}$/.test(prefs.trackStart)
     ? prefs.trackStart
@@ -128,7 +144,25 @@ export function CompoundTrackerPanel({
   }
 
   function update(patch: Partial<GoalChallengePrefs>) {
-    onPrefsChange((p) => ({ ...p, ...patch }));
+    onPrefsChange((p) => {
+      if (!extraId) return { ...p, ...patch };
+      const own: Partial<ExtraTrack> = {};
+      const shared: Partial<GoalChallengePrefs> = {};
+      for (const [key, value] of Object.entries(patch)) {
+        if ((TRACK_KEYS as readonly string[]).includes(key)) {
+          (own as Record<string, unknown>)[key] = value;
+        } else {
+          (shared as Record<string, unknown>)[key] = value;
+        }
+      }
+      return {
+        ...p,
+        ...shared,
+        extraTracks: p.extraTracks.map((track) =>
+          track.id === extraId ? { ...track, ...own } : track
+        ),
+      };
+    });
   }
 
   function shownActual(date: string): string {
@@ -268,7 +302,9 @@ export function CompoundTrackerPanel({
   useEffect(() => {
     if (!achieved) return;
     if (cheeredDay.current === today) return;
-    const key = "dailytrading.goal.cheer.v1";
+    const key = extraId
+      ? `dailytrading.goal.cheer.v1.${extraId}`
+      : "dailytrading.goal.cheer.v1";
     if (window.localStorage.getItem(key) === today) {
       cheeredDay.current = today;
       return;

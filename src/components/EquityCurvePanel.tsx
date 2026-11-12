@@ -126,6 +126,17 @@ export function EquityCurvePanel({
     [flows]
   );
 
+  const netExternalKrw = useMemo(
+    () =>
+      flows.reduce((s, f) => {
+        const krw =
+          f.amount_krw ??
+          (Number(f.amount_usdt) || 0) * (f.fx_rate ?? fxRate);
+        return s + (f.direction === "out" ? -krw : krw);
+      }, 0),
+    [flows, fxRate]
+  );
+
   const flowByDay = useMemo(() => {
     const map = new Map<string, number>();
     for (const f of flows) {
@@ -361,10 +372,14 @@ export function EquityCurvePanel({
               netExternalAll >= 0 ? "text-emerald-400" : "text-rose-400"
             }`}
           >
-            {show(netExternalAll, true)}
+            {currency === "krw"
+              ? formatDisplayMoney(netExternalKrw, "krw", 1, true)
+              : show(netExternalAll, true)}
           </p>
           <p className="text-[11px] tabular-nums text-zinc-600">
-            {showAlt(netExternalAll)}
+            {currency === "krw"
+              ? formatDisplayMoney(netExternalAll, "usdt", fxRate, true)
+              : formatDisplayMoney(netExternalKrw, "krw", 1, true)}
           </p>
         </div>
         <div>

@@ -69,6 +69,16 @@ interface StatsPanelsProps {
 
 type StatsPeriod = "all" | "since" | "before" | "d7" | "d30" | "custom";
 
+/** USDT 합계와, 원화로 적은 입출금은 원래 원화로 더한 합계 */
+interface FlowTotals {
+  in: number;
+  out: number;
+  net: number;
+  krwIn: number | null;
+  krwOut: number | null;
+  krwNet: number | null;
+}
+
 const PERIODS: { id: StatsPeriod; label: string }[] = [
   { id: "all", label: "전체" },
   { id: "since", label: "10/1 이후" },
@@ -141,9 +151,7 @@ export function StatsPanels({
   const [remote, setRemote] = useState<StatsPayload | null>(null);
   const [remoteLoading, setRemoteLoading] = useState(false);
   const [remoteError, setRemoteError] = useState<string | null>(null);
-  const [flows, setFlows] = useState<{ in: number; out: number; net: number } | null>(
-    null
-  );
+  const [flows, setFlows] = useState<FlowTotals | null>(null);
   const [flowsLoading, setFlowsLoading] = useState(true);
 
   const today = seoulToday();
@@ -194,6 +202,7 @@ export function StatsPanels({
       .then(async (res) => {
         const data = (await res.json()) as {
           totals?: { in?: number; out?: number; net?: number };
+          totalsKrw?: { in?: number; out?: number; net?: number };
           error?: string;
         };
         if (cancelled) return;
@@ -205,6 +214,9 @@ export function StatsPanels({
           in: Number(data.totals.in) || 0,
           out: Number(data.totals.out) || 0,
           net: Number(data.totals.net) || 0,
+          krwIn: data.totalsKrw ? Number(data.totalsKrw.in) || 0 : null,
+          krwOut: data.totalsKrw ? Number(data.totalsKrw.out) || 0 : null,
+          krwNet: data.totalsKrw ? Number(data.totalsKrw.net) || 0 : null,
         });
       })
       .catch(() => {
@@ -330,7 +342,7 @@ function StatsBody({
   flowsLoading = false,
 }: StatsPanelsProps & {
   emptyHint?: string;
-  flows?: { in: number; out: number; net: number } | null;
+  flows?: FlowTotals | null;
   flowsLoading?: boolean;
 }) {
   if (loading) {
@@ -349,10 +361,15 @@ function StatsBody({
 
   const money = (n: number, signed = false) =>
     formatDisplayMoney(n, currency, fxRate, signed);
-  const flowText = (n: number | undefined, signed = false) => {
+  const flowText = (key: "in" | "out" | "net", signed = false) => {
     if (flowsLoading) return "…";
-    if (n == null || !flows) return "—";
-    return money(n, signed);
+    if (!flows) return "—";
+    const krwKey = key === "in" ? "krwIn" : key === "out" ? "krwOut" : "krwNet";
+    const krw = flows[krwKey];
+    if (currency === "krw" && krw != null) {
+      return formatDisplayMoney(krw, "krw", 1, signed);
+    }
+    return money(flows[key], signed);
   };
 
   const leftRows: StatRow[] = [
@@ -374,17 +391,17 @@ function StatsBody({
     },
     {
       label: "총 입금",
-      value: flowText(flows?.in),
+      value: flowText("in"),
       tone: "pos",
     },
     {
       label: "총 출금",
-      value: flowText(flows?.out),
+      value: flowText("out"),
       tone: "neg",
     },
     {
-      label: "총순익",
-      value: flowText(flows?.net, true),
+      label: "순입금 (입금−출금)",
+      value: flowText("net", true),
       tone: flows == null ? undefined : flows.net >= 0 ? "pos" : "neg",
       emphasize: true,
     },
@@ -442,9 +459,9 @@ function StatsBody({
         </div>
         <p className="mt-3 text-[11px] text-zinc-600">
           거래 {overall.trades}회 · 기대값 {money(overall.expectancy, true)} · 평균
-          보유 {formatDuration(Math.round(overall.avgHoldMinutes))}. 총 입금·총
-          출금·총순익은 자산에 적어 둔 전체 입출금입니다. 총순익은 입금에서 출금을
-          뺀 값입니다.
+          보유 {formatDuration(Math.round(overall.avgHoldMinutes))}. 입출금은
+          현금 입출금(원화)과 USDT 입출금을 합친 값입니다. 원화 기록은 USDT로 볼
+          때 그날 업비트 USDT 시세로 바꿉니다.
         </p>
         <SideSplit long={overall.long} short={overall.short} />
       </div>

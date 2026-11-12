@@ -117,6 +117,22 @@ export function DailyReviewPanel({
     selected && days.some((d) => d.day === selected) ? selected : (days[0]?.day ?? null);
   const current = days.find((d) => d.day === day) ?? null;
   const idx = current ? days.indexOf(current) : -1;
+  const activeMonth = day?.slice(0, 7) ?? null;
+
+  const months = useMemo(() => {
+    const list: { month: string; newestDay: string; pnl: number; count: number }[] = [];
+    for (const d of days) {
+      const month = d.day.slice(0, 7);
+      const last = list[list.length - 1];
+      if (last?.month === month) {
+        last.pnl += d.pnl;
+        last.count += d.trades.length;
+      } else {
+        list.push({ month, newestDay: d.day, pnl: d.pnl, count: d.trades.length });
+      }
+    }
+    return list;
+  }, [days]);
 
   const summary = useMemo(() => {
     if (!current) return null;
@@ -183,7 +199,34 @@ export function DailyReviewPanel({
       {mode === "day" && (
         <>
           <div className="pretty-scroll flex gap-1.5 overflow-x-auto pb-1">
-            {days.map((d) => (
+            {months.map((m) => (
+              <button
+                key={m.month}
+                type="button"
+                onClick={() => setSelected(m.newestDay)}
+                className={`shrink-0 rounded-full border px-3 py-1 text-xs transition ${
+                  m.month === activeMonth
+                    ? "border-zinc-300 bg-zinc-100 text-zinc-900"
+                    : "border-zinc-800 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+                }`}
+              >
+                {m.month.slice(2, 4)}년 {Number(m.month.slice(5, 7))}월
+                <span
+                  className={`ml-1.5 tabular-nums ${
+                    m.month === activeMonth
+                      ? "text-zinc-600"
+                      : m.pnl >= 0
+                        ? "text-red-400"
+                        : "text-blue-400"
+                  }`}
+                >
+                  {m.count}건 · {won(m.pnl, fx)}
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="pretty-scroll flex gap-1.5 overflow-x-auto pb-1">
+            {days.filter((d) => d.day.startsWith(activeMonth ?? "")).map((d) => (
               <button
                 key={d.day}
                 type="button"

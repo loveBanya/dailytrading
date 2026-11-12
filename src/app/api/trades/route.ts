@@ -4,13 +4,14 @@ import { createSupabaseAdmin } from "@/lib/supabase/client";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** GET /api/trades?limit=50&symbol=ICPUSDT */
+/** GET /api/trades?limit=50&symbol=ICPUSDT&before=2026-11-02T12:44:00Z */
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = req.nextUrl;
     const limit = Number(searchParams.get("limit") ?? "50");
     const symbol = searchParams.get("symbol");
     const exchange = searchParams.get("exchange");
+    const before = searchParams.get("before");
 
     const review = searchParams.get("review");
     const sort = searchParams.get("sort") ?? "newest";
@@ -20,6 +21,8 @@ export async function GET(req: NextRequest) {
 
     if (symbol) query = query.eq("symbol", symbol);
     if (exchange) query = query.eq("exchange", exchange);
+    // 같은 시각에 끝난 매매가 페이지 경계에 걸려도 빠지지 않게 lte로 받고 클라이언트에서 중복을 거른다
+    if (before) query = query.lte("exit_time", before);
     if (review === "1" || review === "true") query = query.eq("is_review", true);
 
     switch (sort) {

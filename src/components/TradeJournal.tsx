@@ -135,6 +135,7 @@ export function TradeJournal() {
   const [tradesLoading, setTradesLoading] = useState(true);
   const [tradesError, setTradesError] = useState<string | null>(null);
   const seenTradeIds = useRef<Set<string> | null>(null);
+  const tradesLoadId = useRef(0);
   const seenPositionKeys = useRef<Set<string> | null>(null);
   const [alertUnread, setAlertUnread] = useState(0);
   const [reviewFocus, setReviewFocus] = useState<{ id: string; nonce: number } | null>(
@@ -323,6 +324,28 @@ export function TradeJournal() {
         })),
         seenTradeIds.current
       );
+      setTradesLoading(false);
+
+      // 최근 200건을 먼저 보여 주고, 그 이전 기록은 뒤에서 이어 붙인다
+      const loadId = ++tradesLoadId.current;
+      const ids = new Set(list.map((t) => t.id));
+      let page = list;
+      while (page.length >= 200) {
+        const before = page[page.length - 1]!.exit_time;
+        const res = await fetch(
+          `/api/trades?limit=200&sort=newest&before=${encodeURIComponent(before)}`
+        );
+        const data = (await res.json()) as { trades?: Trade[]; error?: string };
+        if (loadId !== tradesLoadId.current || data.error) return;
+        page = data.trades ?? [];
+        const fresh = page.filter((t) => !ids.has(t.id));
+        if (fresh.length === 0) break;
+        for (const t of fresh) ids.add(t.id);
+        setTrades((prev) => {
+          const have = new Set(prev.map((t) => t.id));
+          return [...prev, ...fresh.filter((t) => !have.has(t.id))];
+        });
+      }
     } catch (err) {
       setTradesError(err instanceof Error ? err.message : "불러오기 실패");
     } finally {

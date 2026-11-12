@@ -361,15 +361,39 @@ function StatsBody({
 
   const money = (n: number, signed = false) =>
     formatDisplayMoney(n, currency, fxRate, signed);
-  const flowText = (key: "in" | "out" | "net", signed = false) => {
+  const flowText = (key: "in" | "out", signed = false) => {
     if (flowsLoading) return "…";
     if (!flows) return "—";
-    const krwKey = key === "in" ? "krwIn" : key === "out" ? "krwOut" : "krwNet";
-    const krw = flows[krwKey];
+    const krw = key === "in" ? flows.krwIn : flows.krwOut;
     if (currency === "krw" && krw != null) {
       return formatDisplayMoney(krw, "krw", 1, signed);
     }
     return money(flows[key], signed);
+  };
+  const flowGain = flows ? flows.out - flows.in : null;
+  const flowGainKrw =
+    flows && flows.krwIn != null && flows.krwOut != null
+      ? flows.krwOut - flows.krwIn
+      : null;
+  const flowGainText = () => {
+    if (flowsLoading) return "…";
+    if (flowGain == null) return "—";
+    if (currency === "krw" && flowGainKrw != null) {
+      return formatDisplayMoney(flowGainKrw, "krw", 1, true);
+    }
+    return money(flowGain, true);
+  };
+  const walletAll =
+    wallet && wallet.totalEquity > 0 ? followedEquity(wallet, "all") : null;
+  const withAsset =
+    flowGain != null && walletAll != null ? flowGain + walletAll : null;
+  const withAssetText = () => {
+    if (flowsLoading) return "…";
+    if (withAsset == null) return "—";
+    if (currency === "krw" && flowGainKrw != null && walletAll != null) {
+      return formatDisplayMoney(flowGainKrw + walletAll * fxRate, "krw", 1, true);
+    }
+    return money(withAsset, true);
   };
 
   const leftRows: StatRow[] = [
@@ -390,20 +414,25 @@ function StatsBody({
       emphasize: true,
     },
     {
-      label: "총 입금",
+      label: "총 입금 (넣은 돈)",
       value: flowText("in"),
-      tone: "pos",
-    },
-    {
-      label: "총 출금",
-      value: flowText("out"),
       tone: "neg",
     },
     {
-      label: "순입금 (입금−출금)",
-      value: flowText("net", true),
-      tone: flows == null ? undefined : flows.net >= 0 ? "pos" : "neg",
+      label: "총 출금 (뺀 돈)",
+      value: flowText("out"),
+      tone: "pos",
+    },
+    {
+      label: "입출금 손익 (출금−입금)",
+      value: flowGainText(),
+      tone: flowGain == null ? undefined : flowGain >= 0 ? "pos" : "neg",
       emphasize: true,
+    },
+    {
+      label: "현재 자산 포함",
+      value: withAssetText(),
+      tone: withAsset == null ? undefined : withAsset >= 0 ? "pos" : "neg",
     },
     {
       label: "거래대금",
@@ -460,8 +489,9 @@ function StatsBody({
         <p className="mt-3 text-[11px] text-zinc-600">
           거래 {overall.trades}회 · 기대값 {money(overall.expectancy, true)} · 평균
           보유 {formatDuration(Math.round(overall.avgHoldMinutes))}. 입출금은
-          현금 입출금(원화)과 USDT 입출금을 합친 값입니다. 원화 기록은 USDT로 볼
-          때 그날 업비트 USDT 시세로 바꿉니다.
+          현금 입출금(원화)과 USDT 입출금을 합친 값입니다. 출금은 번 돈, 입금은
+          넣은 돈으로 봅니다. 현재 자산 포함은 출금 + 연결된 거래소 합계 자산 −
+          입금입니다. 원화 기록은 USDT로 볼 때 그날 업비트 USDT 시세로 바꿉니다.
         </p>
         <SideSplit long={overall.long} short={overall.short} />
       </div>
@@ -794,6 +824,7 @@ function DailyPnlCalendar({
   const accounts = useMemo(() => {
     const flowByDay = new Map<string, number>();
     for (const flow of flows) {
+      if (flow.source === "cash") continue;
       const day = flow.entry_date.slice(0, 10);
       const amt = Number(flow.amount_usdt) || 0;
       const net = flow.direction === "out" ? -amt : amt;

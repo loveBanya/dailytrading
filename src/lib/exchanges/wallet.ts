@@ -1,7 +1,7 @@
 import { bybitPrivateGet } from "./bybit-client";
 import { binanceGet } from "./binance";
 import { okxInstToSymbol, okxPrivateGet } from "./okx";
-import type { Exchange } from "./types";
+import { isExchangePaused, type Exchange } from "./types";
 
 export interface WalletCoin {
   coin: string;
@@ -538,10 +538,11 @@ export async function fetchWalletOverview(): Promise<WalletOverview> {
     exchanges.push("okx");
   }
 
+  const active = exchanges.filter((ex) => !isExchangePaused(ex));
   const accounts =
-    exchanges.length === 0
+    active.length === 0
       ? []
-      : await Promise.all(exchanges.map((ex) => loadExchangeAccount(ex)));
+      : await Promise.all(active.map((ex) => loadExchangeAccount(ex)));
 
   const positions = accounts.flatMap((a) => a.positions);
   const wallets = accounts

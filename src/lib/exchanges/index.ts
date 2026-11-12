@@ -1,4 +1,9 @@
-import type { ClosedPosition, Exchange, SyncResult } from "./types";
+import {
+  isExchangePaused,
+  type ClosedPosition,
+  type Exchange,
+  type SyncResult,
+} from "./types";
 import { fetchBybitClosedPositions } from "./bybit";
 import { fetchBinanceClosedPositions } from "./binance";
 import { fetchOkxClosedPositions } from "./okx";
@@ -161,10 +166,18 @@ export async function syncAllExchanges(options?: {
   const results: SyncResult[] = [];
   const exchanges: Exchange[] = [];
 
-  if (process.env.BYBIT_API_KEY && process.env.BYBIT_API_SECRET) {
+  if (
+    !isExchangePaused("bybit") &&
+    process.env.BYBIT_API_KEY &&
+    process.env.BYBIT_API_SECRET
+  ) {
     exchanges.push("bybit");
   }
-  if (process.env.BINANCE_API_KEY && process.env.BINANCE_API_SECRET) {
+  if (
+    !isExchangePaused("binance") &&
+    process.env.BINANCE_API_KEY &&
+    process.env.BINANCE_API_SECRET
+  ) {
     exchanges.push("binance");
   }
   const okxPass = (
@@ -172,13 +185,12 @@ export async function syncAllExchanges(options?: {
     process.env.OKX_API_PASSPHRASE ??
     ""
   ).trim();
-  if (
-    process.env.OKX_API_KEY &&
-    process.env.OKX_API_SECRET &&
-    okxPass
-  ) {
+  const okxKeys = Boolean(process.env.OKX_API_KEY && process.env.OKX_API_SECRET);
+  if (isExchangePaused("okx")) {
+    /* 쉬는 동안은 키가 있어도 부르지 않는다 */
+  } else if (okxKeys && okxPass) {
     exchanges.push("okx");
-  } else if (process.env.OKX_API_KEY && process.env.OKX_API_SECRET && !okxPass) {
+  } else if (okxKeys && !okxPass) {
     results.push({
       exchange: "okx",
       fetched: 0,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Trade } from "@/lib/exchanges/types";
 import type {
   DailyPnl,
@@ -8,10 +8,8 @@ import type {
   MonthlyStat,
   OverallStats,
 } from "@/lib/stats/compute";
-import { dayKeyKst } from "@/lib/stats/compute";
 import type { WalletOverview } from "@/lib/exchanges/wallet";
 import type { FearGreed, MarketTicker } from "@/lib/exchanges/market";
-import { TradeChartCard } from "./TradeChartCard";
 import { SyncButton } from "./SyncButton";
 import { StatsPanels } from "./StatsPanels";
 import { MarketPanel } from "./MarketPanel";
@@ -30,9 +28,10 @@ import { DemandSupplyPanel } from "./screener/DemandSupplyPanel";
 import { EquityCurvePanel } from "./EquityCurvePanel";
 import { fetchFxRate } from "@/lib/fx/client";
 import { ReviewCommentsFeed } from "./ReviewCommentsFeed";
-import { CompoundChallenges } from "./CompoundChallenges";
-import { ChartBacktestPanel } from "./ChartBacktestPanel";
-import { UpbitPanel } from "./UpbitPanel";
+import { GoalsPanel } from "./GoalsPanel";
+import { DailyReviewPanel } from "./DailyReviewPanel";
+import { StockMarketPanel } from "./StockMarketPanel";
+import { TradingGamePanel } from "./TradingGamePanel";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
 import { AlarmToastHost } from "./AlarmToastHost";
 import { AlertsPanel } from "./AlertsPanel";
@@ -59,85 +58,62 @@ import {
   type GoalChallengePrefs,
   type OverviewSectionId,
 } from "@/lib/prefs";
-import { exchangeLabel, statusLabel } from "@/lib/utils/labels";
 import { useRouter } from "next/navigation";
 
 type Tab =
-  | "trades"
   | "review"
-  | "live"
   | "overview"
-  | "chart"
+  | "market"
   | "mindset"
   | "screener"
-  | "screener-watch"
   | "screener-perf"
-  | "demand-supply"
   | "alerts";
-type SortKey = "newest" | "oldest" | "pnl_desc" | "pnl_asc";
-type PeriodMode = "all" | "year" | "month" | "range";
-type RangePreset = "today" | "7d" | "30d" | "custom";
+/** 스크리너 탭 안에서 고르는 화면 */
+type ScreenerView = "demand-supply" | "screener" | "watch";
 
+const SCREENER_VIEW_KEY = "dailytrading.ui.screener.view.v1";
+
+const SCREENER_VIEWS: { id: ScreenerView; label: string }[] = [
+  { id: "demand-supply", label: "수요·공급" },
+  { id: "screener", label: "코인 스크리너" },
+  { id: "watch", label: "지정 평가" },
+];
+
+function loadScreenerView(): ScreenerView {
+  try {
+    const saved = localStorage.getItem(SCREENER_VIEW_KEY);
+    return SCREENER_VIEWS.some((v) => v.id === saved)
+      ? (saved as ScreenerView)
+      : "demand-supply";
+  } catch {
+    return "demand-supply";
+  }
+}
 const TAB_IDS: Tab[] = [
-  "trades",
   "review",
-  "live",
   "overview",
-  "chart",
+  "market",
   "mindset",
-  "demand-supply",
   "screener",
-  "screener-watch",
   "screener-perf",
   "alerts",
 ];
 
 /** 예전에 따로 있던 탭은 합친 탭으로 연다 */
 function migrateTab(saved: string): Tab {
-  if (saved === "cash") return "live";
+  if (saved === "cash" || saved === "live") return "overview";
   if (saved === "posts" || saved === "bookmarks") return "mindset";
-  return (TAB_IDS as string[]).includes(saved) ? (saved as Tab) : "trades";
+  if (saved === "chart") return "overview";
+  if (saved === "demand-supply" || saved === "screener-watch") return "screener";
+  return (TAB_IDS as string[]).includes(saved) ? (saved as Tab) : "review";
 }
 
-const SORT_OPTIONS: { value: SortKey; label: string }[] = [
-  { value: "newest", label: "최신순" },
-  { value: "oldest", label: "오래된순" },
-  { value: "pnl_desc", label: "수익 높은순" },
-  { value: "pnl_asc", label: "수익 낮은순" },
-];
-
-const PERIOD_OPTIONS: { value: PeriodMode; label: string }[] = [
-  { value: "all", label: "전체" },
-  { value: "year", label: "연도별" },
-  { value: "month", label: "월별" },
-  { value: "range", label: "기간별" },
-];
-
-const RANGE_PRESETS: { value: Exclude<RangePreset, "custom">; label: string }[] =
-  [
-    { value: "today", label: "오늘" },
-    { value: "7d", label: "7일" },
-    { value: "30d", label: "한달" },
-  ];
-
-function kstToday(): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
-}
-
-function addDaysKst(yyyyMmDd: string, deltaDays: number): string {
-  const d = new Date(`${yyyyMmDd}T12:00:00+09:00`);
-  d.setUTCDate(d.getUTCDate() + deltaDays);
-  return d.toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
-}
-
-function rangeForPreset(preset: Exclude<RangePreset, "custom">): {
-  from: string;
-  to: string;
-} {
-  const to = kstToday();
-  if (preset === "today") return { from: to, to };
-  if (preset === "7d") return { from: addDaysKst(to, -6), to };
-  return { from: addDaysKst(to, -29), to };
+/** 예전 탭 이름으로 스크리너 탭 안의 화면을 고른다 */
+function screenerViewFromOldTab(saved: string): ScreenerView | null {
+  if (saved === "demand-supply") return "demand-supply";
+  if (saved === "screener-watch") return "watch";
+  if (saved === "screener") return "screener";
+  return null;
 }
 
 function isMissingTable(msg: string | null): boolean {
@@ -149,115 +125,19 @@ function isMissingTable(msg: string | null): boolean {
   );
 }
 
-function sortTrades(list: Trade[], sort: SortKey): Trade[] {
-  const arr = [...list];
-  switch (sort) {
-    case "oldest":
-      return arr.sort(
-        (a, b) =>
-          new Date(a.exit_time).getTime() - new Date(b.exit_time).getTime()
-      );
-    case "pnl_desc":
-      return arr.sort((a, b) => Number(b.pnl) - Number(a.pnl));
-    case "pnl_asc":
-      return arr.sort((a, b) => Number(a.pnl) - Number(b.pnl));
-    case "newest":
-    default:
-      return arr.sort(
-        (a, b) =>
-          new Date(b.exit_time).getTime() - new Date(a.exit_time).getTime()
-      );
-  }
-}
-
-function filterTradesByPeriod(
-  list: Trade[],
-  mode: PeriodMode,
-  year: string,
-  month: string,
-  rangeFrom: string,
-  rangeTo: string
-): Trade[] {
-  if (mode === "all") return list;
-  return list.filter((t) => {
-    const day = dayKeyKst(t.exit_time);
-    if (mode === "year") return year ? day.startsWith(year) : true;
-    if (mode === "month") return month ? day.startsWith(month) : true;
-    if (mode === "range") {
-      if (rangeFrom && day < rangeFrom) return false;
-      if (rangeTo && day > rangeTo) return false;
-      return true;
-    }
-    return true;
-  });
-}
-
-function monthLabel(key: string): string {
-  const [y, m] = key.split("-");
-  return `${y}년 ${Number(m)}월`;
-}
-
-function tradeMatchesSearch(
-  trade: Trade,
-  query: string,
-  commentText: string
-): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-
-  const sideKo = trade.side === "LONG" ? "롱" : "숏";
-  const style = trade.trade_style ?? "";
-  const tags = (trade.tags ?? []).join(" ");
-  const haystack = [
-    trade.symbol,
-    trade.base_asset ?? "",
-    trade.side,
-    sideKo,
-    trade.exchange,
-    exchangeLabel(trade.exchange),
-    trade.status,
-    statusLabel(trade.status),
-    trade.notes ?? "",
-    tags,
-    style,
-    String(trade.pnl ?? ""),
-    String(trade.entry_price ?? ""),
-    String(trade.exit_price ?? ""),
-    commentText,
-    trade.is_review ? "오답노트 오답" : "",
-  ]
-    .join(" ")
-    .toLowerCase();
-
-  return haystack.includes(q);
-}
-
 export function TradeJournal() {
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>("trades");
+  const [tab, setTab] = useState<Tab>("review");
+  const [screenerView, setScreenerView] =
+    useState<ScreenerView>("demand-supply");
   const [tabReady, setTabReady] = useState(false);
-  const [sort, setSort] = useState<SortKey>("newest");
-  const [periodMode, setPeriodMode] = useState<PeriodMode>("all");
-  const [filterYear, setFilterYear] = useState("");
-  const [filterMonth, setFilterMonth] = useState("");
-  const [rangeFrom, setRangeFrom] = useState("");
-  const [rangeTo, setRangeTo] = useState("");
-  const [rangePreset, setRangePreset] = useState<RangePreset>("7d");
   const [trades, setTrades] = useState<Trade[]>([]);
   const [tradesLoading, setTradesLoading] = useState(true);
   const [tradesError, setTradesError] = useState<string | null>(null);
-  const [tradeSearch, setTradeSearch] = useState("");
-  const [cardsExpandedDefault, setCardsExpandedDefault] = useState(true);
-  const [cardOpenOverrides, setCardOpenOverrides] = useState<
-    Record<string, boolean>
-  >({});
-  const [commentTextByTrade, setCommentTextByTrade] = useState<
-    Record<string, string>
-  >({});
   const seenTradeIds = useRef<Set<string> | null>(null);
   const seenPositionKeys = useRef<Set<string> | null>(null);
   const [alertUnread, setAlertUnread] = useState(0);
-  const [highlightTradeId, setHighlightTradeId] = useState<string | null>(
+  const [reviewFocus, setReviewFocus] = useState<{ id: string; nonce: number } | null>(
     null
   );
   const [goalUsdt, setGoalUsdt] = useState<number | null>(null);
@@ -283,16 +163,19 @@ export function TradeJournal() {
   }, []);
 
   useEffect(() => {
-    setTab(
-      migrateTab(
-        loadSavedTab<string>("trades", [
-          ...TAB_IDS,
-          "cash",
-          "posts",
-          "bookmarks",
-        ])
-      )
-    );
+    const savedTab = loadSavedTab<string>("review", [
+      ...TAB_IDS,
+      "trades",
+      "live",
+      "cash",
+      "posts",
+      "bookmarks",
+      "chart",
+      "demand-supply",
+      "screener-watch",
+    ]);
+    setTab(migrateTab(savedTab));
+    setScreenerView(screenerViewFromOldTab(savedTab) ?? loadScreenerView());
     setOverviewOrder(loadOverviewOrder());
     setGoalPrefs(loadGoalChallenge());
     setTabReady(true);
@@ -302,6 +185,15 @@ export function TradeJournal() {
     if (!tabReady) return;
     saveTab(tab);
   }, [tab, tabReady]);
+
+  useEffect(() => {
+    if (!tabReady) return;
+    try {
+      localStorage.setItem(SCREENER_VIEW_KEY, screenerView);
+    } catch {
+      /* ignore */
+    }
+  }, [screenerView, tabReady]);
 
   useEffect(() => {
     if (!tabReady) return;
@@ -351,26 +243,23 @@ export function TradeJournal() {
   }
 
   const goToAlarmTab = useCallback((target: AlarmTargetTab | Tab) => {
+    if (target === "live") {
+      setTab("overview");
+      return;
+    }
+    if (target === "trades") {
+      setTab("review");
+      return;
+    }
     if ((TAB_IDS as string[]).includes(target)) {
+      if (target === "screener") setScreenerView("screener");
       setTab(target as Tab);
     }
   }, []);
 
   const focusTrade = useCallback((tradeId: string) => {
-    setPeriodMode("all");
-    setTradeSearch("");
-    setTab("trades");
-    setCardsExpandedDefault(false);
-    setCardOpenOverrides({ [tradeId]: true });
-    setHighlightTradeId(tradeId);
-    window.setTimeout(() => {
-      document
-        .getElementById(`trade-${tradeId}`)
-        ?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 280);
-    window.setTimeout(() => {
-      setHighlightTradeId((cur) => (cur === tradeId ? null : cur));
-    }, 4000);
+    setTab("review");
+    setReviewFocus({ id: tradeId, nonce: Date.now() });
   }, []);
 
   useEffect(() => {
@@ -403,7 +292,7 @@ export function TradeJournal() {
     setTradesLoading(true);
     setTradesError(null);
     try {
-      const res = await fetch(`/api/trades?limit=200&sort=${sort}`);
+      const res = await fetch("/api/trades?limit=200&sort=newest");
       const data = (await res.json()) as { trades?: Trade[]; error?: string };
       let list: Trade[] = [];
       if (data.error) {
@@ -415,7 +304,10 @@ export function TradeJournal() {
             error?: string;
           };
           if (data2.error) throw new Error(data2.error);
-          list = sortTrades(data2.trades ?? [], sort);
+          list = [...(data2.trades ?? [])].sort(
+            (a, b) =>
+              new Date(b.exit_time).getTime() - new Date(a.exit_time).getTime()
+          );
         } else {
           throw new Error(data.error);
         }
@@ -436,7 +328,7 @@ export function TradeJournal() {
     } finally {
       setTradesLoading(false);
     }
-  }, [sort]);
+  }, []);
 
   const loadStats = useCallback(async () => {
     setStatsLoading(true);
@@ -511,37 +403,9 @@ export function TradeJournal() {
     }
   }, []);
 
-  const loadCommentIndex = useCallback(async () => {
-    try {
-      const res = await fetch("/api/trades/comments");
-      const data = (await res.json()) as {
-        comments?: { trade_id: string; body: string }[];
-        error?: string;
-      };
-      if (data.error) return;
-      const map: Record<string, string[]> = {};
-      for (const c of data.comments ?? []) {
-        (map[c.trade_id] ??= []).push(c.body);
-      }
-      setCommentTextByTrade(
-        Object.fromEntries(
-          Object.entries(map).map(([id, bodies]) => [id, bodies.join("\n")])
-        )
-      );
-    } catch {
-      /* 검색 보조 — 실패해도 매매 목록은 유지 */
-    }
-  }, []);
-
   const refreshAll = useCallback(async () => {
-    await Promise.all([
-      loadTrades(),
-      loadStats(),
-      loadWallet(),
-      loadMarket(),
-      loadCommentIndex(),
-    ]);
-  }, [loadTrades, loadStats, loadWallet, loadMarket, loadCommentIndex]);
+    await Promise.all([loadTrades(), loadStats(), loadWallet(), loadMarket()]);
+  }, [loadTrades, loadStats, loadWallet, loadMarket]);
 
   useEffect(() => {
     void refreshAll();
@@ -553,106 +417,7 @@ export function TradeJournal() {
     return () => clearInterval(id);
   }, [loadWallet]);
 
-  const positions = walletOverview?.positions ?? [];
-  const positionCount = positions.length;
   const dbHint = isMissingTable(tradesError) || isMissingTable(statsError);
-
-  const reviewTrades = useMemo(
-    () =>
-      trades.filter(
-        (t) => t.is_review || (t.tags ?? []).includes("오답노트")
-      ),
-    [trades]
-  );
-
-  const yearOptions = useMemo(() => {
-    const set = new Set(trades.map((t) => dayKeyKst(t.exit_time).slice(0, 4)));
-    return [...set].sort((a, b) => b.localeCompare(a));
-  }, [trades]);
-
-  const monthOptions = useMemo(() => {
-    const set = new Set(trades.map((t) => dayKeyKst(t.exit_time).slice(0, 7)));
-    return [...set].sort((a, b) => b.localeCompare(a));
-  }, [trades]);
-
-  useEffect(() => {
-    if (periodMode === "year" && !filterYear && yearOptions[0]) {
-      setFilterYear(yearOptions[0]);
-    }
-    if (periodMode === "month" && !filterMonth && monthOptions[0]) {
-      setFilterMonth(monthOptions[0]);
-    }
-  }, [periodMode, filterYear, filterMonth, yearOptions, monthOptions]);
-
-  const baseList = tab === "review" ? reviewTrades : trades;
-  const filtered = useMemo(
-    () =>
-      filterTradesByPeriod(
-        baseList,
-        periodMode,
-        filterYear,
-        filterMonth,
-        rangeFrom,
-        rangeTo
-      ),
-    [baseList, periodMode, filterYear, filterMonth, rangeFrom, rangeTo]
-  );
-  const searched = useMemo(
-    () =>
-      filtered.filter((t) =>
-        tradeMatchesSearch(t, tradeSearch, commentTextByTrade[t.id] ?? "")
-      ),
-    [filtered, tradeSearch, commentTextByTrade]
-  );
-  const displayed = useMemo(
-    () => sortTrades(searched, sort),
-    [searched, sort]
-  );
-
-  function isCardOpen(tradeId: string) {
-    return cardOpenOverrides[tradeId] ?? cardsExpandedDefault;
-  }
-
-  function expandAllCards() {
-    setCardsExpandedDefault(true);
-    setCardOpenOverrides({});
-  }
-
-  function collapseAllCards() {
-    setCardsExpandedDefault(false);
-    setCardOpenOverrides({});
-  }
-
-  function applyRangePreset(preset: Exclude<RangePreset, "custom">) {
-    const { from, to } = rangeForPreset(preset);
-    setRangeFrom(from);
-    setRangeTo(to);
-    setRangePreset(preset);
-  }
-
-  function selectPeriodMode(mode: PeriodMode) {
-    setPeriodMode(mode);
-    if (mode === "range") {
-      applyRangePreset(rangePreset === "custom" ? "7d" : rangePreset);
-    }
-  }
-
-  const periodSummary = useMemo(() => {
-    if (periodMode === "all") return "전체 기간";
-    if (periodMode === "year") return filterYear ? `${filterYear}년` : "연도 선택";
-    if (periodMode === "month")
-      return filterMonth ? monthLabel(filterMonth) : "월 선택";
-    if (periodMode === "range") {
-      const presetLabel =
-        RANGE_PRESETS.find((p) => p.value === rangePreset)?.label ?? "직접 지정";
-      if (!rangeFrom && !rangeTo) return "기간 선택";
-      return `${presetLabel} · ${rangeFrom || "…"} ~ ${rangeTo || "…"}`;
-    }
-    return "";
-  }, [periodMode, filterYear, filterMonth, rangeFrom, rangeTo, rangePreset]);
-
-  const sortLabel =
-    SORT_OPTIONS.find((o) => o.value === sort)?.label ?? "최신순";
 
   function handleTradeUpdated(updated: Trade) {
     setTrades((prev) =>
@@ -692,7 +457,6 @@ export function TradeJournal() {
             onSynced={() => {
               void loadTrades();
               void loadStats();
-              void loadCommentIndex();
             }}
           />
           <button
@@ -738,14 +502,10 @@ export function TradeJournal() {
       <nav className="pretty-scroll mb-4 flex gap-1 overflow-x-auto border-b border-zinc-800 pb-px">
         {(
           [
-            ["trades", "매매 기록"],
-            ["review", "오답노트"],
-            ["live", "실시간·입출금"],
+            ["review", "매매 복기"],
             ["overview", "한눈에"],
-            ["chart", "차트"],
-            ["demand-supply", "수요·공급"],
-            ["screener", "코인 스크리너"],
-            ["screener-watch", "지정 평가"],
+            ["market", "시장 현황"],
+            ["screener", "스크리너"],
             ["screener-perf", "스크리너 성과"],
             ["alerts", "알림"],
             ["mindset", "마인드·글"],
@@ -757,262 +517,62 @@ export function TradeJournal() {
             onClick={() => setTab(id as Tab)}
             className={`-mb-px shrink-0 border-b-2 px-4 py-2.5 text-sm transition ${
               tab === id
-                ? id === "demand-supply"
-                  ? "border-amber-500 text-amber-300"
-                  : "border-emerald-500 text-emerald-400"
-                : id === "demand-supply"
-                  ? "border-transparent text-amber-500/70 hover:text-amber-300"
-                  : "border-transparent text-zinc-500 hover:text-zinc-300"
+                ? "border-emerald-500 text-emerald-400"
+                : "border-transparent text-zinc-500 hover:text-zinc-300"
             }`}
           >
             {label}
-            {id === "trades" && trades.length > 0 ? ` (${trades.length})` : ""}
-            {id === "review" && reviewTrades.length > 0
-              ? ` (${reviewTrades.length})`
-              : ""}
-            {id === "live" && positionCount > 0
-              ? ` (${positionCount})`
-              : ""}
+            {id === "review" && trades.length > 0 ? ` (${trades.length})` : ""}
             {id === "alerts" && alertUnread > 0 ? ` (${alertUnread})` : ""}
           </button>
         ))}
       </nav>
 
       {tab === "review" && (
-        <ReviewCommentsFeed trades={trades} onOpenTrade={focusTrade} />
-      )}
-
-      {(tab === "trades" || tab === "review") && (
-        <div className="mb-4 space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            {PERIOD_OPTIONS.map((o) => (
-              <button
-                key={o.value}
-                type="button"
-                onClick={() => selectPeriodMode(o.value)}
-                className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
-                  periodMode === o.value
-                    ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300"
-                    : "border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                {o.label}
-              </button>
-            ))}
-
-            {periodMode === "year" && (
-              <select
-                value={filterYear}
-                onChange={(e) => setFilterYear(e.target.value)}
-                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 outline-none focus:border-emerald-500/50"
-              >
-                {yearOptions.length === 0 && (
-                  <option value="">연도 없음</option>
-                )}
-                {yearOptions.map((y) => (
-                  <option key={y} value={y}>
-                    {y}년
-                  </option>
-                ))}
-              </select>
-            )}
-
-            {periodMode === "month" && (
-              <select
-                value={filterMonth}
-                onChange={(e) => setFilterMonth(e.target.value)}
-                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 outline-none focus:border-emerald-500/50"
-              >
-                {monthOptions.length === 0 && (
-                  <option value="">월 없음</option>
-                )}
-                {monthOptions.map((m) => (
-                  <option key={m} value={m}>
-                    {monthLabel(m)}
-                  </option>
-                ))}
-              </select>
-            )}
-
-            {periodMode === "range" && (
-              <div className="flex flex-wrap items-center gap-2">
-                {RANGE_PRESETS.map((p) => (
-                  <button
-                    key={p.value}
-                    type="button"
-                    onClick={() => applyRangePreset(p.value)}
-                    className={`rounded-md border px-2.5 py-1.5 text-xs font-medium transition ${
-                      rangePreset === p.value
-                        ? "border-sky-500/50 bg-sky-500/10 text-sky-300"
-                        : "border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300"
-                    }`}
-                  >
-                    {p.label}
-                  </button>
-                ))}
-                <input
-                  type="date"
-                  value={rangeFrom}
-                  onChange={(e) => {
-                    setRangeFrom(e.target.value);
-                    setRangePreset("custom");
-                    if (!rangeTo) setRangeTo(kstToday());
-                  }}
-                  className="rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-200 outline-none focus:border-emerald-500/50"
-                />
-                <span className="text-xs text-zinc-600">~</span>
-                <input
-                  type="date"
-                  value={rangeTo}
-                  onChange={(e) => {
-                    setRangeTo(e.target.value || kstToday());
-                    setRangePreset("custom");
-                  }}
-                  className="rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-200 outline-none focus:border-emerald-500/50"
-                />
-              </div>
-            )}
-
-            <div className="ml-auto flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={expandAllCards}
-                className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
-              >
-                전체펼치기
-              </button>
-              <button
-                type="button"
-                onClick={collapseAllCards}
-                className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
-              >
-                전체접기
-              </button>
-              <select
-                value={sort}
-                onChange={(e) => setSort(e.target.value as SortKey)}
-                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 outline-none focus:border-emerald-500/50"
-              >
-                {SORT_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="relative">
-            <input
-              type="search"
-              value={tradeSearch}
-              onChange={(e) => setTradeSearch(e.target.value)}
-              placeholder="검색: 코인, 롱/숏, 댓글, 원칙/뇌동, 오답…"
-              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-emerald-500/50"
-            />
-            {tradeSearch.trim() && (
-              <button
-                type="button"
-                onClick={() => setTradeSearch("")}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-zinc-500 hover:text-zinc-300"
-              >
-                지우기
-              </button>
-            )}
-          </div>
-
-          <p className="text-xs text-zinc-500">
-            {periodSummary}
-            {" · "}
-            <span className="text-zinc-300">{displayed.length}건</span>
-            {tradeSearch.trim() && filtered.length !== displayed.length
-              ? ` (검색 전 ${filtered.length}건)`
-              : periodMode !== "all" && baseList.length !== filtered.length
-                ? ` (전체 ${baseList.length}건 중)`
-                : ""}
-            {" · "}
-            정렬 <span className="text-zinc-300">{sortLabel}</span>
-            {tab === "review" &&
-              " · 위 댓글 모아보기 + 오답노트 지정 매매"}
-            {" · "}
-            <span className="text-zinc-600">청산일 KST 기준</span>
-          </p>
-        </div>
-      )}
-
-      {(tab === "trades" || tab === "review") && (
-        <div className="space-y-8">
-          {tradesLoading && (
+        <div className="space-y-6">
+          {tradesLoading && trades.length === 0 && (
             <p className="py-16 text-center text-sm text-zinc-500">
               매매 기록을 불러오는 중…
             </p>
           )}
-
           {tradesError && (
             <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-5 text-sm text-amber-200">
               <p className="font-medium">매매 기록을 불러올 수 없습니다</p>
               <p className="mt-2 text-amber-200/70">{tradesError}</p>
             </div>
           )}
-
-          {!tradesLoading && !tradesError && displayed.length === 0 && (
-            <div className="rounded-lg border border-dashed border-zinc-700 p-10 text-center">
-              <p className="text-zinc-300">
-                {tradeSearch.trim()
-                  ? "검색 결과가 없습니다"
-                  : tab === "review"
-                    ? periodMode !== "all" && reviewTrades.length > 0
-                      ? "선택한 기간에 오답노트가 없습니다"
-                      : "오답노트에 지정된 매매가 없습니다"
-                    : periodMode !== "all" && trades.length > 0
-                      ? "선택한 기간에 매매 기록이 없습니다"
-                      : "아직 기록된 매매가 없습니다"}
-              </p>
-              <p className="mt-2 text-sm text-zinc-500">
-                {tradeSearch.trim()
-                  ? "다른 키워드로 검색하거나 검색어를 지워보세요."
-                  : tab === "review"
-                    ? "매매 기록에서 「오답노트 지정」을 눌러 추가하세요."
-                    : periodMode !== "all" && trades.length > 0
-                      ? "기간 필터를 「전체」로 바꾸거나 다른 월/연도를 선택하세요."
-                      : "「거래소 동기화」로 기록을 가져오세요."}
-              </p>
-            </div>
-          )}
-
-          {displayed.map((trade) => (
-            <TradeChartCard
-              key={trade.id}
-              trade={trade}
-              open={isCardOpen(trade.id)}
-              highlighted={highlightTradeId === trade.id}
-              onOpenChange={(next) =>
-                setCardOpenOverrides((prev) => ({ ...prev, [trade.id]: next }))
-              }
+          {!(tradesLoading && trades.length === 0) && !tradesError && (
+            <DailyReviewPanel
+              trades={trades}
+              fx={goalPrefs.fxRate > 0 ? goalPrefs.fxRate : 1350}
+              lossLimitUsdt={goalPrefs.gameLossLimitUsdt}
+              focus={reviewFocus}
               onUpdated={handleTradeUpdated}
-              onCommentsMutated={() => void loadCommentIndex()}
             />
-          ))}
+          )}
+          <details className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+            <summary className="cursor-pointer text-sm text-zinc-400">
+              댓글 모아보기 · 누르면 그 매매 카드로 갑니다
+            </summary>
+            <div className="mt-3">
+              <ReviewCommentsFeed trades={trades} onOpenTrade={focusTrade} />
+            </div>
+          </details>
         </div>
       )}
 
-      {tab === "live" && (
+      {tab === "market" && (
         <div className="space-y-6">
-          <div className="space-y-4">
-            <CollapsiblePositions
-              overview={walletOverview}
-              loading={walletLoading}
-              error={walletError}
-              defaultOpen
-              walletFollow={goalPrefs.walletFollow}
-            />
-            <p className="text-xs text-zinc-600">60초마다 자동 갱신됩니다.</p>
-          </div>
-          <Section title="업비트 (1회 동기화 → DB)">
-            <UpbitPanel />
+          <Section title="주식 · 코스피">
+            <StockMarketPanel />
           </Section>
-          <Section title="현금 입출금 (KRW)">
-            <CashLedgerPanel />
+          <Section title="코인 시장">
+            <MarketPanel
+              tickers={tickers}
+              fearGreed={fearGreed}
+              loading={marketLoading}
+              error={marketError}
+            />
           </Section>
         </div>
       )}
@@ -1021,7 +581,7 @@ export function TradeJournal() {
         <div className="space-y-6">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-zinc-600">
-              복리 목표를 우선하고, 섹션 순서는 아래에서 바꿀 수 있습니다.
+              목표를 우선하고, 섹션 순서는 아래에서 바꿀 수 있습니다.
             </p>
             <button
               type="button"
@@ -1083,8 +643,8 @@ export function TradeJournal() {
           {overviewOrder.map((id) => {
             if (id === "monthly_goal") {
               return (
-                <Section key={id} title="복리 목표">
-                  <CompoundChallenges
+                <Section key={id} title="목표">
+                  <GoalsPanel
                     prefs={goalPrefs}
                     onPrefsChange={patchGoalPrefs}
                     wallet={walletOverview}
@@ -1139,15 +699,21 @@ export function TradeJournal() {
                 </Section>
               );
             }
-            if (id === "market") {
+            if (id === "game") {
               return (
-                <Section key={id} title="현재 시장">
-                  <MarketPanel
-                    tickers={tickers}
-                    fearGreed={fearGreed}
-                    loading={marketLoading}
-                    error={marketError}
+                <Section key={id} title="트레이딩 게임">
+                  <TradingGamePanel
+                    trades={trades}
+                    prefs={goalPrefs}
+                    onPrefsChange={patchGoalPrefs}
                   />
+                </Section>
+              );
+            }
+            if (id === "cash") {
+              return (
+                <Section key={id} title="현금 입출금 (KRW)">
+                  <CashLedgerPanel />
                 </Section>
               );
             }
@@ -1168,28 +734,42 @@ export function TradeJournal() {
         </div>
       )}
 
-      {tab === "chart" && (
-        <Section title="차트">
-          <ChartBacktestPanel />
-        </Section>
-      )}
-
-      {tab === "demand-supply" && (
-        <Section title="수요·공급 (고수요·저공급)">
-          <DemandSupplyPanel />
-        </Section>
-      )}
-
       {tab === "screener" && (
-        <Section title="코인 스크리너">
-          <ScreenerPanel />
-        </Section>
-      )}
-
-      {tab === "screener-watch" && (
-        <Section title="지정 종목 평가">
-          <WatchEvaluatePanel />
-        </Section>
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-1.5">
+            {SCREENER_VIEWS.map((view) => (
+              <button
+                key={view.id}
+                type="button"
+                onClick={() => setScreenerView(view.id)}
+                className={`rounded-full border px-3.5 py-1.5 text-sm transition ${
+                  screenerView === view.id
+                    ? view.id === "demand-supply"
+                      ? "border-amber-500/60 bg-amber-500/15 text-amber-200"
+                      : "border-emerald-500/60 bg-emerald-500/15 text-emerald-200"
+                    : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {view.label}
+              </button>
+            ))}
+          </div>
+          {screenerView === "demand-supply" && (
+            <Section title="수요·공급 (고수요·저공급)">
+              <DemandSupplyPanel />
+            </Section>
+          )}
+          {screenerView === "screener" && (
+            <Section title="코인 스크리너">
+              <ScreenerPanel />
+            </Section>
+          )}
+          {screenerView === "watch" && (
+            <Section title="지정 종목 평가">
+              <WatchEvaluatePanel />
+            </Section>
+          )}
+        </div>
       )}
 
       {tab === "screener-perf" && (

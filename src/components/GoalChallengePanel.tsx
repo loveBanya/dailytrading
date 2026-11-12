@@ -565,7 +565,7 @@ export function GoalChallengePanel({
   );
 }
 
-function MonthHitCalendar({
+export function MonthHitCalendar({
   monthKey,
   hits,
   today,

@@ -175,20 +175,24 @@ export function CashLedgerPanel() {
       </p>
 
       <div className="grid grid-cols-3 gap-3">
-        <SumBox label="총 입금" value={won(totals.deposit) || "₩0"} tone="pos" />
         <SumBox
-          label="총 출금"
-          value={won(totals.withdrawal) || "₩0"}
+          label="총 입금 (넣은 돈)"
+          value={won(totals.deposit) || "₩0"}
           tone="neg"
         />
         <SumBox
-          label="순유입 (입−출)"
+          label="총 출금 (뺀 돈)"
+          value={won(totals.withdrawal) || "₩0"}
+          tone="pos"
+        />
+        <SumBox
+          label="손익 (출금−입금)"
           value={
             totals.net === 0
               ? "₩0"
-              : `${totals.net < 0 ? "-" : ""}₩${Math.abs(Math.round(totals.net)).toLocaleString("ko-KR")}`
+              : `${-totals.net < 0 ? "-" : "+"}₩${Math.abs(Math.round(totals.net)).toLocaleString("ko-KR")}`
           }
-          tone={totals.net >= 0 ? "pos" : "neg"}
+          tone={-totals.net >= 0 ? "pos" : "neg"}
         />
       </div>
 

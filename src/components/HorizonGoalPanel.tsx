@@ -18,9 +18,9 @@ interface HorizonGoalPanelProps {
 
 type Currency = "usdt" | "krw";
 type PaceTab = "day" | "week" | "month";
-type PaceMode = "flat" | "rate";
+export type PaceMode = "flat" | "rate";
 
-interface Milestone {
+export interface Milestone {
   date: string;
   label: string;
   expectedUsdt: number;
@@ -49,19 +49,19 @@ function kstToday(): string {
 }
 
 /** from·to 포함 남은 일수 (오늘 포함) */
-function daysLeftInclusive(from: string, to: string): number {
+export function daysLeftInclusive(from: string, to: string): number {
   const a = new Date(`${from}T00:00:00+09:00`).getTime();
   const b = new Date(`${to}T00:00:00+09:00`).getTime();
   return Math.max(0, Math.floor((b - a) / 86_400_000) + 1);
 }
 
-function addDaysKst(yyyyMmDd: string, delta: number): string {
+export function addDaysKst(yyyyMmDd: string, delta: number): string {
   const d = new Date(`${yyyyMmDd}T12:00:00+09:00`);
   d.setDate(d.getDate() + delta);
   return d.toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
 }
 
-function cmpDate(a: string, b: string): number {
+export function cmpDate(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
@@ -69,7 +69,7 @@ function cmpDate(a: string, b: string): number {
  * 복리: current * (1+r)^days = target
  * r = (target/current)^(1/days) - 1
  */
-function compoundDailyRate(
+export function compoundDailyRate(
   current: number,
   target: number,
   days: number
@@ -100,7 +100,7 @@ function weekEndSunday(yyyyMmDd: string): string {
   return addDaysKst(yyyyMmDd, add);
 }
 
-function monthEnd(yyyyMmDd: string): string {
+export function monthEnd(yyyyMmDd: string): string {
   const [y, m] = yyyyMmDd.split("-").map(Number);
   const dim = new Date(y, m, 0).getDate();
   return `${y}-${String(m).padStart(2, "0")}-${String(dim).padStart(2, "0")}`;
@@ -113,7 +113,7 @@ function nextMonthStart(yyyyMmDd: string): string {
   return `${ny}-${String(nm).padStart(2, "0")}-01`;
 }
 
-function shortDate(yyyyMmDd: string): string {
+export function shortDate(yyyyMmDd: string): string {
   const [, m, d] = yyyyMmDd.split("-");
   return `${Number(m)}/${Number(d)}`;
 }
@@ -141,7 +141,7 @@ function pushMilestone(
   return expected;
 }
 
-function buildDayMilestones(
+export function buildDayMilestones(
   start: string,
   deadline: string,
   today: string,
@@ -194,7 +194,7 @@ function milestoneLabel(
   return mark ? `${shortDate(cursor)} ${mark}` : shortDate(cursor);
 }
 
-function buildWeekMilestones(
+export function buildWeekMilestones(
   start: string,
   deadline: string,
   today: string,
@@ -236,7 +236,7 @@ function buildWeekMilestones(
   return out;
 }
 
-function buildMonthMilestones(
+export function buildMonthMilestones(
   start: string,
   deadline: string,
   today: string,
@@ -275,7 +275,7 @@ function buildMonthMilestones(
   return out;
 }
 
-function measurePace(
+export function measurePace(
   daily: DailyPnl[],
   from: string,
   to: string,

@@ -1,4 +1,12 @@
 export type Exchange = "bybit" | "binance" | "okx";
+
+/** 당분간 안 쓰는 거래소. 지갑·포지션·동기화에서 뺀다. 지난 매매 기록은 그대로 남는다. */
+export const PAUSED_EXCHANGES: readonly Exchange[] = ["bybit", "okx"];
+
+export function isExchangePaused(exchange: Exchange): boolean {
+  return PAUSED_EXCHANGES.includes(exchange);
+}
+
 export type TradeSide = "LONG" | "SHORT";
 export type TradeStatus = "TP" | "SL" | "CLOSED" | "LIQUIDATED";
 
@@ -49,6 +57,8 @@ export interface Trade {
   trade_style?: "원칙" | "뇌동" | null;
   /** 댓글+답글 수 (목록 API에서 부착) */
   comment_count?: number;
+  /** 거래소 원본. 바이낸스는 fillCount(청산 체결 수)가 들어 있다 */
+  raw?: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 }

@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   AreaSeries,
   ColorType,
+  LineSeries,
+  LineType,
   createChart,
   type IChartApi,
   type ISeriesApi,
@@ -140,11 +142,21 @@ export function EquityCurvePanel({
   const flowByDay = useMemo(() => {
     const map = new Map<string, number>();
     for (const f of flows) {
+      if (f.source === "cash") continue;
       const d = f.entry_date.slice(0, 10);
       map.set(d, (map.get(d) ?? 0) + flowNet(f));
     }
     return map;
   }, [flows]);
+
+  const cashFlows = useMemo(
+    () =>
+      flows
+        .filter((f) => f.source === "cash")
+        .map((f) => ({ day: f.entry_date.slice(0, 10), net: flowNet(f) }))
+        .sort((a, b) => a.day.localeCompare(b.day)),
+    [flows]
+  );
 
   const coinHoldings = useMemo(() => {
     const map = new Map<string, number>();
@@ -210,6 +222,32 @@ export function EquityCurvePanel({
     return points;
   }, [daily, flowByDay, liveEquity, liveUpl, totalPnl]);
 
+  const depositLine = useMemo(() => {
+    if (series.length === 0 || cashFlows.length === 0) {
+      return [] as { time: number; value: number }[];
+    }
+    const firstTime = series[0]!.time;
+    const lastTime = series[series.length - 1]!.time;
+    let running = 0;
+    const byTime = new Map<number, number>();
+    for (const flow of cashFlows) {
+      running += flow.net;
+      const time = Math.max(dayToUtcSec(flow.day), firstTime);
+      byTime.set(time, running);
+    }
+    const before = [...byTime.entries()].filter(([t]) => t <= firstTime);
+    const start = before.length > 0 ? before[before.length - 1]![1] : 0;
+    const out = [{ time: firstTime, value: start }];
+    for (const [time, value] of [...byTime.entries()].sort((a, b) => a[0] - b[0])) {
+      if (time <= firstTime) continue;
+      out.push({ time, value });
+    }
+    if (out[out.length - 1]!.time < lastTime) {
+      out.push({ time: lastTime, value: out[out.length - 1]!.value });
+    }
+    return out.map((p) => ({ ...p, value: Number(p.value.toFixed(2)) }));
+  }, [cashFlows, series]);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el || series.length === 0) return;
@@ -249,6 +287,7 @@ export function EquityCurvePanel({
       bottomColor: "rgba(52, 211, 153, 0.02)",
       lineWidth: 2,
       priceLineVisible: false,
+      crosshairMarkerVisible: false,
     });
     seriesRef.current = area;
 
@@ -258,6 +297,25 @@ export function EquityCurvePanel({
         value: p.value,
       }))
     );
+
+    if (depositLine.length > 1) {
+      const deposits = chart.addSeries(LineSeries, {
+        color: "#fb7185",
+        lineWidth: 2,
+        lineStyle: 2,
+        lineType: LineType.WithSteps,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        crosshairMarkerVisible: false,
+        title: "넣은 돈",
+      });
+      deposits.setData(
+        depositLine.map((p) => ({
+          time: p.time as UTCTimestamp,
+          value: p.value,
+        }))
+      );
+    }
 
     if (liveEquity != null && Number.isFinite(liveEquity)) {
       area.createPriceLine({
@@ -282,44 +340,89 @@ export function EquityCurvePanel({
     }
 
     chart.timeScale().fitContent();
+    const refit = new ResizeObserver(() => {
+      chart.timeScale().fitContent();
+      setHover(null);
+    });
+    refit.observe(el);
 
     return () => {
+      refit.disconnect();
       chartRef.current = null;
       seriesRef.current = null;
       chart.remove();
     };
-  }, [series, liveEquity, goalUsdt, currency, fxRate]);
+  }, [series, depositLine, liveEquity, goalUsdt, currency, fxRate]);
 
   function onChartMove(event: MouseEvent<HTMLDivElement>) {
     const root = containerRef.current;
     const chart = chartRef.current;
     const area = seriesRef.current;
-    if (!root || !chart || !area) return;
+    if (!root || !chart || !area || series.length === 0) return;
     const pane = root.querySelector("canvas");
     if (!pane) return;
     const host = root.getBoundingClientRect();
     const rect = pane.getBoundingClientRect();
-    const localX = event.clientX - rect.left;
-    const localY = event.clientY - rect.top;
-    if (localX < 0 || localY < 0 || localX > rect.width || localY > rect.height) {
+    // 페이지에 CSS zoom 이 걸리면 마우스(화면 픽셀)와 차트 좌표가 어긋난다.
+    // 브라우저마다 getBoundingClientRect 가 zoom 을 반영하기도, 안 하기도 한다.
+    let zoom = 1;
+    for (let el: HTMLElement | null = pane; el; el = el.parentElement) {
+      const z = Number.parseFloat(getComputedStyle(el).zoom);
+      if (Number.isFinite(z) && z > 0) zoom *= z;
+    }
+    const scale = pane.offsetWidth > 0 ? rect.width / pane.offsetWidth : 1;
+    const toScreen = zoom / scale;
+    const paneW = rect.width / scale;
+    const paneH = rect.height / scale;
+    const localX = (event.clientX - rect.left * toScreen) / zoom;
+    const localY = (event.clientY - rect.top * toScreen) / zoom;
+    if (localX < 0 || localY < 0 || localX > paneW || localY > paneH) {
       setHover(null);
       return;
     }
-    const price = area.coordinateToPrice(localY);
-    const time = chart.timeScale().coordinateToTime(localX);
-    const day = typeof time === "number" ? formatUtcDay(time) : "—";
-    const priceText =
-      price == null ? "—" : formatDisplayMoney(price, currency, fxRate);
-    const paneLeft = rect.left - host.left;
-    const paneTop = rect.top - host.top;
+
+    const timeScale = chart.timeScale();
+    let best: { time: number; value: number; x: number } | null = null;
+    for (const point of series) {
+      const x = timeScale.timeToCoordinate(point.time as UTCTimestamp);
+      if (x == null) continue;
+      if (!best || Math.abs(x - localX) < Math.abs(best.x - localX)) {
+        best = { ...point, x };
+      }
+    }
+    if (!best) {
+      setHover(null);
+      return;
+    }
+    const y = area.priceToCoordinate(best.value);
+    if (y == null) {
+      setHover(null);
+      return;
+    }
+
+    let deposit: number | null = null;
+    for (const point of depositLine) {
+      if (point.time > best.time) break;
+      deposit = point.value;
+    }
+    const parts = [
+      formatUtcDay(best.time),
+      `자산 ${formatDisplayMoney(best.value, currency, fxRate)}`,
+    ];
+    if (deposit != null) {
+      parts.push(`넣은 돈 ${formatDisplayMoney(deposit, currency, fxRate)}`);
+    }
+
+    const paneLeft = (rect.left - host.left) / scale - root.clientLeft;
+    const paneTop = (rect.top - host.top) / scale - root.clientTop;
     setHover({
-      x: paneLeft + localX,
-      y: paneTop + localY,
+      x: paneLeft + best.x,
+      y: paneTop + y,
       paneLeft,
       paneTop,
-      paneW: rect.width,
-      paneH: rect.height,
-      label: `${day}  ${priceText}`,
+      paneW,
+      paneH,
+      label: parts.join("  ·  "),
     });
   }
 
@@ -334,8 +437,9 @@ export function EquityCurvePanel({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-zinc-500">
-          파란 점선=현재
-          {goalUsdt != null ? " · 노란 점선=이번 달 월말 목표 자산" : ""}. 환율은
+          초록=거래 손익으로 되돌린 자산 · 파란 점선=현재
+          {goalUsdt != null ? " · 노란 점선=이번 달 월말 목표 자산" : ""}
+          {depositLine.length > 1 ? " · 빨간 점선=넣은 돈 누적(입금−출금)" : ""}. 환율은
           업비트 USDT 시세({fxRate.toLocaleString("ko-KR")}원)입니다. 십자선은
           마우스 위치에 맞춥니다.
         </p>
@@ -366,20 +470,20 @@ export function EquityCurvePanel({
           <p className="text-[11px] tabular-nums text-zinc-600">{showAlt(totalPnl)}</p>
         </div>
         <div>
-          <p className="text-[11px] text-zinc-500">순유입</p>
+          <p className="text-[11px] text-zinc-500">입출금 손익 (출금−입금)</p>
           <p
             className={`font-semibold tabular-nums ${
-              netExternalAll >= 0 ? "text-emerald-400" : "text-rose-400"
+              -netExternalAll >= 0 ? "text-emerald-400" : "text-rose-400"
             }`}
           >
             {currency === "krw"
-              ? formatDisplayMoney(netExternalKrw, "krw", 1, true)
-              : show(netExternalAll, true)}
+              ? formatDisplayMoney(-netExternalKrw, "krw", 1, true)
+              : show(-netExternalAll, true)}
           </p>
           <p className="text-[11px] tabular-nums text-zinc-600">
             {currency === "krw"
-              ? formatDisplayMoney(netExternalAll, "usdt", fxRate, true)
-              : formatDisplayMoney(netExternalKrw, "krw", 1, true)}
+              ? formatDisplayMoney(-netExternalAll, "usdt", fxRate, true)
+              : formatDisplayMoney(-netExternalKrw, "krw", 1, true)}
           </p>
         </div>
         <div>
@@ -427,18 +531,37 @@ export function EquityCurvePanel({
           {hover && (
             <>
               <div
-                className="pointer-events-none absolute z-10 w-px bg-zinc-300/80"
-                style={{ left: hover.x, top: hover.paneTop, height: hover.paneH }}
-              />
-              <div
-                className="pointer-events-none absolute z-10 h-px bg-zinc-300/80"
-                style={{ top: hover.y, left: hover.paneLeft, width: hover.paneW }}
-              />
-              <div
-                className="pointer-events-none absolute z-10 rounded bg-zinc-950/95 px-1.5 py-0.5 text-[11px] tabular-nums text-zinc-100"
+                className="pointer-events-none absolute z-10 w-px bg-zinc-300/70"
                 style={{
-                  left: Math.min(hover.x + 8, hover.paneLeft + hover.paneW - 120),
-                  top: Math.max(hover.paneTop + 4, hover.y - 26),
+                  left: hover.x - 0.5,
+                  top: hover.paneTop,
+                  height: hover.paneH,
+                }}
+              />
+              <div
+                className="pointer-events-none absolute z-10 h-px bg-zinc-300/70"
+                style={{
+                  top: hover.y - 0.5,
+                  left: hover.paneLeft,
+                  width: hover.paneW,
+                }}
+              />
+              <div
+                className="pointer-events-none absolute z-20 h-2.5 w-2.5 rounded-full border-2 border-zinc-950 bg-emerald-400"
+                style={{ left: hover.x - 5, top: hover.y - 5 }}
+              />
+              <div
+                className="pointer-events-none absolute z-20 whitespace-nowrap rounded bg-zinc-950/95 px-1.5 py-0.5 text-[11px] tabular-nums text-zinc-100"
+                style={{
+                  left:
+                    hover.x - hover.paneLeft > hover.paneW / 2
+                      ? hover.x - 10
+                      : hover.x + 10,
+                  top: Math.max(hover.paneTop + 4, hover.y - 28),
+                  transform:
+                    hover.x - hover.paneLeft > hover.paneW / 2
+                      ? "translateX(-100%)"
+                      : undefined,
                 }}
               >
                 {hover.label}

@@ -179,8 +179,10 @@ export interface GoalChallengePrefs {
   monthlyPaceMode: "flat" | "rate";
   /** 기한 목표 배분: flat=균등 금액, rate=복리 수익률 */
   horizonPaceMode: "flat" | "rate";
-  /** 따라갈 지갑. all 또는 binance:USDC */
+  /** 따라갈 지갑. all 또는 binance:USDT */
   walletFollow: string;
+  /** 2부터는 바낸 USDC 를 USDT 로 한 번 옮긴 뒤 */
+  walletFollowRev: number;
   /** 월초 스냅샷을 잡은 지갑. 바꾸면 월초 자산을 다시 잡는다 */
   monthStartFollow: string;
   /** 복리 추적 시작 시드 (USDT). 새 시작 기본은 200 */
@@ -193,6 +195,8 @@ export interface GoalChallengePrefs {
   trackActual: Record<string, number>;
   /** 첫 복리 챌린지 말고 따로 굴리는 챌린지들 */
   extraTracks: ExtraTrack[];
+  /** 트레이딩 게임: 하루 손실 한도 (USDT). 여기까지 잃으면 HP 0 */
+  gameLossLimitUsdt: number;
 }
 
 export interface ExtraTrack {
@@ -223,13 +227,15 @@ export const DEFAULT_GOAL_CHALLENGE: GoalChallengePrefs = {
   horizonCurrency: "krw",
   monthlyPaceMode: "flat",
   horizonPaceMode: "rate",
-  walletFollow: "binance:USDC",
+  walletFollow: "binance:USDT",
+  walletFollowRev: 2,
   monthStartFollow: "",
   trackSeedUsdt: 200,
   trackStart: "",
   trackDailyRatePct: 2,
   trackActual: {},
   extraTracks: [],
+  gameLossLimitUsdt: 15,
 };
 
 export function loadGoalChallenge(): GoalChallengePrefs {
@@ -282,9 +288,13 @@ export function loadGoalChallenge(): GoalChallengePrefs {
           ? saved.horizonPaceMode
           : DEFAULT_GOAL_CHALLENGE.horizonPaceMode,
       walletFollow:
-        typeof saved.walletFollow === "string" && saved.walletFollow
-          ? saved.walletFollow
-          : DEFAULT_GOAL_CHALLENGE.walletFollow,
+        typeof saved.walletFollow !== "string" || !saved.walletFollow
+          ? DEFAULT_GOAL_CHALLENGE.walletFollow
+          : !(Number(saved.walletFollowRev) >= 2) &&
+              saved.walletFollow === "binance:USDC"
+            ? "binance:USDT"
+            : saved.walletFollow,
+      walletFollowRev: 2,
       monthStartFollow:
         typeof saved.monthStartFollow === "string" ? saved.monthStartFollow : "",
       trackSeedUsdt:
@@ -298,6 +308,10 @@ export function loadGoalChallenge(): GoalChallengePrefs {
           : DEFAULT_GOAL_CHALLENGE.trackDailyRatePct,
       trackActual: readTrackActual(saved.trackActual),
       extraTracks: readExtraTracks(saved.extraTracks),
+      gameLossLimitUsdt:
+        Number(saved.gameLossLimitUsdt) > 0
+          ? Number(saved.gameLossLimitUsdt)
+          : DEFAULT_GOAL_CHALLENGE.gameLossLimitUsdt,
     };
   } catch {
     return { ...DEFAULT_GOAL_CHALLENGE, dailyHits: {} };
@@ -350,25 +364,28 @@ export function saveGoalChallenge(prefs: GoalChallengePrefs): void {
 /** 한눈에 탭 섹션 순서 */
 export type OverviewSectionId =
   | "monthly_goal"
+  | "game"
   | "equity"
   | "pnl"
-  | "market"
+  | "cash"
   | "risk_calc";
 
 export const OVERVIEW_SECTION_LABELS: Record<OverviewSectionId, string> = {
-  monthly_goal: "복리 목표",
+  monthly_goal: "목표",
+  game: "트레이딩 게임",
   equity: "자산 그래프",
   pnl: "All-time PNL",
-  market: "현재 시장",
+  cash: "현금 입출금",
   risk_calc: "리스크 계산기",
 };
 
 export const DEFAULT_OVERVIEW_ORDER: OverviewSectionId[] = [
   "monthly_goal",
+  "game",
   "risk_calc",
   "equity",
   "pnl",
-  "market",
+  "cash",
 ];
 
 const OVERVIEW_ORDER_KEY = "dailytrading.overview.order.v1";
@@ -386,8 +403,11 @@ export function loadOverviewOrder(): OverviewSectionId[] {
     const missing = DEFAULT_OVERVIEW_ORDER.filter((id) => !valid.includes(id));
     const merged = [...valid];
     for (const id of missing) {
-      if (id === "risk_calc") {
+      if (id === "game") {
         const after = merged.indexOf("monthly_goal");
+        merged.splice(after >= 0 ? after + 1 : 0, 0, id);
+      } else if (id === "risk_calc") {
+        const after = Math.max(merged.indexOf("game"), merged.indexOf("monthly_goal"));
         merged.splice(after >= 0 ? after + 1 : 0, 0, id);
       } else {
         merged.push(id);

@@ -1,7 +1,7 @@
 import type { WalletOverview } from "@/lib/exchanges/wallet";
 
-/** "all" 또는 "binance:USDC" 처럼 거래소 하나의 코인 */
-export const DEFAULT_WALLET_FOLLOW = "binance:USDC";
+/** "all" 또는 "binance:USDT" 처럼 거래소 하나의 코인. 코루·속슬은 바이낸스 USDT 선물이다. */
+export const DEFAULT_WALLET_FOLLOW = "binance:USDT";
 
 const EXCHANGE_SHORT: Record<string, string> = {
   binance: "바낸",
@@ -123,5 +123,15 @@ export function walletFollowOptions(
       rows.push({ id, label: walletFollowLabel(id), amount });
     }
   }
+  const preferred = rows.findIndex((row) => row.id === DEFAULT_WALLET_FOLLOW);
+  const first =
+    preferred >= 0
+      ? rows.splice(preferred, 1)[0]!
+      : {
+          id: DEFAULT_WALLET_FOLLOW,
+          label: walletFollowLabel(DEFAULT_WALLET_FOLLOW),
+          amount: 0,
+        };
+  rows.splice(1, 0, first);
   return rows;
 }

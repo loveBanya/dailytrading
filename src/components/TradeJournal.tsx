@@ -32,6 +32,7 @@ import { GoalsPanel } from "./GoalsPanel";
 import { DailyReviewPanel } from "./DailyReviewPanel";
 import { StockMarketPanel } from "./StockMarketPanel";
 import { TradingGamePanel } from "./TradingGamePanel";
+import { IndicatorBacktestPanel } from "./IndicatorBacktestPanel";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
 import { AlarmToastHost } from "./AlarmToastHost";
 import { AlertsPanel } from "./AlertsPanel";
@@ -64,6 +65,7 @@ type Tab =
   | "review"
   | "overview"
   | "market"
+  | "chart"
   | "mindset"
   | "screener"
   | "screener-perf"
@@ -93,6 +95,7 @@ const TAB_IDS: Tab[] = [
   "review",
   "overview",
   "market",
+  "chart",
   "mindset",
   "screener",
   "screener-perf",
@@ -103,7 +106,6 @@ const TAB_IDS: Tab[] = [
 function migrateTab(saved: string): Tab {
   if (saved === "cash" || saved === "live") return "overview";
   if (saved === "posts" || saved === "bookmarks") return "mindset";
-  if (saved === "chart") return "overview";
   if (saved === "demand-supply" || saved === "screener-watch") return "screener";
   return (TAB_IDS as string[]).includes(saved) ? (saved as Tab) : "review";
 }
@@ -171,7 +173,6 @@ export function TradeJournal() {
       "cash",
       "posts",
       "bookmarks",
-      "chart",
       "demand-supply",
       "screener-watch",
     ]);
@@ -528,6 +529,7 @@ export function TradeJournal() {
             ["review", "매매 복기"],
             ["overview", "한눈에"],
             ["market", "시장 현황"],
+            ["chart", "차트"],
             ["screener", "스크리너"],
             ["screener-perf", "스크리너 성과"],
             ["alerts", "알림"],
@@ -798,6 +800,12 @@ export function TradeJournal() {
       {tab === "screener-perf" && (
         <Section title="스크리너 성과">
           <ScreenerPerfPanel />
+        </Section>
+      )}
+
+      {tab === "chart" && (
+        <Section title="지표 백테스트 · MACD · RSI · ADX · DI · WaveTrend">
+          <IndicatorBacktestPanel />
         </Section>
       )}
 

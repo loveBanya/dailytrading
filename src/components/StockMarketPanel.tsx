@@ -173,17 +173,21 @@ export function StockMarketPanel() {
                   <span className={f.changePct >= 0 ? "text-emerald-300" : "text-rose-300"}>
                     {signed(f.changePct)}
                   </span>
-                  <span
-                    className={`ml-2 ${
-                      f.push >= 0.05
-                        ? "text-emerald-400"
-                        : f.push <= -0.05
-                          ? "text-rose-400"
-                          : "text-zinc-500"
-                    }`}
-                  >
-                    {f.push >= 0.05 ? "▲" : f.push <= -0.05 ? "▼" : "·"}
-                  </span>
+                  {f.reference ? (
+                    <span className="ml-2 text-[10px] text-zinc-500">참고</span>
+                  ) : (
+                    <span
+                      className={`ml-2 ${
+                        f.push >= 0.05
+                          ? "text-emerald-400"
+                          : f.push <= -0.05
+                            ? "text-rose-400"
+                            : "text-zinc-500"
+                      }`}
+                    >
+                      {f.push >= 0.05 ? "▲" : f.push <= -0.05 ? "▼" : "·"}
+                    </span>
+                  )}
                 </span>
               </li>
             ))}

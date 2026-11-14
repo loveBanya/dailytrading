@@ -30,6 +30,7 @@ export const MARKET_STOCKS: { symbol: string; label: string }[] = [
   { symbol: "^KS11", label: "코스피" },
   { symbol: "SOXL", label: "SOXL 반도체 3배" },
   { symbol: "SOXX", label: "SOXX 반도체" },
+  { symbol: "SOXS", label: "SOXS 반도체 3배 숏" },
   { symbol: "EWY", label: "EWY 한국" },
   { symbol: "^IXIC", label: "나스닥" },
   { symbol: "NQ=F", label: "나스닥 선물" },
@@ -107,6 +108,8 @@ export interface OutlookFactor {
   /** 코스피에 주는 방향. +는 상승 쪽 */
   push: number;
   note: string;
+  /** 보여 주기만 하고 점수에는 넣지 않는 줄 */
+  reference?: boolean;
 }
 
 export type OutlookVerdict = "상승 우위" | "약한 상승" | "보합" | "약한 하락" | "하락 우위";
@@ -165,7 +168,15 @@ export function kospiOutlook(quotes: StockQuote[], now = Date.now()): KospiOutlo
     const change = usDate ? (changeOn(q.bars, usDate) ?? q.changePct) : q.changePct;
     factors.push({ label, changePct: change, push: change * weight, note });
   };
+  const reference = (symbol: string, label: string, note: string) => {
+    const q = by.get(symbol);
+    if (!q) return;
+    const change = usDate ? (changeOn(q.bars, usDate) ?? q.changePct) : q.changePct;
+    factors.push({ label, changePct: change, push: 0, note, reference: true });
+  };
   add("SOXX", 0.25, "SOXX 반도체", "삼성전자·SK하이닉스와 같이 움직이는 편");
+  reference("SOXL", "SOXL 반도체 3배", "SOXX 3배라 점수엔 SOXX만 넣음");
+  reference("SOXS", "SOXS 반도체 3배 숏", "SOXX 반대 3배. 오르면 반도체 약세");
   add("^IXIC", 0.1, "나스닥", "위험자산 분위기");
   const nq = by.get("NQ=F");
   if (nq) {

@@ -5,7 +5,10 @@ import { IndicatorBacktestChart } from "./IndicatorBacktestChart";
 import {
   CONDITION_LABELS,
   DEFAULT_INDICATOR_CONFIG,
+  NAMED_STRATEGIES,
+  TARGET_LABELS,
   compareCombos,
+  compareStrategies,
   computeSeries,
   enabledConditions,
   runIndicatorBacktest,
@@ -14,6 +17,7 @@ import {
   type IndicatorConfig,
   type BacktestStats,
   type HigherTf,
+  type TargetMode,
 } from "@/lib/backtest/indicator-strategy";
 import { intervalMinutes } from "@/lib/backtest/run";
 import { toBars, type Bar } from "@/lib/backtest/types";
@@ -41,84 +45,6 @@ const HTF_CHOICES = [
   { id: "60", label: "1시간" },
   { id: "240", label: "4시간" },
   { id: "D", label: "일봉" },
-];
-
-const allOff = (c: IndicatorConfig): IndicatorConfig => ({
-  ...c,
-  macd: { ...c.macd, on: false },
-  rsi: { ...c.rsi, on: false },
-  adx: { ...c.adx, on: false },
-  di: { ...c.di, on: false },
-  wt: { ...c.wt, on: false },
-  wth: { ...c.wth, on: false },
-});
-
-const PRESETS: { label: string; apply: (c: IndicatorConfig) => IndicatorConfig }[] = [
-  {
-    label: "MACD·RSI 골든크로스 + ADX·DI",
-    apply: (c) => {
-      const o = allOff(c);
-      return {
-        ...o,
-        macd: { ...o.macd, on: true },
-        rsi: { ...o.rsi, on: true, mode: "signal_cross" },
-        adx: { ...o.adx, on: true, min: 20 },
-        di: { ...o.di, on: true, mode: "above" },
-      };
-    },
-  },
-  {
-    label: "MACD·RSI 골든크로스",
-    apply: (c) => {
-      const o = allOff(c);
-      return { ...o, macd: { ...o.macd, on: true }, rsi: { ...o.rsi, on: true, mode: "signal_cross" } };
-    },
-  },
-  {
-    label: "WT 과매도·과매수 크로스",
-    apply: (c) => {
-      const o = allOff(c);
-      return { ...o, wt: { ...o.wt, on: true, mode: "extreme" }, exitOn: "wt" };
-    },
-  },
-  {
-    label: "WT + 상위 봉 WT (Petit 방식)",
-    apply: (c) => {
-      const o = allOff(c);
-      return {
-        ...o,
-        wt: { ...o.wt, on: true, mode: "extreme" },
-        wth: { ...o.wth, on: true, mode: "state" },
-        exitOn: "wt",
-      };
-    },
-  },
-  {
-    label: "WT + MACD",
-    apply: (c) => {
-      const o = allOff(c);
-      return { ...o, wt: { ...o.wt, on: true }, macd: { ...o.macd, on: true } };
-    },
-  },
-  {
-    label: "MACD + ADX·DI 추세",
-    apply: (c) => {
-      const o = allOff(c);
-      return {
-        ...o,
-        macd: { ...o.macd, on: true },
-        adx: { ...o.adx, on: true, min: 20 },
-        di: { ...o.di, on: true, mode: "above" },
-      };
-    },
-  },
-  {
-    label: "DI 골든크로스 + ADX",
-    apply: (c) => {
-      const o = allOff(c);
-      return { ...o, adx: { ...o.adx, on: true, min: 20 }, di: { ...o.di, on: true, mode: "cross" } };
-    },
-  },
 ];
 
 function fmtTime(sec: number): string {
@@ -250,6 +176,10 @@ export function IndicatorBacktestPanel() {
       ),
     [bars, series, config, money, higher]
   );
+  const strategies = useMemo(
+    () => (bars.length > 0 ? compareStrategies(bars, config, money, higher) : []),
+    [bars, config, money, higher]
+  );
   const rsiLevels = useMemo(() => {
     if (config.rsi.mode === "level_cross") {
       return [...new Set([config.rsi.level, 100 - config.rsi.level])];
@@ -261,7 +191,9 @@ export function IndicatorBacktestPanel() {
   const holdPct =
     bars.length > 1 ? ((bars[bars.length - 1].close - bars[0].close) / bars[0].close) * 100 : null;
 
-  const patch = <K extends "macd" | "rsi" | "adx" | "di" | "wt" | "wth">(
+  const patch = <
+    K extends "macd" | "rsi" | "adx" | "di" | "wt" | "wth" | "ema" | "bb" | "stoch" | "st",
+  >(
     key: K,
     value: Partial<IndicatorConfig[K]>
   ) => setConfig((c) => ({ ...c, [key]: { ...c[key], ...value } }));
@@ -275,6 +207,10 @@ export function IndicatorBacktestPanel() {
       di: { ...c.di, on: ids.includes("di") },
       wt: { ...c.wt, on: ids.includes("wt") },
       wth: { ...c.wth, on: ids.includes("wth") },
+      ema: { ...c.ema, on: ids.includes("ema") },
+      bb: { ...c.bb, on: ids.includes("bb") },
+      stoch: { ...c.stoch, on: ids.includes("stoch") },
+      st: { ...c.st, on: ids.includes("st") },
     }));
 
   const commitSymbol = () => {
@@ -292,7 +228,8 @@ export function IndicatorBacktestPanel() {
       <p className="text-sm leading-relaxed text-zinc-400">
         켠 조건을 <b className="text-zinc-200">모두</b> 만족한 봉의 종가에서 신호를 보고 다음 봉
         시가에 들어갑니다. 크로스는 최근 {config.window}봉 안에 났으면 인정합니다. 숏은 모든
-        조건을 거꾸로(데드크로스, RSI 하향, −DI 우위, WT 과매수 데드크로스) 봅니다. 같은 봉에서
+        조건을 거꾸로(데드크로스, RSI 하향, −DI 우위, WT 과매수 데드크로스) 봅니다. 익절은 고정 R·ATR·
+        추적·부분익절 중에서 고르고, 아래 전략 표로 여러 매매법을 한 번에 비교합니다. 같은 봉에서
         손절과 익절이 둘 다 닿으면 손절로 계산합니다.
       </p>
 
@@ -343,19 +280,22 @@ export function IndicatorBacktestPanel() {
         ))}
       </div>
 
-      {/* 프리셋 */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-xs text-zinc-500">빠른 설정</span>
-        {PRESETS.map((p) => (
-          <button
-            key={p.label}
-            type="button"
-            onClick={() => setConfig((c) => p.apply(c))}
-            className="rounded-full border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:border-zinc-500"
-          >
-            {p.label}
-          </button>
-        ))}
+      {/* 전략 프리셋 */}
+      <div className="space-y-1.5">
+        <span className="text-xs text-zinc-500">전략 프리셋 · 누르면 조건·익절까지 한 번에 바뀜</span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {NAMED_STRATEGIES.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              title={p.blurb}
+              onClick={() => setConfig((c) => p.apply(c))}
+              className="rounded-full border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:border-zinc-500"
+            >
+              {p.name}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* 조건 */}
@@ -508,6 +448,110 @@ export function IndicatorBacktestPanel() {
             닫힌 상위 봉 값만 씁니다. 길이·레벨은 위 WT와 같습니다
           </span>
         </ConditionCard>
+
+        <ConditionCard
+          title="EMA 크로스"
+          on={config.ema.on}
+          onToggle={() => patch("ema", { on: !config.ema.on })}
+          hint={
+            config.ema.mode === "cross"
+              ? "빠른 EMA가 느린 EMA를 위로 뚫을 때 (숏은 아래로)"
+              : "가격이 빠른·느린 EMA 위에 있을 때 (숏은 아래)"
+          }
+        >
+          <div className="flex gap-1">
+            <Chip on={config.ema.mode === "cross"} onClick={() => patch("ema", { mode: "cross" })}>
+              골든크로스
+            </Chip>
+            <Chip on={config.ema.mode === "above"} onClick={() => patch("ema", { mode: "above" })}>
+              가격 위
+            </Chip>
+          </div>
+          <NumField label="빠른" value={config.ema.fast} onChange={(v) => patch("ema", { fast: v })} />
+          <NumField label="느린" value={config.ema.slow} onChange={(v) => patch("ema", { slow: v })} />
+        </ConditionCard>
+
+        <ConditionCard
+          title="볼린저 밴드"
+          on={config.bb.on}
+          onToggle={() => patch("bb", { on: !config.bb.on })}
+          hint={
+            config.bb.mode === "bounce"
+              ? "하단(롱)·상단(숏)을 찍고 밴드 안으로 들어오면"
+              : "상단(롱)·하단(숏)을 밖으로 뚫을 때"
+          }
+        >
+          <div className="flex gap-1">
+            <Chip on={config.bb.mode === "bounce"} onClick={() => patch("bb", { mode: "bounce" })}>
+              하단 반등
+            </Chip>
+            <Chip on={config.bb.mode === "break"} onClick={() => patch("bb", { mode: "break" })}>
+              돌파
+            </Chip>
+          </div>
+          <NumField label="기간" value={config.bb.length} onChange={(v) => patch("bb", { length: v })} />
+          <NumField
+            label="배수"
+            step={0.1}
+            value={config.bb.mult}
+            onChange={(v) => patch("bb", { mult: v })}
+          />
+        </ConditionCard>
+
+        <ConditionCard
+          title="스토캐스틱"
+          on={config.stoch.on}
+          onToggle={() => patch("stoch", { on: !config.stoch.on })}
+          hint={
+            config.stoch.mode === "zone_cross"
+              ? `%K가 ${config.stoch.os} 아래에서 %D를 위로 뚫을 때 롱 (숏은 ${config.stoch.ob} 위 데드크로스)`
+              : "%K가 %D를 위로 뚫을 때 (위치 상관없이)"
+          }
+        >
+          <div className="flex gap-1">
+            <Chip
+              on={config.stoch.mode === "zone_cross"}
+              onClick={() => patch("stoch", { mode: "zone_cross" })}
+            >
+              과매도·과매수 크로스
+            </Chip>
+            <Chip on={config.stoch.mode === "cross"} onClick={() => patch("stoch", { mode: "cross" })}>
+              모든 크로스
+            </Chip>
+          </div>
+          <NumField label="기간" value={config.stoch.length} onChange={(v) => patch("stoch", { length: v })} />
+          <NumField label="%K" value={config.stoch.smoothK} onChange={(v) => patch("stoch", { smoothK: v })} />
+          <NumField label="%D" value={config.stoch.smoothD} onChange={(v) => patch("stoch", { smoothD: v })} />
+          <NumField label="과매도" value={config.stoch.os} onChange={(v) => patch("stoch", { os: v })} />
+          <NumField label="과매수" value={config.stoch.ob} onChange={(v) => patch("stoch", { ob: v })} />
+        </ConditionCard>
+
+        <ConditionCard
+          title="슈퍼트렌드"
+          on={config.st.on}
+          onToggle={() => patch("st", { on: !config.st.on })}
+          hint={
+            config.st.mode === "flip"
+              ? "방향이 상승으로 바뀌는 봉에 롱, 하락으로 바뀌면 숏"
+              : "이미 상승(롱)·하락(숏) 방향일 때만"
+          }
+        >
+          <div className="flex gap-1">
+            <Chip on={config.st.mode === "flip"} onClick={() => patch("st", { mode: "flip" })}>
+              전환
+            </Chip>
+            <Chip on={config.st.mode === "dir"} onClick={() => patch("st", { mode: "dir" })}>
+              방향 유지
+            </Chip>
+          </div>
+          <NumField
+            label="배수"
+            step={0.1}
+            value={config.st.factor}
+            onChange={(v) => patch("st", { factor: v })}
+          />
+          <NumField label="ATR" value={config.st.period} onChange={(v) => patch("st", { period: v })} />
+        </ConditionCard>
       </div>
 
       {/* 진입·청산·자금 */}
@@ -563,24 +607,64 @@ export function IndicatorBacktestPanel() {
             />
           </div>
         </div>
-        <NumField
-          label="익절 R (0=없음)"
-          step={0.5}
-          value={config.targetR}
-          onChange={(v) => setConfig((c) => ({ ...c, targetR: Math.max(0, v) }))}
-        />
+        <div>
+          <p className="mb-1 text-xs text-zinc-500">익절</p>
+          <div className="flex flex-wrap gap-1">
+            {(Object.keys(TARGET_LABELS) as TargetMode[]).map((id) => (
+              <Chip
+                key={id}
+                on={config.target.mode === id}
+                onClick={() => setConfig((c) => ({ ...c, target: { ...c.target, mode: id } }))}
+              >
+                {TARGET_LABELS[id]}
+              </Chip>
+            ))}
+          </div>
+        </div>
+        {(config.target.mode === "r" || config.target.mode === "partial") && (
+          <NumField
+            label={config.target.mode === "partial" ? "1차 목표 R" : "익절 R"}
+            step={0.5}
+            value={config.target.r}
+            onChange={(v) =>
+              setConfig((c) => ({ ...c, target: { ...c.target, r: Math.max(0.1, v) } }))
+            }
+          />
+        )}
+        {config.target.mode === "atr" && (
+          <NumField
+            label="익절 ATR ×"
+            step={0.1}
+            value={config.target.atrMult}
+            onChange={(v) =>
+              setConfig((c) => ({ ...c, target: { ...c.target, atrMult: Math.max(0.1, v) } }))
+            }
+          />
+        )}
+        {(config.target.mode === "trail" || config.target.mode === "partial") && (
+          <NumField
+            label="추적 ATR ×"
+            step={0.1}
+            value={config.target.trailAtr}
+            onChange={(v) =>
+              setConfig((c) => ({ ...c, target: { ...c.target, trailAtr: Math.max(0.1, v) } }))
+            }
+          />
+        )}
         <NumField
           label="최대 보유 봉 (0=무제한)"
           value={config.maxBars}
           onChange={(v) => setConfig((c) => ({ ...c, maxBars: Math.max(0, Math.round(v)) }))}
         />
         <div>
-          <p className="mb-1 text-xs text-zinc-500">반대 크로스에 청산</p>
-          <div className="flex gap-1">
+          <p className="mb-1 text-xs text-zinc-500">반대 신호 청산</p>
+          <div className="flex flex-wrap gap-1">
             {(
               [
                 ["macd", "MACD"],
                 ["wt", "WT"],
+                ["ema", "EMA"],
+                ["st", "슈퍼트렌드"],
                 ["none", "안 함"],
               ] as const
             ).map(([id, label]) => (
@@ -652,6 +736,8 @@ export function IndicatorBacktestPanel() {
             htfLabel={higher ? HTF_CHOICES.find((h) => h.id === config.wth.tf)?.label ?? null : null}
           />
 
+          <StrategyTable rows={strategies} onApply={(cfg) => setConfig(cfg)} current={config} />
+
           <ComboTable combos={combos} current={conditionKey} onApply={applyCombo} />
 
           <div className="pretty-scroll overflow-x-auto">
@@ -705,6 +791,74 @@ export function IndicatorBacktestPanel() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+function StrategyTable({
+  rows,
+  onApply,
+  current,
+}: {
+  rows: ReturnType<typeof compareStrategies>;
+  onApply: (c: IndicatorConfig) => void;
+  current: IndicatorConfig;
+}) {
+  const currentKey = `${enabledConditions(current).join("+")}|${current.target.mode}|${current.exitOn}`;
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
+      <p className="text-sm font-medium text-zinc-100">전략 비교</p>
+      <p className="mt-0.5 text-xs text-zinc-500">
+        같은 봉·자금으로 이름 있는 전략을 한 번에 돌린 결과입니다. 합계 R 순. 줄을 누르면 그
+        전략으로 설정이 바뀝니다.
+      </p>
+      <div className="pretty-scroll mt-2 overflow-x-auto">
+        <table className="w-full min-w-[720px] text-left text-xs">
+          <thead className="text-zinc-500">
+            <tr>
+              <th className="py-1.5 pr-3 font-medium">전략</th>
+              <th className="py-1.5 pr-3 font-medium">익절</th>
+              <th className="py-1.5 pr-3 font-medium">매매</th>
+              <th className="py-1.5 pr-3 font-medium">승률</th>
+              <th className="py-1.5 pr-3 font-medium">매매당</th>
+              <th className="py-1.5 pr-3 font-medium">합계</th>
+              <th className="py-1.5 pr-3 font-medium">PF</th>
+              <th className="py-1.5 font-medium">낙폭</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ strategy, stats, config: cfg }) => {
+              const key = `${enabledConditions(cfg).join("+")}|${cfg.target.mode}|${cfg.exitOn}`;
+              const active = key === currentKey;
+              return (
+                <tr
+                  key={strategy.id}
+                  onClick={() => onApply(cfg)}
+                  title={strategy.blurb}
+                  className={`cursor-pointer border-t border-zinc-800 ${
+                    active ? "bg-zinc-100/10 text-zinc-50" : "text-zinc-300 hover:bg-zinc-900"
+                  }`}
+                >
+                  <td className="py-1.5 pr-3">
+                    <span className="font-medium">{strategy.name}</span>
+                    {active && <span className="ml-1.5 text-[10px] text-emerald-300">지금</span>}
+                    <span className="mt-0.5 block text-[10px] text-zinc-500">{strategy.blurb}</span>
+                  </td>
+                  <td className="py-1.5 pr-3 text-zinc-400">{TARGET_LABELS[cfg.target.mode]}</td>
+                  <td className="py-1.5 pr-3 tabular-nums">{stats.closed}</td>
+                  <td className="py-1.5 pr-3 tabular-nums">
+                    {stats.winRate == null ? "—" : `${stats.winRate.toFixed(0)}%`}
+                  </td>
+                  <td className={`py-1.5 pr-3 tabular-nums ${tone(stats.avgR ?? 0)}`}>{fmtR(stats.avgR)}</td>
+                  <td className={`py-1.5 pr-3 tabular-nums ${tone(stats.sumR)}`}>{fmtR(stats.sumR)}</td>
+                  <td className="py-1.5 pr-3 tabular-nums">{fmtPf(stats.profitFactor)}</td>
+                  <td className="py-1.5 tabular-nums">{fmtUsd(stats.maxDrawdown)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

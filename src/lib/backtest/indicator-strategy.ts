@@ -1,5 +1,6 @@
 import {
   atr,
+  bollinger,
   crossedOver,
   crossedUnder,
   dmi,
@@ -8,6 +9,8 @@ import {
   num,
   rsi,
   smaNullable,
+  stochastic,
+  supertrend,
 } from "./indicators";
 import { dollarMove, type BacktestTrade, type Bar, type Money } from "./types";
 
@@ -16,8 +19,24 @@ export type RsiMode = "signal_cross" | "level_cross" | "zone";
 export type DiMode = "above" | "cross";
 export type WtMode = "extreme" | "any";
 export type WtHtfMode = "state" | "cross";
-export type ExitSignal = "none" | "macd" | "wt";
-export type ConditionId = "macd" | "rsi" | "adx" | "di" | "wt" | "wth";
+export type BbMode = "bounce" | "break";
+export type EmaMode = "cross" | "above";
+export type StochMode = "cross" | "zone_cross";
+export type StMode = "flip" | "dir";
+/** 고정 R / ATR 배수 / 추적손절 / 1R 부분익절 후 추적 / 익절 없음 */
+export type TargetMode = "r" | "atr" | "trail" | "partial" | "none";
+export type ExitSignal = "none" | "macd" | "wt" | "ema" | "st";
+export type ConditionId =
+  | "macd"
+  | "rsi"
+  | "adx"
+  | "di"
+  | "wt"
+  | "wth"
+  | "ema"
+  | "bb"
+  | "stoch"
+  | "st";
 
 export interface IndicatorConfig {
   side: SideMode;
@@ -33,17 +52,32 @@ export interface IndicatorConfig {
   };
   adx: { on: boolean; length: number; min: number; rising: boolean };
   di: { on: boolean; mode: DiMode };
-  /** WaveTrend [LazyBear]. 과매도·과매수는 Level 2(±53) 기준 */
   wt: { on: boolean; n1: number; n2: number; ob: number; os: number; mode: WtMode };
-  /** 상위 봉 WaveTrend. 길이·레벨은 wt 설정을 같이 쓴다 */
   wth: { on: boolean; tf: string; mode: WtHtfMode };
-  /** 크로스는 이 봉 수 안에 났으면 조건을 채운 것으로 본다 */
+  ema: { on: boolean; fast: number; slow: number; mode: EmaMode };
+  bb: { on: boolean; length: number; mult: number; mode: BbMode };
+  stoch: {
+    on: boolean;
+    length: number;
+    smoothK: number;
+    smoothD: number;
+    mode: StochMode;
+    os: number;
+    ob: number;
+  };
+  st: { on: boolean; factor: number; period: number; mode: StMode };
   window: number;
   stop: { mode: "atr" | "pct"; atrMult: number; pct: number };
-  /** 0 이면 익절 없이 반대 신호·시간으로만 나간다 */
-  targetR: number;
+  target: {
+    mode: TargetMode;
+    /** mode=r 또는 partial의 1차 목표 */
+    r: number;
+    /** mode=atr 익절 거리 (ATR ×) */
+    atrMult: number;
+    /** trail / partial 나머지 추적 거리 (ATR ×) */
+    trailAtr: number;
+  };
   exitOn: ExitSignal;
-  /** 0 이면 제한 없음 */
   maxBars: number;
 }
 
@@ -63,9 +97,13 @@ export const DEFAULT_INDICATOR_CONFIG: IndicatorConfig = {
   di: { on: true, mode: "above" },
   wt: { on: false, n1: 10, n2: 21, ob: 53, os: -53, mode: "extreme" },
   wth: { on: false, tf: "60", mode: "state" },
+  ema: { on: false, fast: 9, slow: 21, mode: "cross" },
+  bb: { on: false, length: 20, mult: 2, mode: "bounce" },
+  stoch: { on: false, length: 14, smoothK: 3, smoothD: 3, mode: "zone_cross", os: 20, ob: 80 },
+  st: { on: false, factor: 3, period: 10, mode: "flip" },
   window: 3,
   stop: { mode: "atr", atrMult: 1.5, pct: 1 },
-  targetR: 2,
+  target: { mode: "r", r: 2, atrMult: 2, trailAtr: 1.5 },
   exitOn: "macd",
   maxBars: 0,
 };
@@ -82,19 +120,25 @@ export interface IndicatorSeries {
   atr: (number | null)[];
   wt1: (number | null)[];
   wt2: (number | null)[];
-  /** 차트 봉에 맞춘 상위 봉 WT. 상위 봉이 없으면 전부 null */
   htfWt1: (number | null)[];
   htfWt2: (number | null)[];
+  emaFast: (number | null)[];
+  emaSlow: (number | null)[];
+  bbMid: (number | null)[];
+  bbUpper: (number | null)[];
+  bbLower: (number | null)[];
+  stochK: (number | null)[];
+  stochD: (number | null)[];
+  stLine: (number | null)[];
+  stDir: (number | null)[];
 }
 
-/** 상위 봉 데이터와 봉 길이(초) */
 export interface HigherTf {
   bars: Bar[];
   sec: number;
   chartSec: number;
 }
 
-/** WT_CROSS_LB: ap=hlc3, esa=ema(ap,n1), d=ema(|ap-esa|,n1), ci=(ap-esa)/(0.015d), wt1=ema(ci,n2), wt2=sma(wt1,4) */
 export function waveTrend(bars: Bar[], n1: number, n2: number) {
   const ap = bars.map((b) => (b.high + b.low + b.close) / 3);
   const esa = ema(ap, Math.max(1, n1));
@@ -108,7 +152,6 @@ export function waveTrend(bars: Bar[], n1: number, n2: number) {
   return { wt1, wt2 };
 }
 
-/** 차트 봉 i가 닫힐 때 이미 닫혀 있던 마지막 상위 봉 값을 쓴다 (미래 값을 미리 보지 않음) */
 function alignClosed(
   chart: Bar[],
   htf: HigherTf,
@@ -147,6 +190,22 @@ export function computeSeries(
     htfWt1 = alignClosed(bars, higher, h.wt1);
     htfWt2 = alignClosed(bars, higher, h.wt2);
   }
+  const bb = bollinger(close, Math.max(2, config.bb.length), Math.max(0.1, config.bb.mult));
+  const stoch = stochastic(
+    high,
+    low,
+    close,
+    Math.max(2, config.stoch.length),
+    Math.max(1, config.stoch.smoothK),
+    Math.max(1, config.stoch.smoothD)
+  );
+  const st = supertrend(
+    high,
+    low,
+    close,
+    Math.max(0.1, config.st.factor),
+    Math.max(2, config.st.period)
+  );
   return {
     macd,
     signal,
@@ -161,21 +220,25 @@ export function computeSeries(
     wt2: wt.wt2,
     htfWt1,
     htfWt2,
+    emaFast: ema(close, Math.max(1, config.ema.fast)),
+    emaSlow: ema(close, Math.max(1, config.ema.slow)),
+    bbMid: bb.mid,
+    bbUpper: bb.upper,
+    bbLower: bb.lower,
+    stochK: stoch.k,
+    stochD: stoch.d,
+    stLine: st.line,
+    stDir: st.dir,
   };
 }
 
-function crossedWithin(
-  test: (i: number) => boolean,
-  i: number,
-  window: number
-): boolean {
+function crossedWithin(test: (i: number) => boolean, i: number, window: number): boolean {
   for (let k = i; k > i - Math.max(1, window) && k >= 1; k -= 1) {
     if (test(k)) return true;
   }
   return false;
 }
 
-/** WT 크로스. extreme 이면 크로스가 난 봉의 wt2가 과매도(롱)·과매수(숏) 구간이어야 한다 */
 function wtCross(
   a: (number | null)[],
   b: (number | null)[],
@@ -190,7 +253,6 @@ function wtCross(
   return num(v) && (side === 1 ? v <= config.wt.os : v >= config.wt.ob);
 }
 
-/** 조건 하나가 봉 i 종가에서 그 방향으로 맞는지 */
 function conditionMet(
   id: ConditionId,
   side: 1 | -1,
@@ -251,6 +313,54 @@ function conditionMet(
     const b = s.htfWt2[i];
     return num(a) && num(b) && (side === 1 ? a > b : a < b);
   }
+  if (id === "ema") {
+    if (config.ema.mode === "above") {
+      // 가격 비교는 emaPriceMet에서
+      return num(s.emaFast[i]) && num(s.emaSlow[i]);
+    }
+    return crossedWithin(
+      (k) =>
+        side === 1
+          ? crossedOver(s.emaFast, s.emaSlow, k)
+          : crossedUnder(s.emaFast, s.emaSlow, k),
+      i,
+      w
+    );
+  }
+  if (id === "bb") {
+    // 가격이 필요해서 allConditionsMet → bbMet 에서 판정
+    return num(s.bbMid[i]) && num(s.bbUpper[i]) && num(s.bbLower[i]);
+  }
+  if (id === "stoch") {
+    if (config.stoch.mode === "cross") {
+      return crossedWithin(
+        (k) =>
+          side === 1
+            ? crossedOver(s.stochK, s.stochD, k)
+            : crossedUnder(s.stochK, s.stochD, k),
+        i,
+        w
+      );
+    }
+    return crossedWithin((k) => {
+      const crossed =
+        side === 1
+          ? crossedOver(s.stochK, s.stochD, k)
+          : crossedUnder(s.stochK, s.stochD, k);
+      if (!crossed) return false;
+      const v = s.stochK[k];
+      return num(v) && (side === 1 ? v <= config.stoch.os : v >= config.stoch.ob);
+    }, i, w);
+  }
+  if (id === "st") {
+    const dir = s.stDir[i];
+    if (!num(dir)) return false;
+    // supertrend: dir -1 = 상승, 1 = 하락
+    if (config.st.mode === "dir") return side === 1 ? dir < 0 : dir > 0;
+    const prev = s.stDir[i - 1];
+    if (!num(prev)) return false;
+    return side === 1 ? prev > 0 && dir < 0 : prev < 0 && dir > 0;
+  }
   const p = s.plus[i];
   const m = s.minus[i];
   if (!num(p) || !num(m)) return false;
@@ -262,6 +372,42 @@ function conditionMet(
   );
 }
 
+function bbMet(
+  side: 1 | -1,
+  i: number,
+  bars: Bar[],
+  s: IndicatorSeries,
+  config: IndicatorConfig
+): boolean {
+  const up = s.bbUpper[i];
+  const lo = s.bbLower[i];
+  const mid = s.bbMid[i];
+  if (!num(up) || !num(lo) || !num(mid)) return false;
+  const c = bars[i].close;
+  const l = bars[i].low;
+  const h = bars[i].high;
+  if (config.bb.mode === "bounce") {
+    // 하단(상단)을 찍고 종가가 다시 밴드 안 · 가운데 쪽으로
+    if (side === 1) return l <= lo && c > lo && c < mid;
+    return h >= up && c < up && c > mid;
+  }
+  // breakout: 종가가 밴드 밖
+  return side === 1 ? c > up : c < lo;
+}
+
+function emaPriceMet(
+  side: 1 | -1,
+  i: number,
+  bars: Bar[],
+  s: IndicatorSeries
+): boolean {
+  const f = s.emaFast[i];
+  const sl = s.emaSlow[i];
+  if (!num(f) || !num(sl)) return false;
+  const c = bars[i].close;
+  return side === 1 ? c > f && c > sl : c < f && c < sl;
+}
+
 export function enabledConditions(config: IndicatorConfig): ConditionId[] {
   const out: ConditionId[] = [];
   if (config.macd.on) out.push("macd");
@@ -270,17 +416,71 @@ export function enabledConditions(config: IndicatorConfig): ConditionId[] {
   if (config.di.on) out.push("di");
   if (config.wt.on) out.push("wt");
   if (config.wth.on) out.push("wth");
+  if (config.ema.on) out.push("ema");
+  if (config.bb.on) out.push("bb");
+  if (config.stoch.on) out.push("stoch");
+  if (config.st.on) out.push("st");
   return out;
 }
 
-function oppositeCross(s: IndicatorSeries, side: 1 | -1, j: number, exitOn: ExitSignal): boolean {
+function finishPartial(
+  trade: BacktestTrade,
+  exit: number,
+  time: number,
+  reason: string,
+  totalUsd: number,
+  dist: number,
+  money: Money,
+  entry: number
+) {
+  trade.exit = exit;
+  trade.exitTime = time;
+  trade.exitReason = reason;
+  trade.usd = totalUsd;
+  const riskUsd = money.bet * money.lev * (dist / entry);
+  trade.r = totalUsd / Math.max(riskUsd, 1e-8);
+  trade.win = totalUsd > 0 ? true : totalUsd < 0 ? false : null;
+}
+
+function oppositeCross(
+  s: IndicatorSeries,
+  side: 1 | -1,
+  j: number,
+  exitOn: ExitSignal
+): boolean {
   if (exitOn === "macd") {
     return side === 1 ? crossedUnder(s.macd, s.signal, j) : crossedOver(s.macd, s.signal, j);
   }
   if (exitOn === "wt") {
     return side === 1 ? crossedUnder(s.wt1, s.wt2, j) : crossedOver(s.wt1, s.wt2, j);
   }
+  if (exitOn === "ema") {
+    return side === 1
+      ? crossedUnder(s.emaFast, s.emaSlow, j)
+      : crossedOver(s.emaFast, s.emaSlow, j);
+  }
+  if (exitOn === "st") {
+    const dir = s.stDir[j];
+    const prev = s.stDir[j - 1];
+    if (!num(dir) || !num(prev)) return false;
+    return side === 1 ? prev < 0 && dir > 0 : prev > 0 && dir < 0;
+  }
   return false;
+}
+
+function allConditionsMet(
+  conditions: ConditionId[],
+  side: 1 | -1,
+  i: number,
+  bars: Bar[],
+  s: IndicatorSeries,
+  config: IndicatorConfig
+): boolean {
+  return conditions.every((id) => {
+    if (id === "bb") return bbMet(side, i, bars, s, config);
+    if (id === "ema" && config.ema.mode === "above") return emaPriceMet(side, i, bars, s);
+    return conditionMet(id, side, i, s, config);
+  });
 }
 
 export function runIndicatorBacktest(
@@ -296,19 +496,29 @@ export function runIndicatorBacktest(
     config.side === "long" ? [1] : config.side === "short" ? [-1] : [1, -1];
   const feeRate = money.feePct / 100;
 
-  const close = (trade: BacktestTrade, exit: number, time: number, reason: string, risk: number) => {
+  const closeTrade = (
+    trade: BacktestTrade,
+    exit: number,
+    time: number,
+    reason: string,
+    risk: number,
+    usdOverride?: number
+  ) => {
     trade.exit = exit;
     trade.exitTime = time;
     trade.exitReason = reason;
     const gross = trade.side * (exit - trade.entry);
     trade.r = (gross - (trade.entry + exit) * feeRate) / risk;
-    trade.usd = dollarMove(trade.entry, exit, trade.side, money);
+    trade.usd =
+      usdOverride != null ? usdOverride : dollarMove(trade.entry, exit, trade.side, money);
     trade.win = trade.usd > 0 ? true : trade.usd < 0 ? false : null;
   };
 
   let i = 1;
   while (i < bars.length - 1) {
-    const side = sides.find((sd) => conditions.every((id) => conditionMet(id, sd, i, s, config)));
+    const side = sides.find((sd) =>
+      allConditionsMet(conditions, sd, i, bars, s, config)
+    );
     if (!side) {
       i += 1;
       continue;
@@ -326,8 +536,14 @@ export function runIndicatorBacktest(
       i += 1;
       continue;
     }
-    const sl = entry - side * dist;
-    const tp = config.targetR > 0 ? entry + side * dist * config.targetR : NaN;
+    let sl = entry - side * dist;
+    const mode = config.target.mode;
+    const tpR =
+      mode === "r" || mode === "partial"
+        ? entry + side * dist * Math.max(config.target.r, mode === "partial" ? 1 : 0)
+        : mode === "atr" && num(a)
+          ? entry + side * a * config.target.atrMult
+          : NaN;
     const trade: BacktestTrade = {
       side,
       entryTime: entryBar.time,
@@ -335,7 +551,7 @@ export function runIndicatorBacktest(
       entry,
       exit: null,
       sl,
-      tp: Number.isFinite(tp) ? tp : 0,
+      tp: Number.isFinite(tpR) ? tpR : 0,
       reason: conditions.join("+"),
       exitReason: "진행",
       r: null,
@@ -344,32 +560,85 @@ export function runIndicatorBacktest(
     };
 
     let j = i + 1;
+    let partialTaken = false;
+    let partialUsd = 0;
+    let trailDist = num(a) ? a * Math.max(0.1, config.target.trailAtr) : dist;
+
     for (; j < bars.length; j += 1) {
       const b = bars[j];
+      const atrNow = s.atr[j];
+      if ((mode === "trail" || (mode === "partial" && partialTaken)) && num(atrNow)) {
+        trailDist = atrNow * Math.max(0.1, config.target.trailAtr);
+        if (side === 1) sl = Math.max(sl, b.close - trailDist);
+        else sl = Math.min(sl, b.close + trailDist);
+        trade.sl = sl;
+      }
+
       const hitStop = side === 1 ? b.low <= sl : b.high >= sl;
-      const hitTarget = Number.isFinite(tp) && (side === 1 ? b.high >= tp : b.low <= tp);
+      const hitTarget =
+        Number.isFinite(tpR) &&
+        !partialTaken &&
+        (mode === "r" || mode === "atr" || mode === "partial") &&
+        (side === 1 ? b.high >= tpR : b.low <= tpR);
+
       if (hitStop) {
-        // 갭으로 손절가를 넘겨 시작하면 시가에 나간다
         const gapped = side === 1 ? b.open < sl : b.open > sl;
-        close(trade, gapped ? b.open : sl, b.time, "손절", dist);
+        const exit = gapped ? b.open : sl;
+        if (partialTaken) {
+          const rest = dollarMove(entry, exit, side, {
+            ...money,
+            bet: money.bet * 0.5,
+          });
+          finishPartial(trade, exit, b.time, "부분익절+추적손절", partialUsd + rest, dist, money, entry);
+        } else {
+          closeTrade(trade, exit, b.time, "손절", dist);
+        }
         break;
       }
-      if (hitTarget) {
-        close(trade, tp, b.time, "익절", dist);
+
+      if (hitTarget && mode === "partial") {
+        partialTaken = true;
+        partialUsd = dollarMove(entry, tpR, side, { ...money, bet: money.bet * 0.5 });
+        // 본절로 손절 이동 후 추적
+        sl = entry;
+        trade.sl = sl;
+        trade.tp = tpR;
+        continue;
+      }
+
+      if (hitTarget && (mode === "r" || mode === "atr")) {
+        closeTrade(trade, tpR, b.time, "익절", dist);
         break;
       }
+
       if (oppositeCross(s, side, j, config.exitOn)) {
-        close(trade, b.close, b.time, "반대신호", dist);
+        if (partialTaken) {
+          const rest = dollarMove(entry, b.close, side, {
+            ...money,
+            bet: money.bet * 0.5,
+          });
+          finishPartial(trade, b.close, b.time, "부분익절+반대신호", partialUsd + rest, dist, money, entry);
+        } else {
+          closeTrade(trade, b.close, b.time, "반대신호", dist);
+        }
         break;
       }
+
       if (config.maxBars > 0 && j - (i + 1) + 1 >= config.maxBars) {
-        close(trade, b.close, b.time, "시간", dist);
+        if (partialTaken) {
+          const rest = dollarMove(entry, b.close, side, {
+            ...money,
+            bet: money.bet * 0.5,
+          });
+          finishPartial(trade, b.close, b.time, "부분익절+시간", partialUsd + rest, dist, money, entry);
+        } else {
+          closeTrade(trade, b.close, b.time, "시간", dist);
+        }
         break;
       }
     }
     trades.push(trade);
     if (trade.exitTime == null) break;
-    // 청산한 봉의 종가에서 다음 신호를 다시 본다
     i = j;
   }
   return trades;
@@ -451,9 +720,238 @@ export const CONDITION_LABELS: Record<ConditionId, string> = {
   di: "DI",
   wt: "WT",
   wth: "상위 WT",
+  ema: "EMA",
+  bb: "볼밴",
+  stoch: "스토캐",
+  st: "슈퍼트렌드",
 };
 
-/** 조건 조합을 같은 설정으로 돌려 어떤 필터가 도움이 되는지 본다. 상위 WT는 데이터가 있을 때만 */
+export const TARGET_LABELS: Record<TargetMode, string> = {
+  r: "고정 R",
+  atr: "ATR 익절",
+  trail: "추적손절",
+  partial: "1R 부분익절+추적",
+  none: "익절 없음",
+};
+
+function allOff(c: IndicatorConfig): IndicatorConfig {
+  return {
+    ...c,
+    macd: { ...c.macd, on: false },
+    rsi: { ...c.rsi, on: false },
+    adx: { ...c.adx, on: false },
+    di: { ...c.di, on: false },
+    wt: { ...c.wt, on: false },
+    wth: { ...c.wth, on: false },
+    ema: { ...c.ema, on: false },
+    bb: { ...c.bb, on: false },
+    stoch: { ...c.stoch, on: false },
+    st: { ...c.st, on: false },
+  };
+}
+
+export interface NamedStrategy {
+  id: string;
+  name: string;
+  blurb: string;
+  apply: (c: IndicatorConfig) => IndicatorConfig;
+}
+
+/** 차트 탭에서 한 번에 비교하는 전략 묶음 */
+export const NAMED_STRATEGIES: NamedStrategy[] = [
+  {
+    id: "macd-rsi-adx",
+    name: "MACD·RSI + ADX·DI",
+    blurb: "골든크로스 + 추세 필터. 익절 2R, MACD 반대로 청산",
+    apply: (c) => {
+      const o = allOff(c);
+      return {
+        ...o,
+        side: "long",
+        macd: { ...o.macd, on: true },
+        rsi: { ...o.rsi, on: true, mode: "signal_cross" },
+        adx: { ...o.adx, on: true, min: 20 },
+        di: { ...o.di, on: true, mode: "above" },
+        target: { ...o.target, mode: "r", r: 2 },
+        exitOn: "macd",
+      };
+    },
+  },
+  {
+    id: "macd-trail",
+    name: "MACD 크로스 · 추적손절",
+    blurb: "MACD만. 익절 없이 ATR 1.5배로 추적",
+    apply: (c) => {
+      const o = allOff(c);
+      return {
+        ...o,
+        side: "both",
+        macd: { ...o.macd, on: true },
+        target: { ...o.target, mode: "trail", trailAtr: 1.5 },
+        exitOn: "macd",
+      };
+    },
+  },
+  {
+    id: "macd-partial",
+    name: "MACD · 1R 부분익절",
+    blurb: "1R에서 절반 익절 → 본절 → ATR 추적으로 나머지",
+    apply: (c) => {
+      const o = allOff(c);
+      return {
+        ...o,
+        side: "long",
+        macd: { ...o.macd, on: true },
+        adx: { ...o.adx, on: true, min: 18 },
+        target: { ...o.target, mode: "partial", r: 1, trailAtr: 1.2 },
+        exitOn: "macd",
+      };
+    },
+  },
+  {
+    id: "wt-mean",
+    name: "WT 과매도 역추세",
+    blurb: "과매도 크로스 롱. 익절 1.5R, WT 반대로 청산",
+    apply: (c) => {
+      const o = allOff(c);
+      return {
+        ...o,
+        side: "long",
+        wt: { ...o.wt, on: true, mode: "extreme" },
+        target: { ...o.target, mode: "r", r: 1.5 },
+        exitOn: "wt",
+      };
+    },
+  },
+  {
+    id: "wt-partial",
+    name: "WT · 부분익절+추적",
+    blurb: "과매도 WT. 1R 부분익절 후 추적",
+    apply: (c) => {
+      const o = allOff(c);
+      return {
+        ...o,
+        side: "long",
+        wt: { ...o.wt, on: true, mode: "extreme" },
+        target: { ...o.target, mode: "partial", r: 1, trailAtr: 1.5 },
+        exitOn: "wt",
+      };
+    },
+  },
+  {
+    id: "ema-cross",
+    name: "EMA 9/21 골든크로스",
+    blurb: "이평 크로스. ATR 2배 익절 또는 EMA 반대로 청산",
+    apply: (c) => {
+      const o = allOff(c);
+      return {
+        ...o,
+        side: "both",
+        ema: { ...o.ema, on: true, mode: "cross" },
+        target: { ...o.target, mode: "atr", atrMult: 2 },
+        exitOn: "ema",
+      };
+    },
+  },
+  {
+    id: "ema-adx",
+    name: "EMA 크로스 + ADX",
+    blurb: "이평 크로스에 추세 세기 필터. 추적손절",
+    apply: (c) => {
+      const o = allOff(c);
+      return {
+        ...o,
+        side: "long",
+        ema: { ...o.ema, on: true, mode: "cross" },
+        adx: { ...o.adx, on: true, min: 25, rising: true },
+        target: { ...o.target, mode: "trail", trailAtr: 2 },
+        exitOn: "ema",
+      };
+    },
+  },
+  {
+    id: "bb-bounce",
+    name: "볼밴 하단 반등",
+    blurb: "하단 찍고 안으로 들어온 롱. 익절 2R",
+    apply: (c) => {
+      const o = allOff(c);
+      return {
+        ...o,
+        side: "long",
+        bb: { ...o.bb, on: true, mode: "bounce" },
+        rsi: { ...o.rsi, on: true, mode: "zone", zoneMin: 20, zoneMax: 45 },
+        target: { ...o.target, mode: "r", r: 2 },
+        exitOn: "none",
+        maxBars: 48,
+      };
+    },
+  },
+  {
+    id: "bb-break",
+    name: "볼밴 돌파 + 슈퍼트렌드",
+    blurb: "상단 돌파 롱. 슈퍼트렌드 방향으로만. 추적손절",
+    apply: (c) => {
+      const o = allOff(c);
+      return {
+        ...o,
+        side: "long",
+        bb: { ...o.bb, on: true, mode: "break" },
+        st: { ...o.st, on: true, mode: "dir" },
+        target: { ...o.target, mode: "trail", trailAtr: 1.5 },
+        exitOn: "st",
+      };
+    },
+  },
+  {
+    id: "stoch-os",
+    name: "스토캐 과매도 크로스",
+    blurb: "20 아래에서 %K/%D 골든크로스. 익절 1.5R",
+    apply: (c) => {
+      const o = allOff(c);
+      return {
+        ...o,
+        side: "long",
+        stoch: { ...o.stoch, on: true, mode: "zone_cross" },
+        target: { ...o.target, mode: "r", r: 1.5 },
+        exitOn: "none",
+        maxBars: 36,
+      };
+    },
+  },
+  {
+    id: "st-flip",
+    name: "슈퍼트렌드 전환",
+    blurb: "방향이 바뀌면 진입·청산. ATR 3배 익절",
+    apply: (c) => {
+      const o = allOff(c);
+      return {
+        ...o,
+        side: "both",
+        st: { ...o.st, on: true, mode: "flip" },
+        target: { ...o.target, mode: "atr", atrMult: 3 },
+        exitOn: "st",
+      };
+    },
+  },
+  {
+    id: "stoch-macd",
+    name: "스토캐 + MACD",
+    blurb: "과매도 스토캐와 MACD 골든크로스. 부분익절",
+    apply: (c) => {
+      const o = allOff(c);
+      return {
+        ...o,
+        side: "long",
+        stoch: { ...o.stoch, on: true, mode: "zone_cross" },
+        macd: { ...o.macd, on: true },
+        target: { ...o.target, mode: "partial", r: 1, trailAtr: 1.5 },
+        exitOn: "macd",
+      };
+    },
+  },
+];
+
+/** 켜진 조건만으로 조합 비교. 조건이 많으면 상위 5개만 */
 export function compareCombos(
   bars: Bar[],
   s: IndicatorSeries,
@@ -461,15 +959,42 @@ export function compareCombos(
   money: Money,
   withHigher: boolean
 ): { conditions: ConditionId[]; stats: BacktestStats }[] {
-  const ids: ConditionId[] = ["macd", "rsi", "adx", "di", "wt"];
-  if (withHigher) ids.push("wth");
+  let ids = enabledConditions(config);
+  if (!withHigher) ids = ids.filter((id) => id !== "wth");
+  if (ids.length === 0) {
+    ids = ["macd", "rsi", "adx", "di", "wt"];
+  }
+  if (ids.length > 5) ids = ids.slice(0, 5);
   const out: { conditions: ConditionId[]; stats: BacktestStats }[] = [];
   for (let mask = 1; mask < 1 << ids.length; mask += 1) {
     const conditions = ids.filter((_, k) => mask & (1 << k));
-    // ADX만으로는 방향이 없어서 진입 신호가 되지 않는다
     if (conditions.length === 1 && conditions[0] === "adx") continue;
     const trades = runIndicatorBacktest(bars, s, config, conditions, money);
     out.push({ conditions, stats: summarize(trades) });
   }
   return out;
+}
+
+/** 이름 있는 전략들을 같은 봉·자금으로 한꺼번에 비교 */
+export function compareStrategies(
+  bars: Bar[],
+  base: IndicatorConfig,
+  money: Money,
+  higher?: HigherTf | null
+): { strategy: NamedStrategy; stats: BacktestStats; config: IndicatorConfig }[] {
+  return NAMED_STRATEGIES.map((strategy) => {
+    const config = strategy.apply(base);
+    const series = computeSeries(bars, config, higher);
+    const trades = runIndicatorBacktest(
+      bars,
+      series,
+      config,
+      enabledConditions(config),
+      money
+    );
+    return { strategy, stats: summarize(trades), config };
+  }).sort(
+    (a, b) =>
+      Number(b.stats.closed > 0) - Number(a.stats.closed > 0) || b.stats.sumR - a.stats.sumR
+  );
 }

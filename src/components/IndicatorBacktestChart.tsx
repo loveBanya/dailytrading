@@ -137,6 +137,59 @@ export function IndicatorBacktestChart({
     markers.sort((a, b) => Number(a.time) - Number(b.time));
     if (markers.length) createSeriesMarkers(candles, markers);
 
+    // 가격 패널: EMA · 볼밴 · 슈퍼트렌드
+    const priceLine = (
+      values: (number | null)[],
+      color: string,
+      width: 1 | 2 = 1,
+      style: LineStyle = LineStyle.Solid
+    ) => {
+      const s = chart.addSeries(LineSeries, {
+        color,
+        lineWidth: width,
+        lineStyle: style,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      s.setData(points(bars, values));
+      return s;
+    };
+    priceLine(series.emaFast, "#fbbf24", 1);
+    priceLine(series.emaSlow, "#fb923c", 1);
+    priceLine(series.bbMid, "#71717a", 1, LineStyle.Dashed);
+    priceLine(series.bbUpper, "rgba(161,161,170,0.7)", 1, LineStyle.Dashed);
+    priceLine(series.bbLower, "rgba(161,161,170,0.7)", 1, LineStyle.Dashed);
+    // 슈퍼트렌드: 상승=초록, 하락=빨강으로 나눔
+    {
+      const up: { time: UTCTimestamp; value: number }[] = [];
+      const dn: { time: UTCTimestamp; value: number }[] = [];
+      for (let i = 0; i < bars.length; i += 1) {
+        const v = series.stLine[i];
+        const d = series.stDir[i];
+        if (v == null || !Number.isFinite(v) || d == null) continue;
+        const pt = { time: bars[i].time as UTCTimestamp, value: v };
+        if (d < 0) up.push(pt);
+        else dn.push(pt);
+      }
+      const stUp = chart.addSeries(LineSeries, {
+        color: "#34d399",
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      const stDn = chart.addSeries(LineSeries, {
+        color: "#f87171",
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      stUp.setData(up);
+      stDn.setData(dn);
+    }
+
     const line = (
       pane: number,
       values: (number | null)[],
@@ -270,12 +323,26 @@ export function IndicatorBacktestChart({
     }
     if (dots.length) createSeriesMarkers(wt2Line, dots);
 
+    const stochK = line(5, series.stochK, "#38bdf8", 2);
+    line(5, series.stochD, "#f472b6");
+    for (const level of [20, 80]) {
+      stochK.createPriceLine({
+        price: level,
+        color: "#3f3f46",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: false,
+        title: "",
+      });
+    }
+
     const panes = chart.panes();
     panes[0]?.setStretchFactor(3);
     panes[1]?.setStretchFactor(1);
     panes[2]?.setStretchFactor(1);
     panes[3]?.setStretchFactor(1);
     panes[4]?.setStretchFactor(1);
+    panes[5]?.setStretchFactor(1);
     chart.timeScale().fitContent();
 
     return () => chart.remove();
@@ -283,13 +350,12 @@ export function IndicatorBacktestChart({
 
   return (
     <div className="space-y-1">
-      <div ref={ref} className="h-[840px] w-full overflow-hidden rounded-lg border border-zinc-800" />
+      <div ref={ref} className="h-[980px] w-full overflow-hidden rounded-lg border border-zinc-800" />
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-500">
-        <span>위부터 가격 · MACD(흰=MACD, 주황=시그널) · RSI(보라, 회색=시그널) · ADX(흰) +DI(빨강) −DI(파랑)</span>
         <span>
-          WT(초록=wt1, 빨강=wt2, 점=크로스{htfLabel ? `, 점선=${htfLabel} WT` : ""})
+          가격: EMA(노랑·주황) · 볼밴(회색 점선) · 슈퍼트렌드(초록↑/빨강↓) · ▲▼ 진입 · ● 청산
         </span>
-        <span>▲▼ 진입 · ● 청산 (초록=수익, 노랑=손실) · 청산 이유는 아래 매매 목록에</span>
+        <span>MACD · RSI · ADX(+DI/−DI) · WT{htfLabel ? `(점선=${htfLabel})` : ""} · 스토캐(%K 하늘/%D 분홍)</span>
       </div>
     </div>
   );

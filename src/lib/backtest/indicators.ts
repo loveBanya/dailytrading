@@ -203,6 +203,53 @@ export function rsi(values: number[], length: number): (number | null)[] {
   return out;
 }
 
+/** 볼린저밴드. 가운데는 SMA(length), 상·하는 ±mult×표준편차 */
+export function bollinger(
+  values: number[],
+  length: number,
+  mult: number
+): { mid: (number | null)[]; upper: (number | null)[]; lower: (number | null)[] } {
+  const mid = sma(values, length);
+  const upper: (number | null)[] = new Array(values.length).fill(null);
+  const lower: (number | null)[] = new Array(values.length).fill(null);
+  for (let i = length - 1; i < values.length; i += 1) {
+    if (mid[i] == null) continue;
+    let sum = 0;
+    for (let k = i - length + 1; k <= i; k += 1) {
+      const d = values[k] - mid[i]!;
+      sum += d * d;
+    }
+    const sd = Math.sqrt(sum / length);
+    upper[i] = mid[i]! + mult * sd;
+    lower[i] = mid[i]! - mult * sd;
+  }
+  return { mid, upper, lower };
+}
+
+/** 스토캐스틱 %K / %D. ta.stoch(high, low, close, length) → SMA(smooth) */
+export function stochastic(
+  high: number[],
+  low: number[],
+  close: number[],
+  length: number,
+  smoothK: number,
+  smoothD: number
+): { k: (number | null)[]; d: (number | null)[] } {
+  const raw: (number | null)[] = new Array(close.length).fill(null);
+  for (let i = length - 1; i < close.length; i += 1) {
+    let hi = -Infinity;
+    let lo = Infinity;
+    for (let k = i - length + 1; k <= i; k += 1) {
+      hi = Math.max(hi, high[k]);
+      lo = Math.min(lo, low[k]);
+    }
+    raw[i] = hi === lo ? 50 : (100 * (close[i] - lo)) / (hi - lo);
+  }
+  const k = smaNullable(raw, Math.max(1, smoothK));
+  const d = smaNullable(k, Math.max(1, smoothD));
+  return { k, d };
+}
+
 /** ta.stoch(rsi, rsi, rsi, length) → 0~100 */
 export function stochRsi(rsiValues: (number | null)[], length: number): (number | null)[] {
   const out: (number | null)[] = new Array(rsiValues.length).fill(null);

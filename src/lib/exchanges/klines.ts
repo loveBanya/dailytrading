@@ -234,11 +234,12 @@ async function trySources(
 async function collectPages(
   load: (endMs: number, limit: number) => Promise<Candle[]>,
   bars: number,
-  pageSize: number
+  pageSize: number,
+  maxPages = 80
 ): Promise<Candle[]> {
   const map = new Map<number, Candle>();
   let end = Date.now();
-  for (let page = 0; page < 24 && map.size < bars; page += 1) {
+  for (let page = 0; page < maxPages && map.size < bars; page += 1) {
     const chunk = await load(end, pageSize);
     if (chunk.length === 0) break;
     let oldest = Infinity;
@@ -247,6 +248,7 @@ async function collectPages(
       if (!map.has(candle.time)) map.set(candle.time, candle);
       oldest = Math.min(oldest, candle.time);
     }
+    // 페이지가 짧으면 상장(첫 봉)까지 도달
     if (chunk.length < pageSize || !Number.isFinite(oldest)) break;
     const next = oldest * 1000 - 1;
     if (next >= end) break;
@@ -255,7 +257,7 @@ async function collectPages(
   return [...map.values()].sort((a, b) => a.time - b.time).slice(-bars);
 }
 
-/** 백테스트용으로 봉을 여러 페이지 이어 붙입니다. 바이비트 우선, 안 되면 바이낸스. */
+/** 봉을 여러 페이지 이어 붙입니다. bars를 크게 주면 첫 봉(상장)까지 가능한 한 당겨옵니다. */
 export async function fetchKlineHistory(options: {
   symbol: string;
   interval?: string;
@@ -263,13 +265,15 @@ export async function fetchKlineHistory(options: {
   prefer?: "bybit" | "binance";
 }): Promise<Candle[]> {
   const interval = options.interval ?? "15";
-  const bars = Math.min(8000, Math.max(100, Math.floor(options.bars ?? 2000)));
+  const bars = Math.min(50_000, Math.max(100, Math.floor(options.bars ?? 2000)));
   const prefer = options.prefer ?? "bybit";
   const sources: Source[] =
     prefer === "binance"
       ? ["binance", "binance-data", "bybit"]
       : ["bybit", "binance", "binance-data"];
   const errors: string[] = [];
+  // 바이낸스 1500/페이지 → 5만 봉 ≈ 34페이지, 여유 있게
+  const maxPages = Math.min(120, Math.ceil(bars / 800) + 4);
   for (const src of sources) {
     try {
       const pageSize = src === "bybit" ? 1000 : 1500;
@@ -288,7 +292,8 @@ export async function fetchKlineHistory(options: {
           return fetchBinanceUrlKlines(BINANCE_DATA, "/api/v3/klines", args);
         },
         bars,
-        pageSize
+        pageSize,
+        maxPages
       );
       if (candles.length > 0) return candles;
       errors.push(`${src}: empty`);

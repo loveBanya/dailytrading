@@ -32,7 +32,6 @@ import { GoalsPanel } from "./GoalsPanel";
 import { DailyReviewPanel } from "./DailyReviewPanel";
 import { StockMarketPanel } from "./StockMarketPanel";
 import { TradingGamePanel } from "./TradingGamePanel";
-import { IndicatorBacktestPanel } from "./IndicatorBacktestPanel";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
 import { AlarmToastHost } from "./AlarmToastHost";
 import { AlertsPanel } from "./AlertsPanel";
@@ -65,7 +64,6 @@ type Tab =
   | "review"
   | "overview"
   | "market"
-  | "chart"
   | "mindset"
   | "screener"
   | "screener-perf"
@@ -95,15 +93,15 @@ const TAB_IDS: Tab[] = [
   "review",
   "overview",
   "market",
-  "chart",
   "mindset",
   "screener",
   "screener-perf",
   "alerts",
 ];
 
-/** 예전에 따로 있던 탭은 합친 탭으로 연다 */
+/** 예전에 따로 있던 탭은 합친 탭으로 연다. */
 function migrateTab(saved: string): Tab {
+  if (saved === "chart") return "review";
   if (saved === "cash" || saved === "live") return "overview";
   if (saved === "posts" || saved === "bookmarks") return "mindset";
   if (saved === "demand-supply" || saved === "screener-watch") return "screener";
@@ -529,7 +527,6 @@ export function TradeJournal() {
             ["review", "매매 복기"],
             ["overview", "한눈에"],
             ["market", "시장 현황"],
-            ["chart", "차트"],
             ["screener", "스크리너"],
             ["screener-perf", "스크리너 성과"],
             ["alerts", "알림"],
@@ -800,23 +797,6 @@ export function TradeJournal() {
       {tab === "screener-perf" && (
         <Section title="스크리너 성과">
           <ScreenerPerfPanel />
-        </Section>
-      )}
-
-      {tab === "chart" && (
-        <Section title="차트 · 전략 백테스트">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs text-zinc-500">
-              지표·익절·전략 비교. 작업이 길면 전체 화면 페이지가 편합니다.
-            </p>
-            <a
-              href="/chart"
-              className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
-            >
-              전체 화면 열기 →
-            </a>
-          </div>
-          <IndicatorBacktestPanel />
         </Section>
       )}
 

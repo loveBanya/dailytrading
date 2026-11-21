@@ -82,12 +82,24 @@ function tone(v: number): string {
   return v > 0 ? "text-red-400" : v < 0 ? "text-blue-400" : "text-zinc-300";
 }
 
-export function IndicatorBacktestPanel() {
+export function IndicatorBacktestPanel({
+  chartSymbol,
+  chartInterval,
+  embed = false,
+  onTradesChange,
+}: {
+  /** 차트 활성 탭 심볼과 동기화 */
+  chartSymbol?: string;
+  chartInterval?: string;
+  /** 차트 옆 패널: 자체 차트·긴 안내 숨김 */
+  embed?: boolean;
+  onTradesChange?: (trades: ReturnType<typeof runIndicatorBacktest>) => void;
+} = {}) {
   const [config, setConfig] = useState<IndicatorConfig>(DEFAULT_INDICATOR_CONFIG);
-  const [symbol, setSymbol] = useState("BTCUSDT");
-  const [symbolInput, setSymbolInput] = useState("BTCUSDT");
-  const [interval, setInterval] = useState("15");
-  const [barCount, setBarCount] = useState(4000);
+  const [symbol, setSymbol] = useState(chartSymbol ?? "BTCUSDT");
+  const [symbolInput, setSymbolInput] = useState(chartSymbol ?? "BTCUSDT");
+  const [interval, setBarInterval] = useState(chartInterval ?? "15");
+  const [barCount, setBarCount] = useState(embed ? 2000 : 4000);
   const [bet, setBet] = useState(100);
   const [lev, setLev] = useState(1);
   const [feePct, setFeePct] = useState(0.04);
@@ -96,6 +108,17 @@ export function IndicatorBacktestPanel() {
   const [error, setError] = useState<string | null>(null);
   const [htf, setHtf] = useState<{ key: string; bars: Bar[] } | null>(null);
   const [htfError, setHtfError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!chartSymbol) return;
+    setSymbol(chartSymbol);
+    setSymbolInput(chartSymbol);
+  }, [chartSymbol]);
+
+  useEffect(() => {
+    if (!chartInterval) return;
+    setBarInterval(chartInterval);
+  }, [chartInterval]);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -167,6 +190,9 @@ export function IndicatorBacktestPanel() {
     () => runIndicatorBacktest(bars, series, config, enabledConditions(config), money),
     [bars, series, config, money]
   );
+  useEffect(() => {
+    onTradesChange?.(trades);
+  }, [trades, onTradesChange]);
   const stats = summarize(trades);
   const combos = useMemo(
     () =>
@@ -223,56 +249,98 @@ export function IndicatorBacktestPanel() {
 
   const onlyAdx = conditions.length === 1 && conditions[0] === "adx";
 
+  const [showDetail, setShowDetail] = useState(!embed);
+  const [showTables, setShowTables] = useState(!embed);
+
   return (
-    <div className="space-y-5">
-      <p className="text-sm leading-relaxed text-zinc-400">
-        켠 조건을 <b className="text-zinc-200">모두</b> 만족한 봉의 종가에서 신호를 보고 다음 봉
-        시가에 들어갑니다. 크로스는 최근 {config.window}봉 안에 났으면 인정합니다. 숏은 모든
-        조건을 거꾸로(데드크로스, RSI 하향, −DI 우위, WT 과매수 데드크로스) 봅니다. 익절은 고정 R·ATR·
-        추적·부분익절 중에서 고르고, 아래 전략 표로 여러 매매법을 한 번에 비교합니다. 같은 봉에서
-        손절과 익절이 둘 다 닿으면 손절로 계산합니다.
-      </p>
+    <div className={embed ? "space-y-2" : "space-y-5"}>
+      {embed ? (
+        bars.length > 0 && !error ? (
+          <div className="sticky top-0 z-10 grid grid-cols-2 gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950/95 p-2 backdrop-blur">
+            <div className="rounded bg-black/40 px-2 py-1.5">
+              <p className="text-[9px] text-zinc-500">매매</p>
+              <p className="text-xs font-semibold text-zinc-100">{stats.closed}건</p>
+            </div>
+            <div className="rounded bg-black/40 px-2 py-1.5">
+              <p className="text-[9px] text-zinc-500">승률</p>
+              <p className="text-xs font-semibold text-zinc-100">
+                {stats.winRate == null ? "—" : `${stats.winRate.toFixed(0)}%`}
+              </p>
+            </div>
+            <div className="rounded bg-black/40 px-2 py-1.5">
+              <p className="text-[9px] text-zinc-500">합계 R</p>
+              <p className={`text-xs font-semibold ${tone(stats.sumR)}`}>{fmtR(stats.sumR)}</p>
+            </div>
+            <div className="rounded bg-black/40 px-2 py-1.5">
+              <p className="text-[9px] text-zinc-500">손익</p>
+              <p className={`text-xs font-semibold ${tone(stats.sumUsd)}`}>
+                {fmtUsd(stats.sumUsd)}
+              </p>
+            </div>
+            {(loading || error) && (
+              <p className="col-span-2 text-[10px] text-zinc-500">
+                {loading ? "봉 불러오는 중…" : error}
+              </p>
+            )}
+          </div>
+        ) : (
+          <p className="text-[11px] text-zinc-500">
+            {loading ? "봉 불러오는 중…" : error ?? "차트 심볼로 백테스트 준비"}
+          </p>
+        )
+      ) : (
+        <p className="text-sm leading-relaxed text-zinc-400">
+          켠 조건을 <b className="text-zinc-200">모두</b> 만족한 봉의 종가에서 신호를 보고 다음 봉
+          시가에 들어갑니다. 크로스는 최근 {config.window}봉 안에 났으면 인정합니다. 숏은 모든
+          조건을 거꾸로(데드크로스, RSI 하향, −DI 우위, WT 과매수 데드크로스) 봅니다. 익절은 고정
+          R·ATR·추적·부분익절 중에서 고르고, 아래 전략 표로 여러 매매법을 한 번에 비교합니다. 같은
+          봉에서 손절과 익절이 둘 다 닿으면 손절로 계산합니다.
+        </p>
+      )}
 
       {/* 종목·봉 */}
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="text-xs text-zinc-500">
-          심볼
-          <div className="mt-1 flex gap-1">
-            <input
-              value={symbolInput}
-              onChange={(e) => setSymbolInput(e.target.value.toUpperCase())}
-              onKeyDown={(e) => e.key === "Enter" && commitSymbol()}
-              className="w-32 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100"
-            />
-            <button
-              type="button"
-              onClick={commitSymbol}
-              className="rounded-md border border-zinc-700 px-2.5 text-xs text-zinc-300 hover:text-zinc-100"
+      {!embed && (
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="text-xs text-zinc-500">
+            심볼
+            <div className="mt-1 flex gap-1">
+              <input
+                value={symbolInput}
+                onChange={(e) => setSymbolInput(e.target.value.toUpperCase())}
+                onKeyDown={(e) => e.key === "Enter" && commitSymbol()}
+                className="w-32 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100"
+              />
+              <button
+                type="button"
+                onClick={commitSymbol}
+                className="rounded-md border border-zinc-700 px-2.5 text-xs text-zinc-300 hover:text-zinc-100"
+              >
+                불러오기
+              </button>
+            </div>
+          </label>
+          {SYMBOLS.map((s) => (
+            <Chip
+              key={s}
+              on={symbol === s}
+              onClick={() => {
+                setSymbol(s);
+                setSymbolInput(s);
+              }}
             >
-              불러오기
-            </button>
-          </div>
-        </label>
-        {SYMBOLS.map((s) => (
-          <Chip
-            key={s}
-            on={symbol === s}
-            onClick={() => {
-              setSymbol(s);
-              setSymbolInput(s);
-            }}
-          >
-            {s.replace("USDT", "")}
-          </Chip>
-        ))}
-      </div>
+              {s.replace("USDT", "")}
+            </Chip>
+          ))}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-1.5">
-        {INTERVALS.map((it) => (
-          <Chip key={it.id} on={interval === it.id} onClick={() => setInterval(it.id)}>
-            {it.label}
-          </Chip>
-        ))}
-        <span className="mx-1 h-4 w-px bg-zinc-800" />
+        {!embed &&
+          INTERVALS.map((it) => (
+            <Chip key={it.id} on={interval === it.id} onClick={() => setBarInterval(it.id)}>
+              {it.label}
+            </Chip>
+          ))}
+        {!embed && <span className="mx-1 h-4 w-px bg-zinc-800" />}
         {BAR_CHOICES.map((n) => (
           <Chip key={n} on={barCount === n} onClick={() => setBarCount(n)}>
             {n.toLocaleString()}봉
@@ -281,16 +349,20 @@ export function IndicatorBacktestPanel() {
       </div>
 
       {/* 전략 프리셋 */}
-      <div className="space-y-1.5">
-        <span className="text-xs text-zinc-500">전략 프리셋 · 누르면 조건·익절까지 한 번에 바뀜</span>
-        <div className="flex flex-wrap items-center gap-1.5">
+      <div className="space-y-1">
+        {!embed && (
+          <span className="text-xs text-zinc-500">전략 프리셋 · 누르면 조건·익절까지 한 번에 바뀜</span>
+        )}
+        <div className="flex flex-wrap items-center gap-1">
           {NAMED_STRATEGIES.map((p) => (
             <button
               key={p.id}
               type="button"
               title={p.blurb}
               onClick={() => setConfig((c) => p.apply(c))}
-              className="rounded-full border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:border-zinc-500"
+              className={`rounded-full border border-zinc-700 text-zinc-300 hover:border-zinc-500 ${
+                embed ? "px-2 py-0.5 text-[10px]" : "px-3 py-1 text-xs"
+              }`}
             >
               {p.name}
             </button>
@@ -298,8 +370,50 @@ export function IndicatorBacktestPanel() {
         </div>
       </div>
 
+      {embed && (
+        <div className="flex flex-wrap gap-1">
+          {(
+            [
+              ["macd", config.macd.on, () => patch("macd", { on: !config.macd.on })],
+              ["rsi", config.rsi.on, () => patch("rsi", { on: !config.rsi.on })],
+              ["adx", config.adx.on, () => patch("adx", { on: !config.adx.on })],
+              ["di", config.di.on, () => patch("di", { on: !config.di.on })],
+              ["wt", config.wt.on, () => patch("wt", { on: !config.wt.on })],
+              ["ema", config.ema.on, () => patch("ema", { on: !config.ema.on })],
+              ["bb", config.bb.on, () => patch("bb", { on: !config.bb.on })],
+              ["stoch", config.stoch.on, () => patch("stoch", { on: !config.stoch.on })],
+              ["st", config.st.on, () => patch("st", { on: !config.st.on })],
+            ] as const
+          ).map(([id, on, toggle]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={toggle}
+              className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${
+                on
+                  ? "bg-emerald-500/15 text-emerald-200"
+                  : "bg-zinc-900 text-zinc-600 hover:text-zinc-400"
+              }`}
+            >
+              {id}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setShowDetail((v) => !v)}
+            className="rounded px-1.5 py-0.5 text-[10px] text-zinc-500 hover:text-zinc-300"
+          >
+            {showDetail ? "파라미터 숨김" : "파라미터"}
+          </button>
+        </div>
+      )}
+
       {/* 조건 */}
-      <div className="grid gap-3 md:grid-cols-2">
+      <div
+        className={`grid gap-3 ${embed ? "grid-cols-1" : "md:grid-cols-2"} ${
+          embed && !showDetail ? "hidden" : ""
+        }`}
+      >
         <ConditionCard
           title="MACD 골든크로스"
           on={config.macd.on}
@@ -702,40 +816,58 @@ export function IndicatorBacktestPanel() {
 
       {bars.length > 0 && !error && (
         <>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
-            <Stat label="매매" value={`${stats.closed}건`} sub={`롱 ${stats.longs} · 숏 ${stats.shorts}${stats.open ? ` · 진행 ${stats.open}` : ""}`} />
-            <Stat
-              label="승률"
-              value={stats.winRate == null ? "—" : `${stats.winRate.toFixed(1)}%`}
-              sub={`${stats.wins}승 ${stats.losses}패`}
-            />
-            <Stat label="매매당 평균" value={fmtR(stats.avgR)} sub={`합계 ${fmtR(stats.sumR)}`} tone={tone(stats.avgR ?? 0)} />
-            <Stat label="손익" value={fmtUsd(stats.sumUsd)} sub={`$${money.bet} × ${money.lev}배`} tone={tone(stats.sumUsd)} />
-            <Stat label="손익비 (PF)" value={fmtPf(stats.profitFactor)} sub="총수익 ÷ 총손실" />
-            <Stat
-              label="평균 수익 / 손실"
-              value={`${stats.avgWinUsd == null ? "—" : `$${stats.avgWinUsd.toFixed(2)}`} / ${stats.avgLossUsd == null ? "—" : `$${stats.avgLossUsd.toFixed(2)}`}`}
-              sub={`최장 연패 ${stats.worstStreak}`}
-            />
-            <Stat label="최대 낙폭" value={fmtUsd(stats.maxDrawdown)} sub="손익 곡선 고점 대비" />
-            <Stat
-              label="그냥 들고 있었으면"
-              value={holdPct == null ? "—" : `${holdPct >= 0 ? "+" : ""}${holdPct.toFixed(1)}%`}
-              sub={`${fmtTime(bars[0].time)} ~`}
-              tone={tone(holdPct ?? 0)}
-            />
-          </div>
+          {!embed && (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+              <Stat label="매매" value={`${stats.closed}건`} sub={`롱 ${stats.longs} · 숏 ${stats.shorts}${stats.open ? ` · 진행 ${stats.open}` : ""}`} />
+              <Stat
+                label="승률"
+                value={stats.winRate == null ? "—" : `${stats.winRate.toFixed(1)}%`}
+                sub={`${stats.wins}승 ${stats.losses}패`}
+              />
+              <Stat label="매매당 평균" value={fmtR(stats.avgR)} sub={`합계 ${fmtR(stats.sumR)}`} tone={tone(stats.avgR ?? 0)} />
+              <Stat label="손익" value={fmtUsd(stats.sumUsd)} sub={`$${money.bet} × ${money.lev}배`} tone={tone(stats.sumUsd)} />
+              <Stat label="손익비 (PF)" value={fmtPf(stats.profitFactor)} sub="총수익 ÷ 총손실" />
+              <Stat
+                label="평균 수익 / 손실"
+                value={`${stats.avgWinUsd == null ? "—" : `$${stats.avgWinUsd.toFixed(2)}`} / ${stats.avgLossUsd == null ? "—" : `$${stats.avgLossUsd.toFixed(2)}`}`}
+                sub={`최장 연패 ${stats.worstStreak}`}
+              />
+              <Stat label="최대 낙폭" value={fmtUsd(stats.maxDrawdown)} sub="손익 곡선 고점 대비" />
+              <Stat
+                label="그냥 들고 있었으면"
+                value={holdPct == null ? "—" : `${holdPct >= 0 ? "+" : ""}${holdPct.toFixed(1)}%`}
+                sub={`${fmtTime(bars[0].time)} ~`}
+                tone={tone(holdPct ?? 0)}
+              />
+            </div>
+          )}
 
-          <IndicatorBacktestChart
-            bars={bars}
-            series={series}
-            trades={trades}
-            rsiLevels={rsiLevels}
-            adxMin={config.adx.min}
-            wtLevels={[config.wt.ob, config.wt.os]}
-            htfLabel={higher ? HTF_CHOICES.find((h) => h.id === config.wth.tf)?.label ?? null : null}
-          />
+          {!embed && (
+            <IndicatorBacktestChart
+              bars={bars}
+              series={series}
+              trades={trades}
+              rsiLevels={rsiLevels}
+              adxMin={config.adx.min}
+              wtLevels={[config.wt.ob, config.wt.os]}
+              htfLabel={
+                higher ? HTF_CHOICES.find((h) => h.id === config.wth.tf)?.label ?? null : null
+              }
+            />
+          )}
 
+          {embed && (
+            <button
+              type="button"
+              onClick={() => setShowTables((v) => !v)}
+              className="w-full rounded border border-zinc-800 py-1 text-[10px] text-zinc-500 hover:text-zinc-300"
+            >
+              {showTables ? "비교표·목록 숨김" : "전략 비교·매매 목록"}
+            </button>
+          )}
+
+          {(!embed || showTables) && (
+            <>
           <StrategyTable rows={strategies} onApply={(cfg) => setConfig(cfg)} current={config} />
 
           <ComboTable combos={combos} current={conditionKey} onApply={applyCombo} />
@@ -789,6 +921,8 @@ export function IndicatorBacktestPanel() {
               </tbody>
             </table>
           </div>
+            </>
+          )}
         </>
       )}
     </div>

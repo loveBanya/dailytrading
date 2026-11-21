@@ -804,7 +804,18 @@ export function TradeJournal() {
       )}
 
       {tab === "chart" && (
-        <Section title="지표 백테스트 · MACD · RSI · ADX · DI · WaveTrend">
+        <Section title="차트 · 전략 백테스트">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-zinc-500">
+              지표·익절·전략 비교. 작업이 길면 전체 화면 페이지가 편합니다.
+            </p>
+            <a
+              href="/chart"
+              className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+            >
+              전체 화면 열기 →
+            </a>
+          </div>
           <IndicatorBacktestPanel />
         </Section>
       )}

@@ -2,17 +2,42 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatKst, formatPnl, formatUsd } from "@/lib/utils/format";
-import type {
-  HlEventType,
-  HlFill,
-  HlLeaderboardRow,
-  HlOpenPosition,
-  HlPortfolioSlice,
-  HlPositionEvent,
-  HlTrader,
+import {
+  HL_ENTRIES_EVENT,
+  HL_POLL_HOURS,
+  HL_SYNCED_EVENT,
+  readHlCache,
+  recentCacheKey,
+  writeHlCache,
+} from "@/lib/hyperliquid/cache";
+import { HlEntryChart } from "./HlEntryChart";
+import {
+  INITIAL_SNAPSHOT_NOTE,
+  type HlEventType,
+  type HlFill,
+  type HlLeaderboardRow,
+  type HlOpenPosition,
+  type HlPortfolioSlice,
+  type HlPositionEvent,
+  type HlRecentEntry,
+  type HlTrader,
 } from "@/lib/hyperliquid/types";
 
-type SubView = "watch" | "board" | "history";
+type SubView = "all" | "watch" | "board" | "history";
+
+const TRADERS_CACHE_KEY = "traders";
+const ENTRY_HOURS = [6, 24, 72] as const;
+const ENTRY_MIN_NOTIONAL = [0, 10_000, 100_000] as const;
+
+function timeAgo(ms: number): string {
+  const diff = Math.max(0, Date.now() - ms);
+  const m = Math.floor(diff / 60_000);
+  if (m < 1) return "방금";
+  if (m < 60) return `${m}분 전`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}시간 전`;
+  return `${Math.floor(h / 24)}일 전`;
+}
 
 const EVENT_LABEL: Record<HlEventType, string> = {
   OPEN: "오픈",
@@ -48,11 +73,18 @@ function pnlClass(n: number | null | undefined): string {
 }
 
 export function HlTradersPanel() {
-  const [view, setView] = useState<SubView>("watch");
+  const [view, setView] = useState<SubView>("all");
+  const [entries, setEntries] = useState<HlRecentEntry[]>([]);
+  const [entriesLoading, setEntriesLoading] = useState(false);
+  const [entryHours, setEntryHours] = useState<number>(24);
+  const [entryMin, setEntryMin] = useState<number>(10_000);
   const [traders, setTraders] = useState<HlTrader[]>([]);
   const [positions, setPositions] = useState<HlOpenPosition[]>([]);
+  /** null = 전체 */
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [cachedAt, setCachedAt] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [migrationHint, setMigrationHint] = useState<string | null>(null);
@@ -68,6 +100,15 @@ export function HlTradersPanel() {
   const [fills, setFills] = useState<HlFill[]>([]);
   const [portfolio, setPortfolio] = useState<HlPortfolioSlice[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [hideSnapshot, setHideSnapshot] = useState(true);
+
+  const visibleEvents = useMemo(
+    () =>
+      hideSnapshot
+        ? events.filter((e) => e.note !== INITIAL_SNAPSHOT_NOTE)
+        : events,
+    [events, hideSnapshot]
+  );
 
   const selected = useMemo(
     () => traders.find((t) => t.id === selectedId) ?? null,
@@ -76,14 +117,27 @@ export function HlTradersPanel() {
 
   const selectedPositions = useMemo(
     () =>
-      selectedId
+      (selectedId
         ? positions.filter((p) => p.trader_id === selectedId)
-        : positions,
+        : [...positions]
+      ).sort(
+        (a, b) =>
+          Math.abs(Number(b.position_value ?? 0)) -
+          Math.abs(Number(a.position_value ?? 0))
+      ),
     [positions, selectedId]
   );
 
+  const traderLabel = useCallback(
+    (id: string) => {
+      const t = traders.find((x) => x.id === id);
+      return t ? t.label || shortAddr(t.address) : "-";
+    },
+    [traders]
+  );
+
   const load = useCallback(async () => {
-    setLoading(true);
+    setRefreshing(true);
     setError(null);
     try {
       const res = await fetch("/api/hl-traders");
@@ -104,21 +158,52 @@ export function HlTradersPanel() {
       }
       if (data.error && !data.needsMigration) throw new Error(data.error);
       const list = data.traders ?? [];
+      const pos = data.positions ?? [];
       setTraders(list);
-      setPositions(data.positions ?? []);
-      setSelectedId((prev) => {
-        if (prev && list.some((t) => t.id === prev)) return prev;
-        return list[0]?.id ?? null;
-      });
+      setPositions(pos);
+      setCachedAt(null);
+      writeHlCache(TRADERS_CACHE_KEY, { traders: list, positions: pos });
+      setSelectedId((prev) =>
+        prev && list.some((t) => t.id === prev) ? prev : null
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "불러오기 실패");
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
+    const cached = readHlCache<{
+      traders: HlTrader[];
+      positions: HlOpenPosition[];
+    }>(TRADERS_CACHE_KEY);
+    if (cached) {
+      setTraders(cached.data.traders);
+      setPositions(cached.data.positions);
+      setCachedAt(cached.at);
+      setLoading(false);
+    }
+    const cachedEntries = readHlCache<HlRecentEntry[]>(recentCacheKey(24));
+    if (cachedEntries) setEntries(cachedEntries.data);
     void load();
+  }, [load]);
+
+  useEffect(() => {
+    const onEntries = (e: Event) => {
+      if (entryHours !== HL_POLL_HOURS) return;
+      const list = (e as CustomEvent<HlRecentEntry[]>).detail;
+      if (Array.isArray(list)) setEntries(list);
+    };
+    window.addEventListener(HL_ENTRIES_EVENT, onEntries);
+    return () => window.removeEventListener(HL_ENTRIES_EVENT, onEntries);
+  }, [entryHours]);
+
+  useEffect(() => {
+    const onSynced = () => void load();
+    window.addEventListener(HL_SYNCED_EVENT, onSynced);
+    return () => window.removeEventListener(HL_SYNCED_EVENT, onSynced);
   }, [load]);
 
   const loadBoard = useCallback(async () => {
@@ -132,6 +217,7 @@ export function HlTradersPanel() {
       };
       if (data.error) throw new Error(data.error);
       setBoard(data.rows ?? []);
+      writeHlCache("leaderboard", data.rows ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "리더보드 실패");
     } finally {
@@ -139,13 +225,29 @@ export function HlTradersPanel() {
     }
   }, []);
 
-  const loadHistory = useCallback(async (traderId: string) => {
+  const loadHistory = useCallback(async (traderId: string | null) => {
+    const cacheKey = `history:${traderId ?? "all"}`;
+    const cached = readHlCache<{
+      events: HlPositionEvent[];
+      fills: HlFill[];
+      portfolio: HlPortfolioSlice[];
+    }>(cacheKey);
+    if (cached) {
+      setEvents(cached.data.events);
+      setFills(cached.data.fills);
+      setPortfolio(cached.data.portfolio);
+    } else {
+      setEvents([]);
+      setFills([]);
+      setPortfolio([]);
+    }
     setHistoryLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/hl-traders/history?traderId=${encodeURIComponent(traderId)}&limit=120&fills=1&portfolio=1`
-      );
+      const qs = traderId
+        ? `traderId=${encodeURIComponent(traderId)}&limit=120&fills=1&portfolio=1`
+        : "limit=300";
+      const res = await fetch(`/api/hl-traders/history?${qs}`);
       const data = (await res.json()) as {
         events?: HlPositionEvent[];
         fills?: HlFill[] | null;
@@ -153,9 +255,15 @@ export function HlTradersPanel() {
         error?: string;
       };
       if (data.error) throw new Error(data.error);
-      setEvents(data.events ?? []);
-      setFills(data.fills ?? []);
-      setPortfolio(data.portfolio ?? []);
+      const next = {
+        events: data.events ?? [],
+        fills: data.fills ?? [],
+        portfolio: data.portfolio ?? [],
+      };
+      setEvents(next.events);
+      setFills(next.fills);
+      setPortfolio(next.portfolio);
+      writeHlCache(cacheKey, next);
     } catch (err) {
       setError(err instanceof Error ? err.message : "히스토리 실패");
     } finally {
@@ -163,12 +271,48 @@ export function HlTradersPanel() {
     }
   }, []);
 
+  const loadEntries = useCallback(
+    async (fresh = false) => {
+      const key = recentCacheKey(entryHours);
+      const cached = readHlCache<HlRecentEntry[]>(key);
+      if (cached) setEntries(cached.data);
+      setEntriesLoading(true);
+      try {
+        const res = await fetch(
+          `/api/hl-traders/recent?hours=${entryHours}${fresh ? "&fresh=1" : ""}`
+        );
+        const data = (await res.json()) as {
+          entries?: HlRecentEntry[];
+          error?: string;
+        };
+        if (data.error) throw new Error(data.error);
+        const list = data.entries ?? [];
+        setEntries(list);
+        writeHlCache(key, list);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "최근 진입 실패");
+      } finally {
+        setEntriesLoading(false);
+      }
+    },
+    [entryHours]
+  );
+
   useEffect(() => {
-    if (view === "board" && board.length === 0) void loadBoard();
+    if (view === "all" && traders.length > 0) void loadEntries();
+  }, [view, traders.length, loadEntries]);
+
+  useEffect(() => {
+    if (view !== "board") return;
+    if (board.length === 0) {
+      const cached = readHlCache<HlLeaderboardRow[]>("leaderboard");
+      if (cached) setBoard(cached.data);
+      if (!cached || Date.now() - cached.at > 10 * 60_000) void loadBoard();
+    }
   }, [view, board.length, loadBoard]);
 
   useEffect(() => {
-    if (view === "history" && selectedId) void loadHistory(selectedId);
+    if (view === "history") void loadHistory(selectedId);
   }, [view, selectedId, loadHistory]);
 
   async function handleAdd(e: React.FormEvent) {
@@ -224,7 +368,8 @@ export function HlTradersPanel() {
       if (data.needsMigration) setMigrationHint(data.migrationHint ?? null);
       if (data.error) throw new Error(data.error);
       await load();
-      if (view === "history" && selectedId) await loadHistory(selectedId);
+      if (view === "history") await loadHistory(selectedId);
+      if (view === "all") await loadEntries(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "동기화 실패");
     } finally {
@@ -277,7 +422,13 @@ export function HlTradersPanel() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-zinc-400">
           Hyperliquid 공개 지갑을 관심에 두고 포지션·변경 이력을 추적합니다.
-          이후 알림·카피 테스트 기반입니다.
+          <span className="ml-2 text-xs text-zinc-600">
+            {refreshing
+              ? "최신 데이터 받는 중…"
+              : cachedAt
+                ? `저장본 표시 중 (${timeAgo(cachedAt)})`
+                : "5분마다 자동 동기화"}
+          </span>
         </p>
         <button
           type="button"
@@ -336,6 +487,7 @@ export function HlTradersPanel() {
       <div className="flex flex-wrap gap-1.5">
         {(
           [
+            ["all", "모아보기"],
             ["watch", "관심·포지션"],
             ["board", "리더보드"],
             ["history", "히스토리"],
@@ -356,8 +508,19 @@ export function HlTradersPanel() {
         ))}
       </div>
 
-      {traders.length > 0 && (
+      {traders.length > 0 && (view === "watch" || view === "history") && (
         <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onClick={() => setSelectedId(null)}
+            className={`rounded border px-2.5 py-1 text-xs transition ${
+              selectedId == null
+                ? "border-emerald-600/60 bg-emerald-500/10 text-emerald-200"
+                : "border-zinc-800 text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            전체 {traders.length}명
+          </button>
           {traders.map((t) => (
             <button
               key={t.id}
@@ -384,6 +547,24 @@ export function HlTradersPanel() {
         <p className="py-8 text-center text-sm text-zinc-500">불러오는 중…</p>
       )}
 
+      {!loading && view === "all" && (
+        <AllTradersView
+          traders={traders}
+          positions={positions}
+          entries={entries}
+          entriesLoading={entriesLoading}
+          entryHours={entryHours}
+          entryMin={entryMin}
+          onHoursChange={setEntryHours}
+          onMinChange={setEntryMin}
+          onRefreshEntries={() => void loadEntries(true)}
+          onOpenTrader={(id) => {
+            setSelectedId(id);
+            setView("watch");
+          }}
+        />
+      )}
+
       {!loading && view === "watch" && (
         <div className="space-y-4">
           {traders.length === 0 ? (
@@ -394,52 +575,63 @@ export function HlTradersPanel() {
           ) : (
             <>
               {selected && (
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-sm">
-                  <div>
-                    <span className="font-medium text-zinc-200">
-                      {selected.label || shortAddr(selected.address)}
-                    </span>
-                    <a
-                      href={`https://app.hyperliquid.xyz/explorer/address/${selected.address}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="ml-2 font-mono text-xs text-zinc-500 underline hover:text-zinc-300"
-                    >
-                      {shortAddr(selected.address)}
-                    </a>
-                    {selected.last_synced_at && (
-                      <span className="ml-2 text-xs text-zinc-600">
-                        동기화 {formatKst(selected.last_synced_at)}
+                <div className="space-y-2 rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="font-medium text-zinc-200">
+                        {selected.label || shortAddr(selected.address)}
                       </span>
-                    )}
+                      <a
+                        href={`https://app.hyperliquid.xyz/explorer/address/${selected.address}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="ml-2 font-mono text-xs text-zinc-500 underline hover:text-zinc-300"
+                      >
+                        {shortAddr(selected.address)}
+                      </a>
+                      {selected.last_synced_at && (
+                        <span className="ml-2 text-xs text-zinc-600">
+                          동기화 {formatKst(selected.last_synced_at)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        disabled={syncing}
+                        onClick={() => void handleSync(selected.id)}
+                        className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
+                      >
+                        동기화
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setView("history");
+                        }}
+                        className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:text-zinc-200"
+                      >
+                        히스토리
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDelete(selected.id)}
+                        className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-rose-400/80 hover:text-rose-300"
+                      >
+                        제거
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex gap-1.5">
-                    <button
-                      type="button"
-                      disabled={syncing}
-                      onClick={() => void handleSync(selected.id)}
-                      className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
-                    >
-                      동기화
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setView("history");
-                      }}
-                      className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:text-zinc-200"
-                    >
-                      히스토리
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleDelete(selected.id)}
-                      className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-rose-400/80 hover:text-rose-300"
-                    >
-                      제거
-                    </button>
-                  </div>
+                  {selected.note ? (
+                    <p className="text-xs leading-relaxed text-zinc-500">
+                      {selected.note}
+                    </p>
+                  ) : null}
                 </div>
+              )}
+
+              {selectedId == null && selectedPositions.length > 0 && (
+                <AllPositionsSummary positions={selectedPositions} />
               )}
 
               {selectedPositions.length === 0 ? (
@@ -447,10 +639,13 @@ export function HlTradersPanel() {
                   열린 포지션이 없습니다. 동기화하면 스냅샷이 갱신됩니다.
                 </p>
               ) : (
-                <div className="overflow-x-auto">
+                <div className="max-h-[560px] overflow-auto pretty-scroll">
                   <table className="w-full min-w-[640px] text-left text-sm">
-                    <thead className="border-b border-zinc-800 text-[11px] uppercase tracking-wide text-zinc-500">
+                    <thead className="sticky top-0 border-b border-zinc-800 bg-zinc-950 text-[11px] uppercase tracking-wide text-zinc-500">
                       <tr>
+                        {selectedId == null && (
+                          <th className="px-2 py-2 font-medium">트레이더</th>
+                        )}
                         <th className="px-2 py-2 font-medium">코인</th>
                         <th className="px-2 py-2 font-medium">방향</th>
                         <th className="px-2 py-2 font-medium">크기</th>
@@ -466,6 +661,17 @@ export function HlTradersPanel() {
                           key={p.id}
                           className="border-b border-zinc-900/80 text-zinc-300"
                         >
+                          {selectedId == null && (
+                            <td className="px-2 py-2">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedId(p.trader_id)}
+                                className="text-left text-xs text-zinc-400 hover:text-emerald-300 hover:underline"
+                              >
+                                {traderLabel(p.trader_id)}
+                              </button>
+                            </td>
+                          )}
                           <td className="px-2 py-2 font-medium text-zinc-100">
                             {p.coin}
                           </td>
@@ -611,11 +817,7 @@ export function HlTradersPanel() {
 
       {!loading && view === "history" && (
         <div className="space-y-5">
-          {!selectedId ? (
-            <p className="py-8 text-center text-sm text-zinc-500">
-              관심 트레이더를 먼저 선택하세요.
-            </p>
-          ) : historyLoading && events.length === 0 ? (
+          {historyLoading && events.length === 0 ? (
             <p className="py-8 text-center text-sm text-zinc-500">
               히스토리 불러오는 중…
             </p>
@@ -640,17 +842,33 @@ export function HlTradersPanel() {
               )}
 
               <div>
-                <h3 className="mb-2 text-sm font-medium text-zinc-200">
-                  포지션 변경 기록
-                </h3>
-                {events.length === 0 ? (
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-medium text-zinc-200">
+                    포지션 변경 기록
+                    {selectedId == null ? (
+                      <span className="ml-2 text-xs font-normal text-zinc-500">
+                        전체 트레이더
+                      </span>
+                    ) : null}
+                  </h3>
+                  <label className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+                    <input
+                      type="checkbox"
+                      checked={hideSnapshot}
+                      onChange={(e) => setHideSnapshot(e.target.checked)}
+                      className="size-3.5 accent-emerald-500"
+                    />
+                    초기 스냅샷 숨기기
+                  </label>
+                </div>
+                {visibleEvents.length === 0 ? (
                   <p className="text-sm text-zinc-500">
-                    아직 기록된 이벤트가 없습니다. 동기화를 반복하면
+                    아직 기록된 변경이 없습니다. 5분마다 자동 동기화되면서
                     오픈·증감·청산이 쌓입니다.
                   </p>
                 ) : (
-                  <ul className="max-h-72 space-y-1.5 overflow-y-auto pretty-scroll">
-                    {events.map((ev) => (
+                  <ul className="max-h-96 space-y-1.5 overflow-y-auto pretty-scroll">
+                    {visibleEvents.map((ev) => (
                       <li
                         key={ev.id}
                         className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded border border-zinc-800/80 bg-zinc-950/30 px-2.5 py-1.5 text-sm"
@@ -658,6 +876,15 @@ export function HlTradersPanel() {
                         <span className="text-[11px] text-zinc-600">
                           {formatKst(ev.observed_at)}
                         </span>
+                        {selectedId == null && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedId(ev.trader_id)}
+                            className="text-xs text-zinc-400 hover:text-emerald-300 hover:underline"
+                          >
+                            {traderLabel(ev.trader_id)}
+                          </button>
+                        )}
                         <span className="font-medium text-zinc-200">
                           {ev.coin}
                         </span>
@@ -741,6 +968,473 @@ export function HlTradersPanel() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function AllPositionsSummary({ positions }: { positions: HlOpenPosition[] }) {
+  const { longNtl, shortNtl, coins } = useMemo(() => {
+    let longNtl = 0;
+    let shortNtl = 0;
+    const m = new Map<
+      string,
+      { long: number; short: number; longT: Set<string>; shortT: Set<string> }
+    >();
+    for (const p of positions) {
+      const v = Math.abs(Number(p.position_value ?? 0));
+      const cur = m.get(p.coin) ?? {
+        long: 0,
+        short: 0,
+        longT: new Set<string>(),
+        shortT: new Set<string>(),
+      };
+      if (p.side === "LONG") {
+        longNtl += v;
+        cur.long += v;
+        cur.longT.add(p.trader_id);
+      } else {
+        shortNtl += v;
+        cur.short += v;
+        cur.shortT.add(p.trader_id);
+      }
+      m.set(p.coin, cur);
+    }
+    const coins = [...m.entries()]
+      .map(([coin, c]) => ({
+        coin,
+        long: c.long,
+        short: c.short,
+        longN: c.longT.size,
+        shortN: c.shortT.size,
+      }))
+      .sort((a, b) => b.longN + b.shortN - (a.longN + a.shortN) || b.long + b.short - (a.long + a.short))
+      .slice(0, 12);
+    return { longNtl, shortNtl, coins };
+  }, [positions]);
+
+  const total = longNtl + shortNtl;
+  return (
+    <div className="space-y-2 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+        <span className="text-zinc-300">
+          전체 포지션 {positions.length}개
+        </span>
+        <span className="text-xs tabular-nums">
+          <span className="text-emerald-400">롱 {fmtUsdCompact(longNtl)}</span>
+          <span className="mx-2 text-zinc-600">/</span>
+          <span className="text-rose-400">숏 {fmtUsdCompact(shortNtl)}</span>
+        </span>
+      </div>
+      {total > 0 && (
+        <div className="flex h-1.5 overflow-hidden rounded-full bg-rose-500/60">
+          <div
+            className="bg-emerald-500/80"
+            style={{ width: `${(longNtl / total) * 100}%` }}
+          />
+        </div>
+      )}
+      <div className="flex flex-wrap gap-1.5 pt-1">
+        {coins.map((c) => (
+          <span
+            key={c.coin}
+            className="rounded border border-zinc-800 px-2 py-0.5 text-[11px] text-zinc-400"
+            title={`롱 ${fmtUsdCompact(c.long)} / 숏 ${fmtUsdCompact(c.short)}`}
+          >
+            <span className="text-zinc-200">{c.coin}</span>
+            {c.longN > 0 && (
+              <span className="ml-1 text-emerald-400">롱{c.longN}</span>
+            )}
+            {c.shortN > 0 && (
+              <span className="ml-1 text-rose-400">숏{c.shortN}</span>
+            )}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AllTradersView({
+  traders,
+  positions,
+  entries,
+  entriesLoading,
+  entryHours,
+  entryMin,
+  onHoursChange,
+  onMinChange,
+  onRefreshEntries,
+  onOpenTrader,
+}: {
+  traders: HlTrader[];
+  positions: HlOpenPosition[];
+  entries: HlRecentEntry[];
+  entriesLoading: boolean;
+  entryHours: number;
+  entryMin: number;
+  onHoursChange: (h: number) => void;
+  onMinChange: (n: number) => void;
+  onRefreshEntries: () => void;
+  onOpenTrader: (id: string) => void;
+}) {
+  const visibleEntries = useMemo(
+    () => entries.filter((e) => e.notional >= entryMin),
+    [entries, entryMin]
+  );
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  const entryKey = (e: HlRecentEntry) =>
+    `${e.traderId}-${e.coin}-${e.side}-${e.firstTime}`;
+  const focusEntry = focusKey
+    ? visibleEntries.find((e) => entryKey(e) === focusKey) ?? null
+    : null;
+  const focusPosition = focusEntry
+    ? positions.find(
+        (p) =>
+          p.trader_id === focusEntry.traderId &&
+          p.coin === focusEntry.coin &&
+          p.side === focusEntry.side
+      ) ?? null
+    : null;
+
+  const lastEntryByTrader = useMemo(() => {
+    const m = new Map<string, HlRecentEntry>();
+    for (const e of visibleEntries) {
+      const cur = m.get(e.traderId);
+      if (!cur || e.lastTime > cur.lastTime) m.set(e.traderId, e);
+    }
+    return m;
+  }, [visibleEntries]);
+
+  const cards = useMemo(() => {
+    return traders
+      .map((t) => {
+        const list = positions
+          .filter((p) => p.trader_id === t.id)
+          .map((p) => ({ ...p, value: Math.abs(Number(p.position_value ?? 0)) }))
+          .sort((a, b) => b.value - a.value);
+        const longNtl = list
+          .filter((p) => p.side === "LONG")
+          .reduce((s, p) => s + p.value, 0);
+        const shortNtl = list
+          .filter((p) => p.side === "SHORT")
+          .reduce((s, p) => s + p.value, 0);
+        const upnl = list.reduce(
+          (s, p) => s + Number(p.unrealised_pnl ?? 0),
+          0
+        );
+        return {
+          trader: t,
+          list,
+          longNtl,
+          shortNtl,
+          upnl,
+          last: lastEntryByTrader.get(t.id) ?? null,
+        };
+      })
+      .sort((a, b) => {
+        const ta = a.last?.lastTime ?? 0;
+        const tb = b.last?.lastTime ?? 0;
+        if (ta !== tb) return tb - ta;
+        return b.longNtl + b.shortNtl - (a.longNtl + a.shortNtl);
+      });
+  }, [traders, positions, lastEntryByTrader]);
+
+  const coinSummary = useMemo(() => {
+    const m = new Map<string, { long: number; short: number; traders: Set<string> }>();
+    for (const e of visibleEntries) {
+      const cur = m.get(e.coin) ?? { long: 0, short: 0, traders: new Set() };
+      if (e.side === "LONG") cur.long += e.notional;
+      else cur.short += e.notional;
+      cur.traders.add(e.traderId);
+      m.set(e.coin, cur);
+    }
+    return [...m.entries()]
+      .map(([coin, v]) => ({ coin, ...v, count: v.traders.size }))
+      .filter((c) => c.count >= 2)
+      .sort((a, b) => b.count - a.count || b.long + b.short - (a.long + a.short))
+      .slice(0, 8);
+  }, [visibleEntries]);
+
+  if (traders.length === 0) {
+    return (
+      <p className="py-8 text-center text-sm text-zinc-500">
+        관심 트레이더가 없습니다. 주소를 추가하거나 리더보드에서 따라가세요.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-medium text-zinc-200">
+            최근 진입
+            <span className="ml-2 text-xs font-normal text-zinc-500">
+              {visibleEntries.length}건 · HL 체결 기준
+            </span>
+          </h3>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {ENTRY_HOURS.map((h) => (
+              <button
+                key={h}
+                type="button"
+                onClick={() => onHoursChange(h)}
+                className={`rounded border px-2 py-0.5 text-[11px] ${
+                  entryHours === h
+                    ? "border-emerald-600/60 text-emerald-300"
+                    : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {h}h
+              </button>
+            ))}
+            <span className="mx-1 h-3 w-px bg-zinc-800" />
+            {ENTRY_MIN_NOTIONAL.map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => onMinChange(n)}
+                className={`rounded border px-2 py-0.5 text-[11px] ${
+                  entryMin === n
+                    ? "border-emerald-600/60 text-emerald-300"
+                    : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {n === 0 ? "전체" : `≥${fmtUsdCompact(n)}`}
+              </button>
+            ))}
+            <button
+              type="button"
+              disabled={entriesLoading}
+              onClick={onRefreshEntries}
+              className="ml-1 rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
+            >
+              {entriesLoading ? "불러오는 중…" : "새로고침"}
+            </button>
+          </div>
+        </div>
+
+        {coinSummary.length > 0 && (
+          <div className="mb-3 flex flex-wrap gap-1.5">
+            {coinSummary.map((c) => {
+              const longBias = c.long >= c.short;
+              return (
+                <span
+                  key={c.coin}
+                  className={`rounded-full border px-2.5 py-0.5 text-[11px] ${
+                    longBias
+                      ? "border-emerald-700/50 text-emerald-300"
+                      : "border-rose-700/50 text-rose-300"
+                  }`}
+                  title={`롱 ${fmtUsdCompact(c.long)} / 숏 ${fmtUsdCompact(c.short)}`}
+                >
+                  {c.coin} · {c.count}명 {longBias ? "롱" : "숏"} 우세
+                </span>
+              );
+            })}
+          </div>
+        )}
+
+        {focusEntry && (
+          <div className="mb-3">
+            <HlEntryChart
+              key={focusKey}
+              entry={focusEntry}
+              position={focusPosition}
+              onClose={() => setFocusKey(null)}
+            />
+          </div>
+        )}
+
+        {entriesLoading && entries.length === 0 ? (
+          <p className="py-6 text-center text-sm text-zinc-500">
+            체결 불러오는 중…
+          </p>
+        ) : visibleEntries.length === 0 ? (
+          <p className="py-6 text-center text-sm text-zinc-500">
+            조건에 맞는 최근 진입이 없습니다.
+          </p>
+        ) : (
+          <div className="max-h-[480px] overflow-auto pretty-scroll">
+            <p className="mb-1 text-[11px] text-zinc-600">
+              줄을 누르면 차트와 타점 설명이 열립니다.
+            </p>
+            <table className="w-full min-w-[640px] text-left text-sm">
+              <thead className="sticky top-0 border-b border-zinc-800 bg-zinc-950 text-[11px] uppercase tracking-wide text-zinc-500">
+                <tr>
+                  <th className="px-2 py-1.5 font-medium">시각</th>
+                  <th className="px-2 py-1.5 font-medium">트레이더</th>
+                  <th className="px-2 py-1.5 font-medium">코인</th>
+                  <th className="px-2 py-1.5 font-medium">방향</th>
+                  <th className="px-2 py-1.5 font-medium">규모</th>
+                  <th className="px-2 py-1.5 font-medium">평균가</th>
+                  <th className="px-2 py-1.5 font-medium">체결</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleEntries.map((e) => (
+                  <tr
+                    key={entryKey(e)}
+                    onClick={() =>
+                      setFocusKey((k) => (k === entryKey(e) ? null : entryKey(e)))
+                    }
+                    className={`cursor-pointer border-b border-zinc-900/80 text-zinc-300 hover:bg-zinc-800/40 ${
+                      focusKey === entryKey(e) ? "bg-zinc-800/60" : ""
+                    }`}
+                  >
+                    <td
+                      className="px-2 py-1.5 text-xs text-zinc-500"
+                      title={formatKst(e.lastTime)}
+                    >
+                      {timeAgo(e.lastTime)}
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <button
+                        type="button"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          onOpenTrader(e.traderId);
+                        }}
+                        className="text-left text-zinc-200 hover:text-emerald-300 hover:underline"
+                      >
+                        {e.label || shortAddr(e.address)}
+                      </button>
+                    </td>
+                    <td className="px-2 py-1.5 font-medium text-zinc-100">
+                      {e.coin}
+                    </td>
+                    <td
+                      className={`px-2 py-1.5 ${
+                        e.side === "LONG" ? "text-emerald-400" : "text-rose-400"
+                      }`}
+                    >
+                      {e.side}
+                      {e.kind === "FLIP" ? (
+                        <span className="ml-1 rounded bg-zinc-800 px-1 text-[10px] text-amber-300">
+                          플립
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="px-2 py-1.5 tabular-nums">
+                      {fmtUsdCompact(e.notional)}
+                    </td>
+                    <td className="px-2 py-1.5 tabular-nums text-zinc-400">
+                      {e.avgPx.toLocaleString(undefined, {
+                        maximumSignificantDigits: 6,
+                      })}
+                    </td>
+                    <td className="px-2 py-1.5 tabular-nums text-zinc-500">
+                      {e.fills}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {cards.map(({ trader, list, longNtl, shortNtl, upnl, last }) => {
+          const total = longNtl + shortNtl;
+          const longPct = total > 0 ? (longNtl / total) * 100 : 0;
+          return (
+            <button
+              key={trader.id}
+              type="button"
+              onClick={() => onOpenTrader(trader.id)}
+              className="flex flex-col gap-2 rounded-md border border-zinc-800 bg-zinc-950/40 p-3 text-left transition hover:border-zinc-600"
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="truncate font-medium text-zinc-100">
+                  {trader.label || shortAddr(trader.address)}
+                </span>
+                <span className="shrink-0 text-xs tabular-nums text-zinc-500">
+                  {fmtUsdCompact(
+                    trader.account_value != null
+                      ? Number(trader.account_value)
+                      : null
+                  )}
+                </span>
+              </div>
+
+              {total > 0 ? (
+                <>
+                  <div className="flex h-1.5 overflow-hidden rounded-full bg-rose-500/60">
+                    <div
+                      className="bg-emerald-500/80"
+                      style={{ width: `${longPct}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[11px] tabular-nums">
+                    <span className="text-emerald-400">
+                      롱 {fmtUsdCompact(longNtl)}
+                    </span>
+                    <span className={pnlClass(upnl)}>
+                      미실현 {fmtUsdCompact(upnl)}
+                    </span>
+                    <span className="text-rose-400">
+                      숏 {fmtUsdCompact(shortNtl)}
+                    </span>
+                  </div>
+                  <ul className="space-y-0.5 text-xs">
+                    {list.slice(0, 3).map((p) => (
+                      <li key={p.id} className="flex justify-between gap-2">
+                        <span>
+                          <span className="text-zinc-300">{p.coin}</span>
+                          <span
+                            className={`ml-1.5 ${
+                              p.side === "LONG"
+                                ? "text-emerald-400/80"
+                                : "text-rose-400/80"
+                            }`}
+                          >
+                            {p.side === "LONG" ? "L" : "S"}
+                            {p.leverage != null ? ` ${p.leverage}x` : ""}
+                          </span>
+                        </span>
+                        <span className="tabular-nums text-zinc-500">
+                          {fmtUsdCompact(p.value)}
+                        </span>
+                      </li>
+                    ))}
+                    {list.length > 3 && (
+                      <li className="text-[11px] text-zinc-600">
+                        외 {list.length - 3}개
+                      </li>
+                    )}
+                  </ul>
+                </>
+              ) : (
+                <p className="text-xs text-zinc-600">열린 포지션 없음</p>
+              )}
+
+              <div className="mt-auto border-t border-zinc-800/80 pt-1.5 text-[11px]">
+                {last ? (
+                  <span className="text-zinc-400">
+                    최근 진입{" "}
+                    <span className="text-zinc-200">{last.coin}</span>{" "}
+                    <span
+                      className={
+                        last.side === "LONG"
+                          ? "text-emerald-400"
+                          : "text-rose-400"
+                      }
+                    >
+                      {last.side}
+                    </span>{" "}
+                    {fmtUsdCompact(last.notional)} · {timeAgo(last.lastTime)}
+                  </span>
+                ) : (
+                  <span className="text-zinc-600">
+                    {entryHours}h 내 진입 없음
+                  </span>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

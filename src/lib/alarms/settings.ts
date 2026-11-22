@@ -20,6 +20,10 @@ export interface AlarmSettings {
   volume: number;
   /** 화면 토스트 */
   toastEnabled: boolean;
+  /** 관심 HL 트레이더 신규 진입 */
+  hlEntryEnabled: boolean;
+  /** 이 금액(USD) 이상 진입만 알림 */
+  hlEntryMinNotional: number;
 }
 
 export const DEFAULT_ALARM_SETTINGS: AlarmSettings = {
@@ -35,6 +39,8 @@ export const DEFAULT_ALARM_SETTINGS: AlarmSettings = {
   browserNotify: true,
   volume: 70,
   toastEnabled: true,
+  hlEntryEnabled: true,
+  hlEntryMinNotional: 50_000,
 };
 
 const KEY = "dailytrading.alarm.settings.v1";

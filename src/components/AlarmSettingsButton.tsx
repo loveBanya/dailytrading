@@ -178,6 +178,34 @@ export function AlarmSettingsButton() {
                 />
               </label>
               <label className="flex items-center justify-between gap-3 text-zinc-300">
+                <span>HL 관심 트레이더 신규 진입</span>
+                <input
+                  type="checkbox"
+                  checked={s.hlEntryEnabled}
+                  disabled={!s.enabled}
+                  onChange={(e) =>
+                    update({ hlEntryEnabled: e.target.checked })
+                  }
+                  className="size-4 accent-amber-500"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-3 text-zinc-300">
+                <span className="text-xs text-zinc-500">HL 진입 최소 금액 ($)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={10000}
+                  value={s.hlEntryMinNotional}
+                  disabled={!s.enabled || !s.hlEntryEnabled}
+                  onChange={(e) =>
+                    update({
+                      hlEntryMinNotional: Math.max(0, Number(e.target.value) || 0),
+                    })
+                  }
+                  className="w-24 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-right text-xs text-zinc-100"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-3 text-zinc-300">
                 <span>TP/SL/청산 근접</span>
                 <input
                   type="checkbox"

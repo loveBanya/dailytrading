@@ -5,4 +5,5 @@ export type AlarmKind =
   | "liq_near"
   | "trade_fill"
   | "pos_open"
-  | "pos_close";
+  | "pos_close"
+  | "hl_entry";

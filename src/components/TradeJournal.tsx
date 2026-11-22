@@ -37,10 +37,19 @@ import { AlarmToastHost } from "./AlarmToastHost";
 import { AlertsPanel } from "./AlertsPanel";
 import { HlTradersPanel } from "./HlTradersPanel";
 import {
+  checkHlEntries,
   checkNewTradeFills,
   checkPositionAlarms,
   checkPositionChanges,
 } from "@/lib/alarms/notify";
+import {
+  HL_ENTRIES_EVENT,
+  HL_POLL_HOURS,
+  HL_SYNCED_EVENT,
+  recentCacheKey,
+  writeHlCache,
+} from "@/lib/hyperliquid/cache";
+import type { HlRecentEntry } from "@/lib/hyperliquid/types";
 import {
   ALARM_HISTORY_EVENT,
   unreadAlarmCount,
@@ -441,6 +450,39 @@ export function TradeJournal() {
     const id = setInterval(() => void loadWallet(), 60_000);
     return () => clearInterval(id);
   }, [loadWallet]);
+
+  useEffect(() => {
+    let cancel = false;
+    let lastSync = 0;
+    const poll = async () => {
+      if (Date.now() - lastSync > 5 * 60_000) {
+        lastSync = Date.now();
+        void fetch("/api/hl-traders/sync", { method: "POST" })
+          .then((r) => {
+            if (r.ok && !cancel) window.dispatchEvent(new Event(HL_SYNCED_EVENT));
+          })
+          .catch(() => {});
+      }
+      try {
+        const res = await fetch(`/api/hl-traders/recent?hours=${HL_POLL_HOURS}`);
+        const data = (await res.json()) as { entries?: HlRecentEntry[] };
+        if (cancel || !data.entries) return;
+        writeHlCache(recentCacheKey(HL_POLL_HOURS), data.entries);
+        window.dispatchEvent(
+          new CustomEvent(HL_ENTRIES_EVENT, { detail: data.entries })
+        );
+        checkHlEntries(data.entries);
+      } catch {
+        /* ignore */
+      }
+    };
+    void poll();
+    const id = setInterval(() => void poll(), 90_000);
+    return () => {
+      cancel = true;
+      clearInterval(id);
+    };
+  }, []);
 
   const dbHint = isMissingTable(tradesError) || isMissingTable(statsError);
 

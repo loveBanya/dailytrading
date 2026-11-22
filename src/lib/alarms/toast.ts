@@ -5,7 +5,8 @@ export type AlarmTargetTab =
   | "live"
   | "screener"
   | "alerts"
-  | "overview";
+  | "overview"
+  | "hl-traders";
 
 export const ALARM_TOAST_EVENT = "dt-alarm-toast";
 
@@ -29,6 +30,8 @@ export function targetTabForKind(kind: AlarmKind): AlarmTargetTab {
     case "sl_near":
     case "liq_near":
       return "live";
+    case "hl_entry":
+      return "hl-traders";
     default:
       return "alerts";
   }

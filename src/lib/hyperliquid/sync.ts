@@ -1,10 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchClearinghouseState } from "./client";
-import type {
-  HlEventType,
-  HlLivePosition,
-  HlOpenPosition,
-  HlSide,
+import {
+  INITIAL_SNAPSHOT_NOTE,
+  type HlEventType,
+  type HlLivePosition,
+  type HlOpenPosition,
+  type HlSide,
 } from "./types";
 
 const SIZE_EPS = 1e-9;
@@ -128,7 +129,7 @@ export interface SyncTraderResult {
 
 export async function syncTraderPositions(
   supabase: SupabaseClient,
-  trader: { id: string; address: string }
+  trader: { id: string; address: string; last_synced_at?: string | null }
 ): Promise<SyncTraderResult> {
   const base: SyncTraderResult = {
     traderId: trader.id,
@@ -150,7 +151,10 @@ export async function syncTraderPositions(
     if (prevErr) throw prevErr;
 
     const prev = (prevRows ?? []) as HlOpenPosition[];
-    const events = diffPositions(trader.id, prev, snap.positions);
+    const firstSync = !trader.last_synced_at;
+    const events = diffPositions(trader.id, prev, snap.positions).map((e) =>
+      firstSync ? { ...e, note: INITIAL_SNAPSHOT_NOTE } : e
+    );
 
     if (events.length > 0) {
       const { error: evErr } = await supabase
@@ -217,7 +221,7 @@ export async function syncActiveTraders(
 ): Promise<SyncTraderResult[]> {
   let query = supabase
     .from("hl_traders")
-    .select("id, address")
+    .select("id, address, last_synced_at")
     .eq("is_active", true);
 
   if (traderId) query = query.eq("id", traderId);
@@ -225,7 +229,11 @@ export async function syncActiveTraders(
   const { data, error } = await query;
   if (error) throw error;
 
-  const traders = (data ?? []) as Array<{ id: string; address: string }>;
+  const traders = (data ?? []) as Array<{
+    id: string;
+    address: string;
+    last_synced_at: string | null;
+  }>;
   const results: SyncTraderResult[] = [];
   for (const t of traders) {
     results.push(await syncTraderPositions(supabase, t));

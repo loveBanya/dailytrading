@@ -1,5 +1,8 @@
 export type HlSide = "LONG" | "SHORT";
 
+/** 첫 동기화 때 이미 열려 있던 포지션 이벤트 표시 */
+export const INITIAL_SNAPSHOT_NOTE = "초기 스냅샷";
+
 export type HlEventType =
   | "OPEN"
   | "INCREASE"
@@ -96,6 +99,22 @@ export interface HlFill {
   closedPnl: number;
   fee: number;
   hash: string;
+}
+
+/** 같은 트레이더·코인·방향의 연속 진입 체결을 하나로 묶은 것 */
+export interface HlRecentEntry {
+  traderId: string;
+  label: string | null;
+  address: string;
+  coin: string;
+  side: HlSide;
+  kind: "OPEN" | "FLIP";
+  size: number;
+  avgPx: number;
+  notional: number;
+  fills: number;
+  firstTime: number;
+  lastTime: number;
 }
 
 export interface HlPortfolioPoint {

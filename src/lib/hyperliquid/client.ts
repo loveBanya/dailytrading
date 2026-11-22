@@ -175,6 +175,38 @@ export async function fetchPortfolio(
   }));
 }
 
+export interface HlCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+export async function fetchCandles(
+  coin: string,
+  interval: string,
+  startTime: number,
+  endTime: number
+): Promise<HlCandle[]> {
+  const raw = await postInfo<
+    Array<{ t?: number; o?: string; h?: string; l?: string; c?: string }>
+  >({
+    type: "candleSnapshot",
+    req: { coin, interval, startTime, endTime },
+  });
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((c) => ({
+      time: Math.floor((c.t ?? 0) / 1000),
+      open: num(c.o) ?? 0,
+      high: num(c.h) ?? 0,
+      low: num(c.l) ?? 0,
+      close: num(c.c) ?? 0,
+    }))
+    .filter((c) => c.time > 0 && c.close > 0);
+}
+
 interface LeaderboardWindow {
   pnl?: string | number;
   roi?: string | number;

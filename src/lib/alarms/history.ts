@@ -89,6 +89,8 @@ export function kindLabel(kind: AlarmKind): string {
       return "SL근접";
     case "liq_near":
       return "청산가";
+    case "hl_entry":
+      return "HL 진입";
     default:
       return kind;
   }

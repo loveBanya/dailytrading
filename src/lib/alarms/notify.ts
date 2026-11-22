@@ -1,4 +1,5 @@
 import type { OpenPosition } from "@/lib/exchanges/wallet";
+import type { HlRecentEntry } from "@/lib/hyperliquid/types";
 import { playDoorbell } from "./ding";
 import { pushAlarmHistory } from "./history";
 import {
@@ -164,6 +165,65 @@ export function checkPositionChanges(
   }
 
   return next;
+}
+
+const HL_SEEN_KEY = "dailytrading.alarm.hlSeen.v1";
+/** 이보다 오래된 진입은 처음 보더라도 알리지 않음 */
+const HL_FRESH_MS = 20 * 60_000;
+
+export function hlEntryKey(e: HlRecentEntry): string {
+  return `${e.traderId}:${e.coin}:${e.side}:${e.firstTime}`;
+}
+
+function readHlSeen(): Set<string> | null {
+  try {
+    const raw = localStorage.getItem(HL_SEEN_KEY);
+    return raw ? new Set(JSON.parse(raw) as string[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeHlSeen(keys: Set<string>) {
+  try {
+    localStorage.setItem(HL_SEEN_KEY, JSON.stringify([...keys].slice(-2000)));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 관심 HL 트레이더의 새 진입 — 처음 호출 땐 기준점만 저장 */
+export function checkHlEntries(entries: HlRecentEntry[]): HlRecentEntry[] {
+  const s = loadAlarmSettings();
+  const prev = readHlSeen();
+  const next = new Set(prev ?? []);
+  for (const e of entries) next.add(hlEntryKey(e));
+  writeHlSeen(next);
+
+  if (prev == null || !s.enabled || !s.hlEntryEnabled) return [];
+
+  const now = Date.now();
+  const fresh = entries.filter(
+    (e) =>
+      !prev.has(hlEntryKey(e)) &&
+      e.notional >= s.hlEntryMinNotional &&
+      now - e.lastTime <= HL_FRESH_MS
+  );
+  if (fresh.length === 0) return [];
+
+  const line = (e: HlRecentEntry) =>
+    `${e.label ?? e.address.slice(0, 8)} ${e.coin} ${e.side === "LONG" ? "롱" : "숏"} $${Math.round(e.notional).toLocaleString()}`;
+  const top = fresh[0]!;
+  void fireAlarm(
+    "hl_entry",
+    hlEntryKey(top),
+    fresh.length === 1
+      ? `HL 신규 진입 · ${top.coin}`
+      : `HL 신규 진입 ${fresh.length}건`,
+    fresh.slice(0, 3).map(line).join(" · "),
+    s
+  );
+  return fresh;
 }
 
 /** 새로 동기화된 매매 체결 기록 */

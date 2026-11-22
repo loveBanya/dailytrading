@@ -35,6 +35,7 @@ import { TradingGamePanel } from "./TradingGamePanel";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
 import { AlarmToastHost } from "./AlarmToastHost";
 import { AlertsPanel } from "./AlertsPanel";
+import { HlTradersPanel } from "./HlTradersPanel";
 import {
   checkNewTradeFills,
   checkPositionAlarms,
@@ -67,7 +68,8 @@ type Tab =
   | "mindset"
   | "screener"
   | "screener-perf"
-  | "alerts";
+  | "alerts"
+  | "hl-traders";
 /** 스크리너 탭 안에서 고르는 화면 */
 type ScreenerView = "demand-supply" | "screener" | "watch";
 
@@ -97,6 +99,7 @@ const TAB_IDS: Tab[] = [
   "screener",
   "screener-perf",
   "alerts",
+  "hl-traders",
 ];
 
 /** 예전에 따로 있던 탭은 합친 탭으로 연다. */
@@ -529,6 +532,7 @@ export function TradeJournal() {
             ["market", "시장 현황"],
             ["screener", "스크리너"],
             ["screener-perf", "스크리너 성과"],
+            ["hl-traders", "HL 트레이더"],
             ["alerts", "알림"],
             ["mindset", "마인드·글"],
           ] as const
@@ -797,6 +801,12 @@ export function TradeJournal() {
       {tab === "screener-perf" && (
         <Section title="스크리너 성과">
           <ScreenerPerfPanel />
+        </Section>
+      )}
+
+      {tab === "hl-traders" && (
+        <Section title="Hyperliquid 트레이더">
+          <HlTradersPanel />
         </Section>
       )}
 

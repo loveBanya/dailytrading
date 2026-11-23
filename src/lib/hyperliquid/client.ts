@@ -239,7 +239,7 @@ export async function fetchLeaderboard(
     leaderboardRows?: LeaderboardRowRaw[];
   };
   const rows = json.leaderboardRows ?? [];
-  return rows.slice(0, Math.max(1, Math.min(limit, 100))).map((r) => {
+  return rows.slice(0, Math.max(1, Math.min(limit, 2000))).map((r) => {
     const w = windowMap(r.windowPerformances);
     return {
       address: (r.ethAddress ?? "").toLowerCase(),

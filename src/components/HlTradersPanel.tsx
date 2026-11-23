@@ -11,6 +11,7 @@ import {
   writeHlCache,
 } from "@/lib/hyperliquid/cache";
 import { HlEntryChart } from "./HlEntryChart";
+import { HlBiasPanel } from "./HlBiasPanel";
 import {
   INITIAL_SNAPSHOT_NOTE,
   type HlEventType,
@@ -630,8 +631,13 @@ export function HlTradersPanel() {
                 </div>
               )}
 
-              {selectedId == null && selectedPositions.length > 0 && (
-                <AllPositionsSummary positions={selectedPositions} />
+              {selectedId == null && (
+                <div className="space-y-3">
+                  <HlBiasPanel />
+                  {selectedPositions.length > 0 && (
+                    <AllPositionsSummary positions={selectedPositions} />
+                  )}
+                </div>
               )}
 
               {selectedPositions.length === 0 ? (
@@ -1165,6 +1171,8 @@ function AllTradersView({
 
   return (
     <div className="space-y-5">
+      <HlBiasPanel />
+
       <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-medium text-zinc-200">

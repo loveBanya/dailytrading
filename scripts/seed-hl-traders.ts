@@ -37,13 +37,13 @@ const SEED = [
   },
   {
     address: "0x5b5d51203a0f9079f8aeb098a6523a13f298c060",
-    label: "숏 웨일 A (5b5d)",
-    note: "대형 숏 바이어스 웨일. BTC/ETH/HYPE 등 메이저 숏·펀딩 수취 스타일. 계좌 규모 초대형.",
+    label: "Abraxas A (5b5d)",
+    note: "Abraxas Capital 연결로 자주 거론. 대형 숏·펀딩 수취 스타일. 초대형 계좌.",
   },
   {
     address: "0xb83de012dba672c76a7dbbbf3e459cb59d7d6e36",
-    label: "숏 웨일 B (b83d)",
-    note: "숏 웨일 A와 유사 스타일. 다수 숏 포지션, 중저 레버. 관점 비교용.",
+    label: "Abraxas B (b83d)",
+    note: "Abraxas Capital 연결로 자주 거론(A와 페어). 다수 숏 포지션. 관점 비교용.",
   },
   {
     address: "0x45d26f28196d226497130c4bac709d808fed4029",
@@ -77,8 +77,8 @@ const SEED = [
   },
   {
     address: "0x1f250df59a777d61cb8bd043c12970f3afe4f925",
-    label: "초고ROI (1f25)",
-    note: "최근 월 ROI 극단적으로 높음. 폭발적 수익 구간일 수 있어 리스크도 큼.",
+    label: "AguilaTrades",
+    note: "공개 디렉터리 닉네임 AguilaTrades. 최근 고ROI 구간으로 거론됨. 변동성 큼.",
   },
   {
     address: "0xb695651daa495f59dd2725c6fe98322d8b51a92d",
@@ -94,6 +94,46 @@ const SEED = [
     address: "0x7839e2f2c375dd2935193f2736167514efff9916",
     label: "리더보드 상위 (7839)",
     note: "리더보드 상위. 중대형 계좌, 최근 주·월 수익 양호.",
+  },
+  {
+    address: "0x082e843a431aef031264dc232693dd710aedca88",
+    label: "HYPE 롱웨일 (082e)",
+    note: "HYPE 단일 롱 초대형(~$80M+). 방향성 베팅 관점용. 집중 리스크 큼.",
+  },
+  {
+    address: "0xdf954bbe619273a56e0cfa90dad8382195dc7d72",
+    label: "대형 숏북 (df95)",
+    note: "월 PnL 상위. ETH/BTC 등 대형 숏·포지션 수 매우 많음. 시장 숏 바이어스 스냅샷용.",
+  },
+  {
+    address: "0xfc27136e42af1732ddc9ce2605ea9bff1b959d9d",
+    label: "메이저 숏북 (fc27)",
+    note: "BTC/SOL/XRP/ZEC 숏. 월 ROI·PnL 강세. 리더보드 상위 단골.",
+  },
+  {
+    address: "0x218a65e21eddeece7a9df38c6bbdd89f692b7da2",
+    label: "BTC 숏 집중 (218a)",
+    note: "BTC 숏 초대형·계좌 대비 ROI 높음. 소수 포지션 집중형.",
+  },
+  {
+    address: "0xfe7ce058edc7cfcde9ef8262ba51f8d4796ab7ae",
+    label: "알트 숏 분산 (fe7c)",
+    note: "HYPE·알트 숏 다수. 월 수익 상위권. 분산 숏 스타일.",
+  },
+  {
+    address: "0x2639dc3ab1bc1eb232720be305ce83b57c14405b",
+    label: "Ansem",
+    note: "유명 솔라나/밈 트레이더로 거론. 현재 잔고 거의 없음. 이름값·재진입 감시용.",
+  },
+  {
+    address: "0xbb876071a63bc4d9bfcf46b012b4437ea7ff4281",
+    label: "Andrew Kang",
+    note: "유명 온체인 트레이더(Mechanism Capital 등)로 거론. 현재 잔고 거의 없음. 재진입 감시용.",
+  },
+  {
+    address: "0xb78d97390a96a17fd2b58fedbeb3dd876c8f660a",
+    label: "Andrew Tate",
+    note: "공개 디렉터리상 Andrew Tate 연결 지갑으로 거론. 현재 잔고 거의 없음. 관점용.",
   },
 ] as const;
 

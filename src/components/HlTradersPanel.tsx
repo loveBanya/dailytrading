@@ -12,6 +12,7 @@ import {
 } from "@/lib/hyperliquid/cache";
 import { HlEntryChart } from "./HlEntryChart";
 import { HlBiasPanel } from "./HlBiasPanel";
+import { HlTraderPerfBadge } from "./HlTraderPerfBadge";
 import {
   INITIAL_SNAPSHOT_NOTE,
   type HlEventType,
@@ -623,6 +624,7 @@ export function HlTradersPanel() {
                       </button>
                     </div>
                   </div>
+                  <HlTraderPerfBadge trader={selected} />
                   {selected.note ? (
                     <p className="text-xs leading-relaxed text-zinc-500">
                       {selected.note}
@@ -1083,6 +1085,11 @@ function AllTradersView({
   onRefreshEntries: () => void;
   onOpenTrader: (id: string) => void;
 }) {
+  const traderById = useMemo(() => {
+    const m = new Map(traders.map((t) => [t.id, t]));
+    return m;
+  }, [traders]);
+
   const visibleEntries = useMemo(
     () => entries.filter((e) => e.notional >= entryMin),
     [entries, entryMin]
@@ -1249,6 +1256,7 @@ function AllTradersView({
               key={focusKey}
               entry={focusEntry}
               position={focusPosition}
+              trader={traderById.get(focusEntry.traderId) ?? null}
               onClose={() => setFocusKey(null)}
             />
           </div>
@@ -1272,6 +1280,7 @@ function AllTradersView({
                 <tr>
                   <th className="px-2 py-1.5 font-medium">시각</th>
                   <th className="px-2 py-1.5 font-medium">트레이더</th>
+                  <th className="px-2 py-1.5 font-medium">신뢰</th>
                   <th className="px-2 py-1.5 font-medium">코인</th>
                   <th className="px-2 py-1.5 font-medium">방향</th>
                   <th className="px-2 py-1.5 font-medium">규모</th>
@@ -1307,6 +1316,16 @@ function AllTradersView({
                       >
                         {e.label || shortAddr(e.address)}
                       </button>
+                    </td>
+                    <td className="px-2 py-1.5">
+                      {traderById.get(e.traderId) ? (
+                        <HlTraderPerfBadge
+                          trader={traderById.get(e.traderId)!}
+                          compact
+                        />
+                      ) : (
+                        <span className="text-[11px] text-zinc-600">-</span>
+                      )}
                     </td>
                     <td className="px-2 py-1.5 font-medium text-zinc-100">
                       {e.coin}
@@ -1365,6 +1384,7 @@ function AllTradersView({
                   )}
                 </span>
               </div>
+              <HlTraderPerfBadge trader={trader} compact />
 
               {total > 0 ? (
                 <>

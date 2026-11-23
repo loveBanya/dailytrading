@@ -11,8 +11,13 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { HlCandle } from "@/lib/hyperliquid/client";
-import type { HlOpenPosition, HlRecentEntry } from "@/lib/hyperliquid/types";
+import type {
+  HlOpenPosition,
+  HlRecentEntry,
+  HlTrader,
+} from "@/lib/hyperliquid/types";
 import { formatKst } from "@/lib/utils/format";
+import { HlTraderPerfBadge } from "./HlTraderPerfBadge";
 
 function pickInterval(ageMs: number): { interval: string; barMs: number } {
   if (ageMs < 4 * 3600_000) return { interval: "5m", barMs: 5 * 60_000 };
@@ -48,10 +53,12 @@ const candleCache = new Map<string, { at: number; candles: HlCandle[] }>();
 export function HlEntryChart({
   entry,
   position,
+  trader,
   onClose,
 }: {
   entry: HlRecentEntry;
   position: HlOpenPosition | null;
+  trader?: HlTrader | null;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -264,6 +271,7 @@ export function HlEntryChart({
                 : ""}
             </p>
           )}
+          {trader ? <HlTraderPerfBadge trader={trader} /> : null}
         </div>
         <button
           type="button"

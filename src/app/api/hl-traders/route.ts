@@ -41,7 +41,7 @@ export async function GET() {
       );
     }
 
-    const list = (traders ?? []) as HlTrader[];
+    let list = (traders ?? []) as HlTrader[];
     const ids = list.map((t) => t.id);
     let positions: HlOpenPosition[] = [];
     if (ids.length > 0) {
@@ -52,6 +52,40 @@ export async function GET() {
         .order("position_value", { ascending: false });
       if (posErr) throw posErr;
       positions = (pos ?? []) as HlOpenPosition[];
+    }
+
+    // 과거 성과 보강 (리더보드/포트폴리오) — DB 컬럼 없어도 응답에 포함
+    try {
+      const { fetchPerfForAddresses, traderPerfPatch } = await import(
+        "@/lib/hyperliquid/perf"
+      );
+      const perfMap = await fetchPerfForAddresses(list.map((t) => t.address));
+      list = list.map((t) => {
+        const perf = perfMap.get(t.address.toLowerCase());
+        if (!perf) return t;
+        return {
+          ...t,
+          pnl_day: t.pnl_day ?? perf.pnlDay,
+          roi_day: t.roi_day ?? perf.roiDay,
+          pnl_week: t.pnl_week ?? perf.pnlWeek,
+          roi_week: t.roi_week ?? perf.roiWeek,
+          pnl_month: t.pnl_month ?? perf.pnlMonth,
+          roi_month: t.roi_month ?? perf.roiMonth,
+          pnl_all_time: t.pnl_all_time ?? perf.pnlAllTime,
+          roi_all_time: t.roi_all_time ?? perf.roiAllTime,
+          volume_month: t.volume_month ?? perf.volumeMonth,
+        };
+      });
+      // 컬럼 있으면 저장 (없으면 무시)
+      void Promise.all(
+        list.map(async (t) => {
+          const perf = perfMap.get(t.address.toLowerCase());
+          if (!perf) return;
+          await supabase.from("hl_traders").update(traderPerfPatch(perf)).eq("id", t.id);
+        })
+      ).catch(() => {});
+    } catch {
+      /* perf enrichment optional */
     }
 
     return NextResponse.json({ traders: list, positions });

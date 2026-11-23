@@ -250,6 +250,7 @@ export async function fetchLeaderboard(
       pnlMonth: num(w.month?.pnl),
       pnlAllTime: num(w.allTime?.pnl),
       volumeDay: num(w.day?.vlm),
+      volumeMonth: num(w.month?.vlm),
       roiDay: num(w.day?.roi),
       roiWeek: num(w.week?.roi),
       roiMonth: num(w.month?.roi),

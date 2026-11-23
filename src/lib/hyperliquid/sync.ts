@@ -238,5 +238,28 @@ export async function syncActiveTraders(
   for (const t of traders) {
     results.push(await syncTraderPositions(supabase, t));
   }
+
+  // 포지션 동기화 후 과거 성과(일/주/월/올타임) 갱신
+  if (traders.length > 0) {
+    try {
+      const { fetchPerfForAddresses, traderPerfPatch } = await import("./perf");
+      const perfMap = await fetchPerfForAddresses(traders.map((t) => t.address));
+      for (const t of traders) {
+        const perf = perfMap.get(t.address.toLowerCase());
+        if (!perf) continue;
+        const { error: perfErr } = await supabase
+          .from("hl_traders")
+          .update(traderPerfPatch(perf))
+          .eq("id", t.id);
+        if (perfErr && !String(perfErr.message).includes("pnl_")) {
+          // 컬럼 없으면 무시(마이그레이션 전)
+          console.warn("hl perf update", t.address, perfErr.message);
+        }
+      }
+    } catch (err) {
+      console.warn("hl perf sync failed", err);
+    }
+  }
+
   return results;
 }

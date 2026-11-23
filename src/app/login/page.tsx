@@ -44,7 +44,8 @@ export default function LoginPage() {
           </p>
           <h1 className="mt-1 text-xl font-semibold text-zinc-50">로그인</h1>
           <p className="mt-1 text-xs text-zinc-500">
-            개인용 — 아이디/비밀번호로 잠금
+            개인용 — PC·폰 같은 사이트로 로그인하면 매매·HL·설정이 클라우드에서
+            맞춰집니다. 폰에서는 「로그인 유지」를 켜 두세요.
           </p>
         </div>
 

@@ -20,6 +20,25 @@ export interface HlTrader {
   last_synced_at: string | null;
   created_at: string;
   updated_at: string;
+  /** 리더보드/포트폴리오 기준 성과 */
+  pnl_day?: number | null;
+  roi_day?: number | null;
+  pnl_week?: number | null;
+  roi_week?: number | null;
+  pnl_month?: number | null;
+  roi_month?: number | null;
+  pnl_all_time?: number | null;
+  roi_all_time?: number | null;
+  volume_month?: number | null;
+  perf_synced_at?: string | null;
+}
+
+export type HlTrustTone = "good" | "mixed" | "weak" | "unknown";
+
+export interface HlTrustSummary {
+  tone: HlTrustTone;
+  label: string;
+  detail: string;
 }
 
 export interface HlOpenPosition {
@@ -83,6 +102,7 @@ export interface HlLeaderboardRow {
   pnlMonth: number | null;
   pnlAllTime: number | null;
   volumeDay: number | null;
+  volumeMonth: number | null;
   roiDay: number | null;
   roiWeek: number | null;
   roiMonth: number | null;

@@ -51,6 +51,12 @@ import {
 } from "@/lib/hyperliquid/cache";
 import type { HlRecentEntry } from "@/lib/hyperliquid/types";
 import {
+  installCloudPrefsHooks,
+  pullCloudPrefs,
+  pushCloudPrefs,
+  schedulePushCloudPrefs,
+} from "@/lib/cloud/prefsSync";
+import {
   ALARM_HISTORY_EVENT,
   unreadAlarmCount,
 } from "@/lib/alarms/history";
@@ -163,6 +169,10 @@ export function TradeJournal() {
   );
   const [overviewOrderOpen, setOverviewOrderOpen] = useState(false);
   const [pageScale, setPageScale] = useState(1);
+  const [cloudSyncLabel, setCloudSyncLabel] = useState<string>("클라우드…");
+  const [cloudMigrationHint, setCloudMigrationHint] = useState<string | null>(
+    null
+  );
 
   useEffect(() => {
     const apply = () => {
@@ -176,21 +186,51 @@ export function TradeJournal() {
   }, []);
 
   useEffect(() => {
-    const savedTab = loadSavedTab<string>("review", [
-      ...TAB_IDS,
-      "trades",
-      "live",
-      "cash",
-      "posts",
-      "bookmarks",
-      "demand-supply",
-      "screener-watch",
-    ]);
-    setTab(migrateTab(savedTab));
-    setScreenerView(screenerViewFromOldTab(savedTab) ?? loadScreenerView());
-    setOverviewOrder(loadOverviewOrder());
-    setGoalPrefs(loadGoalChallenge());
-    setTabReady(true);
+    let cancel = false;
+    const uninstall = installCloudPrefsHooks();
+    void (async () => {
+      setCloudSyncLabel("클라우드 동기화 중…");
+      const pulled = await pullCloudPrefs();
+      if (cancel) return;
+      if (pulled.needsMigration) {
+        setCloudMigrationHint(
+          pulled.migrationHint ??
+            "014_cloud_prefs.sql 을 Supabase에서 실행하세요."
+        );
+        setCloudSyncLabel("클라우드 테이블 필요");
+      } else if (pulled.error) {
+        setCloudSyncLabel("클라우드 오류");
+      } else {
+        setCloudMigrationHint(null);
+        setCloudSyncLabel(
+          pulled.applied > 0
+            ? `클라우드 반영 ${pulled.applied}건`
+            : "클라우드 동기화됨"
+        );
+        // 로컬에만 있던 설정을 클라우드로 최초 업로드
+        void pushCloudPrefs();
+      }
+
+      const savedTab = loadSavedTab<string>("review", [
+        ...TAB_IDS,
+        "trades",
+        "live",
+        "cash",
+        "posts",
+        "bookmarks",
+        "demand-supply",
+        "screener-watch",
+      ]);
+      setTab(migrateTab(savedTab));
+      setScreenerView(screenerViewFromOldTab(savedTab) ?? loadScreenerView());
+      setOverviewOrder(loadOverviewOrder());
+      setGoalPrefs(loadGoalChallenge());
+      setTabReady(true);
+    })();
+    return () => {
+      cancel = true;
+      uninstall();
+    };
   }, []);
 
   useEffect(() => {
@@ -509,13 +549,30 @@ export function TradeJournal() {
           <h1 className="mt-1 text-3xl font-semibold tracking-tight text-zinc-50">
             매매 대시보드
           </h1>
+          <p className="mt-1 text-[11px] text-zinc-600">
+            {cloudSyncLabel} · 폰에서도 같은 주소로 로그인하면 됩니다
+          </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <RiskCalcPopup />
           <AlarmSettingsButton />
           <button
             type="button"
-            onClick={() => void refreshAll()}
+            onClick={() => {
+              schedulePushCloudPrefs(0);
+              void pullCloudPrefs().then((r) => {
+                if (r.needsMigration) {
+                  setCloudMigrationHint(r.migrationHint ?? null);
+                  setCloudSyncLabel("클라우드 테이블 필요");
+                } else if (r.error) {
+                  setCloudSyncLabel("클라우드 오류");
+                } else {
+                  setCloudSyncLabel("방금 동기화됨");
+                  void pushCloudPrefs();
+                }
+              });
+              void refreshAll();
+            }}
             className="rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
           >
             새로고침
@@ -562,6 +619,17 @@ export function TradeJournal() {
           <p className="font-medium">매매 기록을 보려면 DB 테이블이 필요합니다</p>
           <p className="mt-2 text-xs text-zinc-500">
             `001_trading_journal.sql` 과 `003_review_notes.sql` 을 실행하세요.
+          </p>
+        </div>
+      )}
+
+      {cloudMigrationHint && (
+        <div className="mb-6 rounded-lg border border-sky-500/30 bg-sky-500/5 p-4 text-sm text-sky-100">
+          <p className="font-medium">PC↔폰 설정 동기화 테이블이 필요합니다</p>
+          <p className="mt-2 text-xs text-zinc-400">{cloudMigrationHint}</p>
+          <p className="mt-1 text-xs text-zinc-500">
+            매매·HL 트레이더 포지션은 이미 클라우드(DB)에 있어 폰에서도 보입니다.
+            목표·알림·스크리너 설정까지 맞추려면 위 SQL을 실행하세요.
           </p>
         </div>
       )}

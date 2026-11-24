@@ -15,7 +15,7 @@ function missingTable(msg: string): boolean {
 }
 
 const HINT =
-  "supabase/migrations/014_cloud_prefs.sql 을 Supabase SQL 에디터에서 실행하세요.";
+  "Supabase SQL Editor에서 supabase/migrations/014_cloud_prefs.sql 전체를 다시 실행하세요. (마지막 줄 notify pgrst 포함 — 스키마 캐시 갱신용)";
 
 /** GET /api/cloud-prefs — 클라우드에 저장된 설정 전부 */
 export async function GET() {

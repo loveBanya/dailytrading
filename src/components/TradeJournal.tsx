@@ -628,8 +628,10 @@ export function TradeJournal() {
           <p className="font-medium">PC↔폰 설정 동기화 테이블이 필요합니다</p>
           <p className="mt-2 text-xs text-zinc-400">{cloudMigrationHint}</p>
           <p className="mt-1 text-xs text-zinc-500">
-            매매·HL 트레이더 포지션은 이미 클라우드(DB)에 있어 폰에서도 보입니다.
-            목표·알림·스크리너 설정까지 맞추려면 위 SQL을 실행하세요.
+            매매·HL 트레이더 테이블은 이미 있습니다. 빠진 건{" "}
+            <code className="text-zinc-400">app_cloud_prefs</code> 뿐입니다.
+            SQL 실행 후에도 이 문구가 남으면 Dashboard → Settings → API →
+            Reload schema 후 새로고침하세요.
           </p>
         </div>
       )}

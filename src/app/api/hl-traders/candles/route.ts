@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchCandles, type HlCandle } from "@/lib/hyperliquid/client";
+import { fetchCandles } from "@/lib/hyperliquid/client";
+import {
+  candleCacheKey,
+  getCachedCandles,
+  getStaleCandles,
+  loadCandlesCached,
+  type HlCandleInterval,
+} from "@/lib/hyperliquid/candleCache";
+import { enqueueCandleFetch } from "@/lib/hyperliquid/rateLimit";
 import { errorMessage } from "@/lib/utils/labels";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const INTERVALS = new Set(["5m", "15m", "1h", "4h"]);
-const CACHE_MS = 30_000;
-const cache = new Map<string, { at: number; candles: HlCandle[] }>();
+const INTERVALS = new Set<HlCandleInterval>(["5m", "15m", "1h", "4h"]);
 
 /** GET /api/hl-traders/candles?coin=&interval=15m&start=ms&end=ms */
 export async function GET(req: NextRequest) {
@@ -17,25 +23,46 @@ export async function GET(req: NextRequest) {
     if (!coin) {
       return NextResponse.json({ error: "coin 필요" }, { status: 400 });
     }
-    const interval = INTERVALS.has(sp.get("interval") ?? "")
-      ? sp.get("interval")!
+    const rawIv = sp.get("interval") ?? "15m";
+    const interval: HlCandleInterval = INTERVALS.has(rawIv as HlCandleInterval)
+      ? (rawIv as HlCandleInterval)
       : "15m";
     const end = Number(sp.get("end")) || Date.now();
     const start = Number(sp.get("start")) || end - 24 * 3600_000;
+    const key = candleCacheKey(coin, interval, start, end);
 
-    const key = `${coin}:${interval}:${Math.floor(start / 60_000)}:${Math.floor(end / 60_000)}`;
-    const hit = cache.get(key);
-    if (hit && Date.now() - hit.at < CACHE_MS) {
-      return NextResponse.json({ candles: hit.candles });
+    const fresh = getCachedCandles(key, interval);
+    if (fresh) {
+      return NextResponse.json({
+        candles: fresh,
+        cached: true,
+        stale: false,
+      });
     }
 
-    const candles = await fetchCandles(coin, interval, start, end);
-    cache.set(key, { at: Date.now(), candles });
-    if (cache.size > 200) {
-      const oldest = [...cache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
-      if (oldest) cache.delete(oldest[0]);
+    try {
+      const { candles, fromCache } = await enqueueCandleFetch(() =>
+        loadCandlesCached(key, interval, () =>
+          fetchCandles(coin, interval, start, end)
+        )
+      );
+      return NextResponse.json({
+        candles,
+        cached: fromCache,
+        stale: false,
+      });
+    } catch (err) {
+      const stale = getStaleCandles(key);
+      if (stale && stale.length > 0) {
+        return NextResponse.json({
+          candles: stale,
+          cached: true,
+          stale: true,
+          warning: errorMessage(err),
+        });
+      }
+      throw err;
     }
-    return NextResponse.json({ candles });
   } catch (err) {
     return NextResponse.json(
       { error: errorMessage(err) },

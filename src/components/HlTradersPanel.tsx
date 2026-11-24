@@ -10,9 +10,16 @@ import {
   recentCacheKey,
   writeHlCache,
 } from "@/lib/hyperliquid/cache";
-import { HlEntryChart } from "./HlEntryChart";
+import {
+  HlEntryChart,
+  roundFromPosition,
+  type HlChartRound,
+} from "./HlEntryChart";
+import { HlEntryTimeline } from "./HlEntryTimeline";
+import { HlCoinBoardChart } from "./HlCoinBoardChart";
 import { HlBiasPanel } from "./HlBiasPanel";
 import { HlTraderPerfBadge } from "./HlTraderPerfBadge";
+import { importanceScore } from "@/lib/hyperliquid/perf";
 import {
   INITIAL_SNAPSHOT_NOTE,
   type HlEventType,
@@ -25,11 +32,80 @@ import {
   type HlTrader,
 } from "@/lib/hyperliquid/types";
 
-type SubView = "all" | "watch" | "board" | "history";
+type SubView = "all" | "watch" | "chart" | "board" | "history";
+type ScoreFilter = "all" | "focus" | "watch";
 
 const TRADERS_CACHE_KEY = "traders";
+const HL_PINS_KEY = "dailytrading.hl.pins.v1";
 const ENTRY_HOURS = [6, 24, 72] as const;
 const ENTRY_MIN_NOTIONAL = [0, 10_000, 100_000] as const;
+
+function loadPins(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = localStorage.getItem(HL_PINS_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.filter((x): x is string => typeof x === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function persistPins(ids: Set<string>): void {
+  localStorage.setItem(HL_PINS_KEY, JSON.stringify([...ids]));
+}
+
+function roundFromCloseEvent(
+  ev: HlPositionEvent,
+  all: HlPositionEvent[],
+  trader?: HlTrader | null
+): HlChartRound | null {
+  const exitTime = new Date(ev.observed_at).getTime();
+  const exitPx =
+    ev.mark_price != null
+      ? Number(ev.mark_price)
+      : ev.entry_price != null
+        ? Number(ev.entry_price)
+        : null;
+  const prior = all
+    .filter(
+      (e) =>
+        e.trader_id === ev.trader_id &&
+        e.coin === ev.coin &&
+        (e.event_type === "OPEN" || e.event_type === "FLIP") &&
+        new Date(e.observed_at).getTime() <= exitTime
+    )
+    .sort(
+      (a, b) =>
+        new Date(b.observed_at).getTime() - new Date(a.observed_at).getTime()
+    )[0];
+  const entryPx =
+    prior?.entry_price != null
+      ? Number(prior.entry_price)
+      : ev.entry_price != null
+        ? Number(ev.entry_price)
+        : null;
+  if (entryPx == null || !(entryPx > 0) || exitPx == null || !(exitPx > 0)) {
+    return null;
+  }
+  const entryTime = prior
+    ? new Date(prior.observed_at).getTime()
+    : exitTime;
+  return {
+    coin: ev.coin,
+    side: prior?.side ?? ev.side,
+    avgPx: entryPx,
+    firstTime: entryTime,
+    lastTime: entryTime,
+    kind: "CLOSE",
+    label: trader?.label ?? null,
+    address: trader?.address,
+    exitPx,
+    exitTime,
+  };
+}
 
 function timeAgo(ms: number): string {
   const diff = Math.max(0, Date.now() - ms);
@@ -90,10 +166,31 @@ export function HlTradersPanel() {
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [migrationHint, setMigrationHint] = useState<string | null>(null);
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => new Set());
+  const [scoreFilter, setScoreFilter] = useState<ScoreFilter>("all");
+  const [watchChart, setWatchChart] = useState<{
+    round: HlChartRound;
+    position: HlOpenPosition | null;
+    trader: HlTrader | null;
+  } | null>(null);
 
   const [address, setAddress] = useState("");
   const [label, setLabel] = useState("");
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setPinnedIds(loadPins());
+  }, []);
+
+  const togglePin = useCallback((id: string) => {
+    setPinnedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      persistPins(next);
+      return next;
+    });
+  }, []);
 
   const [board, setBoard] = useState<HlLeaderboardRow[]>([]);
   const [boardLoading, setBoardLoading] = useState(false);
@@ -301,8 +398,12 @@ export function HlTradersPanel() {
   );
 
   useEffect(() => {
-    if (view === "all" && traders.length > 0) void loadEntries();
-  }, [view, traders.length, loadEntries]);
+    if (view !== "all" && view !== "chart") return;
+    if (traders.length === 0) return;
+    // 차트 탭은 캐시·기존 목록이 있으면 재요청하지 않음 (HL 429 완화)
+    if (view === "chart" && entries.length > 0) return;
+    void loadEntries();
+  }, [view, traders.length, loadEntries, entries.length]);
 
   useEffect(() => {
     if (view !== "board") return;
@@ -490,6 +591,7 @@ export function HlTradersPanel() {
         {(
           [
             ["all", "모아보기"],
+            ["chart", "코인 차트"],
             ["watch", "관심·포지션"],
             ["board", "리더보드"],
             ["history", "히스토리"],
@@ -557,9 +659,29 @@ export function HlTradersPanel() {
           entriesLoading={entriesLoading}
           entryHours={entryHours}
           entryMin={entryMin}
+          pinnedIds={pinnedIds}
+          scoreFilter={scoreFilter}
+          onScoreFilterChange={setScoreFilter}
+          onTogglePin={togglePin}
           onHoursChange={setEntryHours}
           onMinChange={setEntryMin}
           onRefreshEntries={() => void loadEntries(true)}
+          onOpenTrader={(id) => {
+            setSelectedId(id);
+            setView("watch");
+          }}
+        />
+      )}
+
+      {!loading && view === "chart" && (
+        <HlCoinBoardChart
+          traders={traders}
+          positions={positions}
+          entries={entries}
+          entriesLoading={entriesLoading}
+          onNeedEntries={() => {
+            if (entries.length === 0) void loadEntries();
+          }}
           onOpenTrader={(id) => {
             setSelectedId(id);
             setView("watch");
@@ -624,7 +746,32 @@ export function HlTradersPanel() {
                       </button>
                     </div>
                   </div>
-                  <HlTraderPerfBadge trader={selected} />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <HlTraderPerfBadge
+                      trader={selected}
+                      importance={importanceScore(selected, {
+                        pinned: pinnedIds.has(selected.id),
+                        exposureUsd: selectedPositions
+                          .filter((p) => p.trader_id === selected.id)
+                          .reduce(
+                            (s, p) =>
+                              s + Math.abs(Number(p.position_value ?? 0)),
+                            0
+                          ),
+                      })}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => togglePin(selected.id)}
+                      className={`rounded border px-2 py-0.5 text-[11px] ${
+                        pinnedIds.has(selected.id)
+                          ? "border-sky-600/60 text-sky-300"
+                          : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      {pinnedIds.has(selected.id) ? "핀 해제" : "핀 고정"}
+                    </button>
+                  </div>
                   {selected.note ? (
                     <p className="text-xs leading-relaxed text-zinc-500">
                       {selected.note}
@@ -642,12 +789,24 @@ export function HlTradersPanel() {
                 </div>
               )}
 
+              {watchChart && (
+                <HlEntryChart
+                  round={watchChart.round}
+                  position={watchChart.position}
+                  trader={watchChart.trader}
+                  onClose={() => setWatchChart(null)}
+                />
+              )}
+
               {selectedPositions.length === 0 ? (
                 <p className="py-6 text-center text-sm text-zinc-500">
                   열린 포지션이 없습니다. 동기화하면 스냅샷이 갱신됩니다.
                 </p>
               ) : (
                 <div className="max-h-[560px] overflow-auto pretty-scroll">
+                  <p className="mb-1 text-[11px] text-zinc-600">
+                    줄을 누르면 진입·현재가 차트가 열립니다.
+                  </p>
                   <table className="w-full min-w-[640px] text-left text-sm">
                     <thead className="sticky top-0 border-b border-zinc-800 bg-zinc-950 text-[11px] uppercase tracking-wide text-zinc-500">
                       <tr>
@@ -664,65 +823,80 @@ export function HlTradersPanel() {
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedPositions.map((p) => (
-                        <tr
-                          key={p.id}
-                          className="border-b border-zinc-900/80 text-zinc-300"
-                        >
-                          {selectedId == null && (
-                            <td className="px-2 py-2">
-                              <button
-                                type="button"
-                                onClick={() => setSelectedId(p.trader_id)}
-                                className="text-left text-xs text-zinc-400 hover:text-emerald-300 hover:underline"
-                              >
-                                {traderLabel(p.trader_id)}
-                              </button>
-                            </td>
-                          )}
-                          <td className="px-2 py-2 font-medium text-zinc-100">
-                            {p.coin}
-                          </td>
-                          <td
-                            className={`px-2 py-2 ${
-                              p.side === "LONG"
-                                ? "text-emerald-400"
-                                : "text-rose-400"
-                            }`}
+                      {selectedPositions.map((p) => {
+                        const tr = traders.find((t) => t.id === p.trader_id);
+                        return (
+                          <tr
+                            key={p.id}
+                            onClick={() => {
+                              const round = roundFromPosition(p, tr ?? null);
+                              if (!round) return;
+                              setWatchChart({
+                                round,
+                                position: p,
+                                trader: tr ?? null,
+                              });
+                            }}
+                            className="cursor-pointer border-b border-zinc-900/80 text-zinc-300 hover:bg-zinc-800/40"
                           >
-                            {p.side}
-                          </td>
-                          <td className="px-2 py-2 tabular-nums">
-                            {Number(p.size).toPrecision(6)}
-                          </td>
-                          <td className="px-2 py-2 tabular-nums text-zinc-400">
-                            {p.entry_price != null
-                              ? Number(p.entry_price).toLocaleString()
-                              : "-"}
-                          </td>
-                          <td className="px-2 py-2 tabular-nums">
-                            {fmtUsdCompact(
-                              p.position_value != null
-                                ? Number(p.position_value)
-                                : null
+                            {selectedId == null && (
+                              <td className="px-2 py-2">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedId(p.trader_id);
+                                  }}
+                                  className="text-left text-xs text-zinc-400 hover:text-emerald-300 hover:underline"
+                                >
+                                  {traderLabel(p.trader_id)}
+                                </button>
+                              </td>
                             )}
-                          </td>
-                          <td
-                            className={`px-2 py-2 tabular-nums ${pnlClass(
-                              p.unrealised_pnl != null
-                                ? Number(p.unrealised_pnl)
-                                : null
-                            )}`}
-                          >
-                            {p.unrealised_pnl != null
-                              ? formatPnl(Number(p.unrealised_pnl))
-                              : "-"}
-                          </td>
-                          <td className="px-2 py-2 tabular-nums text-zinc-500">
-                            {p.leverage != null ? `${p.leverage}x` : "-"}
-                          </td>
-                        </tr>
-                      ))}
+                            <td className="px-2 py-2 font-medium text-zinc-100">
+                              {p.coin}
+                            </td>
+                            <td
+                              className={`px-2 py-2 ${
+                                p.side === "LONG"
+                                  ? "text-emerald-400"
+                                  : "text-rose-400"
+                              }`}
+                            >
+                              {p.side}
+                            </td>
+                            <td className="px-2 py-2 tabular-nums">
+                              {Number(p.size).toPrecision(6)}
+                            </td>
+                            <td className="px-2 py-2 tabular-nums text-zinc-400">
+                              {p.entry_price != null
+                                ? Number(p.entry_price).toLocaleString()
+                                : "-"}
+                            </td>
+                            <td className="px-2 py-2 tabular-nums">
+                              {fmtUsdCompact(
+                                p.position_value != null
+                                  ? Number(p.position_value)
+                                  : null
+                              )}
+                            </td>
+                            <td
+                              className={`px-2 py-2 tabular-nums ${pnlClass(
+                                p.unrealised_pnl != null
+                                  ? Number(p.unrealised_pnl)
+                                  : null
+                              )}`}
+                            >
+                              {p.unrealised_pnl != null
+                                ? formatPnl(Number(p.unrealised_pnl))
+                                : "-"}
+                            </td>
+                            <td className="px-2 py-2 tabular-nums text-zinc-500">
+                              {p.leverage != null ? `${p.leverage}x` : "-"}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -869,6 +1043,16 @@ export function HlTradersPanel() {
                     초기 스냅샷 숨기기
                   </label>
                 </div>
+                {watchChart && view === "history" && (
+                  <div className="mb-3">
+                    <HlEntryChart
+                      round={watchChart.round}
+                      position={watchChart.position}
+                      trader={watchChart.trader}
+                      onClose={() => setWatchChart(null)}
+                    />
+                  </div>
+                )}
                 {visibleEvents.length === 0 ? (
                   <p className="text-sm text-zinc-500">
                     아직 기록된 변경이 없습니다. 5분마다 자동 동기화되면서
@@ -876,48 +1060,136 @@ export function HlTradersPanel() {
                   </p>
                 ) : (
                   <ul className="max-h-96 space-y-1.5 overflow-y-auto pretty-scroll">
-                    {visibleEvents.map((ev) => (
-                      <li
-                        key={ev.id}
-                        className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded border border-zinc-800/80 bg-zinc-950/30 px-2.5 py-1.5 text-sm"
-                      >
-                        <span className="text-[11px] text-zinc-600">
-                          {formatKst(ev.observed_at)}
-                        </span>
-                        {selectedId == null && (
+                    <p className="mb-1 text-[11px] text-zinc-600">
+                      오픈·청산 줄을 누르면 진입·익절 차트가 열립니다.
+                    </p>
+                    {visibleEvents.map((ev) => {
+                      const tr = traders.find((t) => t.id === ev.trader_id);
+                      const chartable =
+                        ev.event_type === "CLOSE" ||
+                        ev.event_type === "OPEN" ||
+                        ev.event_type === "FLIP";
+                      return (
+                        <li key={ev.id}>
                           <button
                             type="button"
-                            onClick={() => setSelectedId(ev.trader_id)}
-                            className="text-xs text-zinc-400 hover:text-emerald-300 hover:underline"
+                            disabled={!chartable}
+                            onClick={() => {
+                              if (ev.event_type === "CLOSE") {
+                                const round = roundFromCloseEvent(
+                                  ev,
+                                  events,
+                                  tr
+                                );
+                                if (!round) return;
+                                setWatchChart({
+                                  round,
+                                  position: null,
+                                  trader: tr ?? null,
+                                });
+                                return;
+                              }
+                              if (
+                                ev.event_type === "OPEN" ||
+                                ev.event_type === "FLIP"
+                              ) {
+                                const px =
+                                  ev.entry_price != null
+                                    ? Number(ev.entry_price)
+                                    : ev.mark_price != null
+                                      ? Number(ev.mark_price)
+                                      : null;
+                                if (px == null || !(px > 0)) return;
+                                const t = new Date(ev.observed_at).getTime();
+                                const pos =
+                                  positions.find(
+                                    (p) =>
+                                      p.trader_id === ev.trader_id &&
+                                      p.coin === ev.coin &&
+                                      p.side === ev.side
+                                  ) ?? null;
+                                setWatchChart({
+                                  round: {
+                                    coin: ev.coin,
+                                    side: ev.side,
+                                    avgPx: px,
+                                    firstTime: t,
+                                    lastTime: t,
+                                    kind:
+                                      ev.event_type === "FLIP"
+                                        ? "FLIP"
+                                        : "OPEN",
+                                    label: tr?.label ?? null,
+                                    address: tr?.address,
+                                    liveMarkPx:
+                                      pos?.mark_price != null
+                                        ? Number(pos.mark_price)
+                                        : ev.mark_price != null
+                                          ? Number(ev.mark_price)
+                                          : null,
+                                  },
+                                  position: pos,
+                                  trader: tr ?? null,
+                                });
+                              }
+                            }}
+                            className={`flex w-full flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded border border-zinc-800/80 bg-zinc-950/30 px-2.5 py-1.5 text-left text-sm ${
+                              chartable
+                                ? "cursor-pointer hover:border-zinc-600 hover:bg-zinc-900/50"
+                                : "opacity-80"
+                            }`}
                           >
-                            {traderLabel(ev.trader_id)}
+                            <span className="text-[11px] text-zinc-600">
+                              {formatKst(ev.observed_at)}
+                            </span>
+                            {selectedId == null && (
+                              <span
+                                role="link"
+                                tabIndex={0}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedId(ev.trader_id);
+                                  setView("watch");
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.stopPropagation();
+                                    setSelectedId(ev.trader_id);
+                                    setView("watch");
+                                  }
+                                }}
+                                className="text-xs text-zinc-400 hover:text-emerald-300 hover:underline"
+                              >
+                                {traderLabel(ev.trader_id)}
+                              </span>
+                            )}
+                            <span className="font-medium text-zinc-200">
+                              {ev.coin}
+                            </span>
+                            <span
+                              className={
+                                ev.side === "LONG"
+                                  ? "text-emerald-400"
+                                  : "text-rose-400"
+                              }
+                            >
+                              {ev.side}
+                            </span>
+                            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-zinc-300">
+                              {EVENT_LABEL[ev.event_type]}
+                            </span>
+                            <span className="tabular-nums text-zinc-500">
+                              {ev.size_before ?? 0} → {ev.size_after ?? 0}
+                            </span>
+                            {ev.note ? (
+                              <span className="text-xs text-zinc-600">
+                                {ev.note}
+                              </span>
+                            ) : null}
                           </button>
-                        )}
-                        <span className="font-medium text-zinc-200">
-                          {ev.coin}
-                        </span>
-                        <span
-                          className={
-                            ev.side === "LONG"
-                              ? "text-emerald-400"
-                              : "text-rose-400"
-                          }
-                        >
-                          {ev.side}
-                        </span>
-                        <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-zinc-300">
-                          {EVENT_LABEL[ev.event_type]}
-                        </span>
-                        <span className="tabular-nums text-zinc-500">
-                          {ev.size_before ?? 0} → {ev.size_after ?? 0}
-                        </span>
-                        {ev.note ? (
-                          <span className="text-xs text-zinc-600">
-                            {ev.note}
-                          </span>
-                        ) : null}
-                      </li>
-                    ))}
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </div>
@@ -1069,6 +1341,10 @@ function AllTradersView({
   entriesLoading,
   entryHours,
   entryMin,
+  pinnedIds,
+  scoreFilter,
+  onScoreFilterChange,
+  onTogglePin,
   onHoursChange,
   onMinChange,
   onRefreshEntries,
@@ -1080,6 +1356,10 @@ function AllTradersView({
   entriesLoading: boolean;
   entryHours: number;
   entryMin: number;
+  pinnedIds: Set<string>;
+  scoreFilter: ScoreFilter;
+  onScoreFilterChange: (f: ScoreFilter) => void;
+  onTogglePin: (id: string) => void;
   onHoursChange: (h: number) => void;
   onMinChange: (n: number) => void;
   onRefreshEntries: () => void;
@@ -1135,6 +1415,12 @@ function AllTradersView({
           (s, p) => s + Number(p.unrealised_pnl ?? 0),
           0
         );
+        const exposure = longNtl + shortNtl;
+        const imp = importanceScore(t, {
+          pinned: pinnedIds.has(t.id),
+          hasRecentEntry: lastEntryByTrader.has(t.id),
+          exposureUsd: exposure,
+        });
         return {
           trader: t,
           list,
@@ -1142,15 +1428,23 @@ function AllTradersView({
           shortNtl,
           upnl,
           last: lastEntryByTrader.get(t.id) ?? null,
+          imp,
         };
       })
+      .filter((c) => {
+        if (scoreFilter === "focus") return c.imp.tier === "focus";
+        if (scoreFilter === "watch")
+          return c.imp.tier === "focus" || c.imp.tier === "watch";
+        return true;
+      })
       .sort((a, b) => {
+        if (a.imp.score !== b.imp.score) return b.imp.score - a.imp.score;
         const ta = a.last?.lastTime ?? 0;
         const tb = b.last?.lastTime ?? 0;
         if (ta !== tb) return tb - ta;
         return b.longNtl + b.shortNtl - (a.longNtl + a.shortNtl);
       });
-  }, [traders, positions, lastEntryByTrader]);
+  }, [traders, positions, lastEntryByTrader, pinnedIds, scoreFilter]);
 
   const coinSummary = useMemo(() => {
     const m = new Map<string, { long: number; short: number; traders: Set<string> }>();
@@ -1179,6 +1473,34 @@ function AllTradersView({
   return (
     <div className="space-y-5">
       <HlBiasPanel />
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[11px] text-zinc-500">
+          점수 = 실적·규모·최근진입·핀. 65↑ 주목 · 40↑ 관심
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {(
+            [
+              ["all", "전체"],
+              ["focus", "주목만"],
+              ["watch", "관심↑"],
+            ] as const
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => onScoreFilterChange(k)}
+              className={`rounded border px-2 py-0.5 text-[11px] ${
+                scoreFilter === k
+                  ? "border-sky-600/60 text-sky-300"
+                  : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div className="rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -1271,120 +1593,181 @@ function AllTradersView({
             조건에 맞는 최근 진입이 없습니다.
           </p>
         ) : (
-          <div className="max-h-[480px] overflow-auto pretty-scroll">
-            <p className="mb-1 text-[11px] text-zinc-600">
-              줄을 누르면 차트와 타점 설명이 열립니다.
-            </p>
-            <table className="w-full min-w-[640px] text-left text-sm">
-              <thead className="sticky top-0 border-b border-zinc-800 bg-zinc-950 text-[11px] uppercase tracking-wide text-zinc-500">
-                <tr>
-                  <th className="px-2 py-1.5 font-medium">시각</th>
-                  <th className="px-2 py-1.5 font-medium">트레이더</th>
-                  <th className="px-2 py-1.5 font-medium">신뢰</th>
-                  <th className="px-2 py-1.5 font-medium">코인</th>
-                  <th className="px-2 py-1.5 font-medium">방향</th>
-                  <th className="px-2 py-1.5 font-medium">규모</th>
-                  <th className="px-2 py-1.5 font-medium">평균가</th>
-                  <th className="px-2 py-1.5 font-medium">체결</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleEntries.map((e) => (
-                  <tr
-                    key={entryKey(e)}
-                    onClick={() =>
-                      setFocusKey((k) => (k === entryKey(e) ? null : entryKey(e)))
-                    }
-                    className={`cursor-pointer border-b border-zinc-900/80 text-zinc-300 hover:bg-zinc-800/40 ${
-                      focusKey === entryKey(e) ? "bg-zinc-800/60" : ""
-                    }`}
-                  >
-                    <td
-                      className="px-2 py-1.5 text-xs text-zinc-500"
-                      title={formatKst(e.lastTime)}
-                    >
-                      {timeAgo(e.lastTime)}
-                    </td>
-                    <td className="px-2 py-1.5">
-                      <button
-                        type="button"
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          onOpenTrader(e.traderId);
-                        }}
-                        className="text-left text-zinc-200 hover:text-emerald-300 hover:underline"
+          <div className="space-y-4">
+            <HlEntryTimeline
+              entries={visibleEntries}
+              focusKey={focusKey}
+              entryKey={entryKey}
+              onSelect={(e) =>
+                setFocusKey((k) =>
+                  k === entryKey(e) ? null : entryKey(e)
+                )
+              }
+            />
+
+            <details className="group">
+              <summary className="cursor-pointer list-none text-[11px] text-zinc-500 hover:text-zinc-300">
+                목록으로 보기
+                <span className="ml-1 text-zinc-600 group-open:hidden">▾</span>
+                <span className="ml-1 hidden text-zinc-600 group-open:inline">
+                  ▴
+                </span>
+              </summary>
+              <div className="mt-2 max-h-[320px] overflow-auto pretty-scroll">
+                <table className="w-full min-w-[640px] text-left text-sm">
+                  <thead className="sticky top-0 border-b border-zinc-800 bg-zinc-950 text-[11px] uppercase tracking-wide text-zinc-500">
+                    <tr>
+                      <th className="px-2 py-1.5 font-medium">시각</th>
+                      <th className="px-2 py-1.5 font-medium">트레이더</th>
+                      <th className="px-2 py-1.5 font-medium">신뢰</th>
+                      <th className="px-2 py-1.5 font-medium">코인</th>
+                      <th className="px-2 py-1.5 font-medium">방향</th>
+                      <th className="px-2 py-1.5 font-medium">규모</th>
+                      <th className="px-2 py-1.5 font-medium">평균가</th>
+                      <th className="px-2 py-1.5 font-medium">체결</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleEntries.map((e) => (
+                      <tr
+                        key={entryKey(e)}
+                        onClick={() =>
+                          setFocusKey((k) =>
+                            k === entryKey(e) ? null : entryKey(e)
+                          )
+                        }
+                        className={`cursor-pointer border-b border-zinc-900/80 text-zinc-300 hover:bg-zinc-800/40 ${
+                          focusKey === entryKey(e) ? "bg-zinc-800/60" : ""
+                        }`}
                       >
-                        {e.label || shortAddr(e.address)}
-                      </button>
-                    </td>
-                    <td className="px-2 py-1.5">
-                      {traderById.get(e.traderId) ? (
-                        <HlTraderPerfBadge
-                          trader={traderById.get(e.traderId)!}
-                          compact
-                        />
-                      ) : (
-                        <span className="text-[11px] text-zinc-600">-</span>
-                      )}
-                    </td>
-                    <td className="px-2 py-1.5 font-medium text-zinc-100">
-                      {e.coin}
-                    </td>
-                    <td
-                      className={`px-2 py-1.5 ${
-                        e.side === "LONG" ? "text-emerald-400" : "text-rose-400"
-                      }`}
-                    >
-                      {e.side}
-                      {e.kind === "FLIP" ? (
-                        <span className="ml-1 rounded bg-zinc-800 px-1 text-[10px] text-amber-300">
-                          플립
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="px-2 py-1.5 tabular-nums">
-                      {fmtUsdCompact(e.notional)}
-                    </td>
-                    <td className="px-2 py-1.5 tabular-nums text-zinc-400">
-                      {e.avgPx.toLocaleString(undefined, {
-                        maximumSignificantDigits: 6,
-                      })}
-                    </td>
-                    <td className="px-2 py-1.5 tabular-nums text-zinc-500">
-                      {e.fills}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                        <td
+                          className="px-2 py-1.5 text-xs text-zinc-500"
+                          title={formatKst(e.lastTime)}
+                        >
+                          {timeAgo(e.lastTime)}
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <button
+                            type="button"
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              onOpenTrader(e.traderId);
+                            }}
+                            className="text-left text-zinc-200 hover:text-emerald-300 hover:underline"
+                          >
+                            {e.label || shortAddr(e.address)}
+                          </button>
+                        </td>
+                        <td className="px-2 py-1.5">
+                          {traderById.get(e.traderId) ? (
+                            <HlTraderPerfBadge
+                              trader={traderById.get(e.traderId)!}
+                              compact
+                            />
+                          ) : (
+                            <span className="text-[11px] text-zinc-600">-</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1.5 font-medium text-zinc-100">
+                          {e.coin}
+                        </td>
+                        <td
+                          className={`px-2 py-1.5 ${
+                            e.side === "LONG"
+                              ? "text-emerald-400"
+                              : "text-rose-400"
+                          }`}
+                        >
+                          {e.side}
+                          {e.kind === "FLIP" ? (
+                            <span className="ml-1 rounded bg-zinc-800 px-1 text-[10px] text-amber-300">
+                              플립
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-2 py-1.5 tabular-nums">
+                          {fmtUsdCompact(e.notional)}
+                        </td>
+                        <td className="px-2 py-1.5 tabular-nums text-zinc-400">
+                          {e.avgPx.toLocaleString(undefined, {
+                            maximumSignificantDigits: 6,
+                          })}
+                        </td>
+                        <td className="px-2 py-1.5 tabular-nums text-zinc-500">
+                          {e.fills}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
           </div>
         )}
       </div>
 
+      {cards.length === 0 ? (
+        <p className="py-6 text-center text-sm text-zinc-500">
+          필터에 맞는 트레이더가 없습니다. 점수 필터를 낮추거나 핀을
+          고정해 보세요.
+        </p>
+      ) : null}
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {cards.map(({ trader, list, longNtl, shortNtl, upnl, last }) => {
+        {cards.map(({ trader, list, longNtl, shortNtl, upnl, last, imp }) => {
           const total = longNtl + shortNtl;
           const longPct = total > 0 ? (longNtl / total) * 100 : 0;
+          const pinned = pinnedIds.has(trader.id);
           return (
-            <button
+            <div
               key={trader.id}
-              type="button"
-              onClick={() => onOpenTrader(trader.id)}
-              className="flex flex-col gap-2 rounded-md border border-zinc-800 bg-zinc-950/40 p-3 text-left transition hover:border-zinc-600"
+              className={`flex flex-col gap-2 rounded-md border bg-zinc-950/40 p-3 text-left transition ${
+                imp.tier === "focus"
+                  ? "border-sky-700/50"
+                  : "border-zinc-800 hover:border-zinc-600"
+              }`}
             >
               <div className="flex items-baseline justify-between gap-2">
-                <span className="truncate font-medium text-zinc-100">
+                <button
+                  type="button"
+                  onClick={() => onOpenTrader(trader.id)}
+                  className="truncate font-medium text-zinc-100 hover:text-emerald-300 hover:underline"
+                >
                   {trader.label || shortAddr(trader.address)}
-                </span>
-                <span className="shrink-0 text-xs tabular-nums text-zinc-500">
-                  {fmtUsdCompact(
-                    trader.account_value != null
-                      ? Number(trader.account_value)
-                      : null
-                  )}
-                </span>
+                </button>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    title={pinned ? "핀 해제" : "핀 고정"}
+                    onClick={() => onTogglePin(trader.id)}
+                    className={`rounded border px-1.5 py-0.5 text-[10px] ${
+                      pinned
+                        ? "border-sky-600/60 text-sky-300"
+                        : "border-zinc-800 text-zinc-600 hover:text-zinc-400"
+                    }`}
+                  >
+                    {pinned ? "핀" : "고정"}
+                  </button>
+                  <span className="text-xs tabular-nums text-zinc-500">
+                    {fmtUsdCompact(
+                      trader.account_value != null
+                        ? Number(trader.account_value)
+                        : null
+                    )}
+                  </span>
+                </div>
               </div>
-              <HlTraderPerfBadge trader={trader} compact />
+              <button
+                type="button"
+                onClick={() => onOpenTrader(trader.id)}
+                className="text-left"
+              >
+                <HlTraderPerfBadge
+                  trader={trader}
+                  compact
+                  importance={imp}
+                />
+              </button>
 
               {total > 0 ? (
                 <>
@@ -1437,7 +1820,11 @@ function AllTradersView({
                 <p className="text-xs text-zinc-600">열린 포지션 없음</p>
               )}
 
-              <div className="mt-auto border-t border-zinc-800/80 pt-1.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => onOpenTrader(trader.id)}
+                className="mt-auto border-t border-zinc-800/80 pt-1.5 text-left text-[11px]"
+              >
                 {last ? (
                   <span className="text-zinc-400">
                     최근 진입{" "}
@@ -1458,8 +1845,8 @@ function AllTradersView({
                     {entryHours}h 내 진입 없음
                   </span>
                 )}
-              </div>
-            </button>
+              </button>
+            </div>
           );
         })}
       </div>

@@ -12,6 +12,7 @@ export const CLOUD_PREF_KEYS = [
   "dailytrading.alarm.history.v1",
   "dailytrading.riskcalc.v1",
   "dailytrading.calcoins.v1",
+  "dailytrading.hl.pins.v1",
 ] as const;
 
 export type CloudPrefKey = (typeof CLOUD_PREF_KEYS)[number];

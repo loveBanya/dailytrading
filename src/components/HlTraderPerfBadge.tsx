@@ -3,6 +3,8 @@
 import {
   fmtPnl,
   fmtRoi,
+  importanceScore,
+  type HlImportance,
   trustSummary,
 } from "@/lib/hyperliquid/perf";
 import type { HlTrader } from "@/lib/hyperliquid/types";
@@ -20,6 +22,17 @@ function toneClass(tone: string): string {
   }
 }
 
+function scoreClass(tier: HlImportance["tier"]): string {
+  switch (tier) {
+    case "focus":
+      return "border-sky-600/60 bg-sky-500/15 text-sky-200";
+    case "watch":
+      return "border-zinc-600 text-zinc-300";
+    default:
+      return "border-zinc-800 text-zinc-500";
+  }
+}
+
 function pnlClass(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(Number(n)) || Number(n) === 0) {
     return "text-zinc-500";
@@ -30,11 +43,15 @@ function pnlClass(n: number | null | undefined): string {
 export function HlTraderPerfBadge({
   trader,
   compact = false,
+  importance,
 }: {
   trader: HlTrader;
   compact?: boolean;
+  /** 미리 계산한 점수. 없으면 기본(핀·노출 없이) 계산 */
+  importance?: HlImportance;
 }) {
   const trust = trustSummary(trader);
+  const imp = importance ?? importanceScore(trader);
   const monthPnl =
     trader.pnl_month != null ? Number(trader.pnl_month) : null;
   const monthRoi =
@@ -56,6 +73,12 @@ export function HlTraderPerfBadge({
   if (compact) {
     return (
       <span className="inline-flex flex-wrap items-center gap-1 text-[11px]">
+        <span
+          className={`rounded border px-1.5 py-0.5 tabular-nums ${scoreClass(imp.tier)}`}
+          title={imp.reasons.join(" · ") || imp.label}
+        >
+          {imp.score}점 · {imp.label}
+        </span>
         <span
           className={`rounded border px-1.5 py-0.5 ${toneClass(trust.tone)}`}
           title={trust.detail}
@@ -79,6 +102,12 @@ export function HlTraderPerfBadge({
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-1.5">
+        <span
+          className={`rounded border px-2 py-0.5 text-[11px] tabular-nums ${scoreClass(imp.tier)}`}
+          title={imp.reasons.join(" · ")}
+        >
+          {imp.score}점 · {imp.label}
+        </span>
         <span
           className={`rounded border px-2 py-0.5 text-[11px] ${toneClass(trust.tone)}`}
         >
@@ -115,7 +144,12 @@ export function HlTraderPerfBadge({
           </span>
         )}
       </div>
-      <p className="text-[11px] leading-relaxed text-zinc-500">{trust.detail}</p>
+      <p className="text-[11px] leading-relaxed text-zinc-500">
+        {trust.detail}
+        {imp.reasons.length > 0
+          ? ` · 점수 근거: ${imp.reasons.join(", ")}`
+          : ""}
+      </p>
     </div>
   );
 }

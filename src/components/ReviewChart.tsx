@@ -180,7 +180,7 @@ export function ReviewChart({
         price: exit,
         color: exitColor,
         shape: "circle" as const,
-        text: "2 청산",
+        text: "2 익절·청산",
       },
     ];
     createSeriesMarkers(series, entryT === exitT ? [markers[0]!] : markers);

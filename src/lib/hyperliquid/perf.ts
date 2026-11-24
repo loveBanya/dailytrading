@@ -216,6 +216,122 @@ export function fmtRoi(n: number): string {
   return `${sign}${pct.toFixed(0)}%`;
 }
 
+export type HlWatchTier = "focus" | "watch" | "low";
+
+export interface HlImportance {
+  /** 0–100, 높을수록 비중 있게 볼 가치 */
+  score: number;
+  tier: HlWatchTier;
+  label: string;
+  reasons: string[];
+}
+
+/**
+ * 관심 트레이더 중요도.
+ * 실적(신뢰·월ROI·누적) + 규모 + 최근 진입 + 수동 핀.
+ */
+export function importanceScore(
+  t: Pick<
+    HlTrader,
+    | "pnl_month"
+    | "roi_month"
+    | "pnl_week"
+    | "roi_week"
+    | "pnl_all_time"
+    | "roi_all_time"
+    | "pnl_day"
+    | "account_value"
+  >,
+  opts?: {
+    pinned?: boolean;
+    hasRecentEntry?: boolean;
+    exposureUsd?: number;
+  }
+): HlImportance {
+  const trust = trustSummary(t);
+  const reasons: string[] = [];
+  let score = 0;
+
+  if (opts?.pinned) {
+    score += 28;
+    reasons.push("핀 고정");
+  }
+
+  switch (trust.tone) {
+    case "good":
+      score += 34;
+      reasons.push(trust.label);
+      break;
+    case "mixed":
+      score += 16;
+      reasons.push(trust.label);
+      break;
+    case "weak":
+      score += 4;
+      reasons.push(trust.label);
+      break;
+    default:
+      break;
+  }
+
+  const monthRoi = num(t.roi_month);
+  if (monthRoi != null) {
+    const roiPts = Math.max(-12, Math.min(22, monthRoi * 100 * 0.35));
+    score += roiPts;
+    if (Math.abs(roiPts) >= 4) {
+      reasons.push(`월 ROI ${fmtRoi(monthRoi)}`);
+    }
+  } else {
+    const monthPnl = num(t.pnl_month);
+    if (monthPnl != null && Math.abs(monthPnl) >= 10_000) {
+      const pnlPts = Math.max(-8, Math.min(12, Math.sign(monthPnl) * 8));
+      score += pnlPts;
+    }
+  }
+
+  const allPnl = num(t.pnl_all_time);
+  if (allPnl != null && allPnl > 0) {
+    score += 8;
+    reasons.push("누적 흑자");
+  } else if (allPnl != null && allPnl < 0) {
+    score -= 6;
+  }
+
+  const av = num(t.account_value);
+  if (av != null && av > 0) {
+    const sizePts = Math.min(12, Math.log10(Math.max(av, 1_000)) * 3);
+    score += sizePts;
+    if (av >= 5_000_000) reasons.push("대형 계좌");
+  }
+
+  const exposure = opts?.exposureUsd ?? 0;
+  if (exposure >= 100_000) {
+    score += 8;
+    reasons.push("큰 노출");
+  } else if (exposure > 0) {
+    score += 3;
+  }
+
+  if (opts?.hasRecentEntry) {
+    score += 12;
+    reasons.push("최근 진입");
+  }
+
+  score = Math.round(Math.max(0, Math.min(100, score)));
+
+  let tier: HlWatchTier = "low";
+  let label = "참고";
+  if (score >= 65 || opts?.pinned) {
+    tier = "focus";
+    label = opts?.pinned && score < 65 ? "핀·주목" : "주목";
+  } else if (score >= 40) {
+    tier = "watch";
+    label = "관심";
+  }
+
+  return { score, tier, label, reasons: reasons.slice(0, 4) };
+}
+
 /** 동기화: 리더보드 맵 + 없는 주소만 portfolio */
 export async function fetchPerfForAddresses(
   addresses: string[]

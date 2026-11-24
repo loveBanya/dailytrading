@@ -12,6 +12,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { Candle } from "@/lib/exchanges/klines";
+import { ZoomSafeChartBox } from "./ZoomSafeChartBox";
 
 export const BUY_COLOR = "#f87171";
 export const SELL_COLOR = "#60a5fa";
@@ -196,5 +197,5 @@ export function ReviewChart({
     return () => chart.remove();
   }, [candles, entry, exit, entrySec, exitSec, side]);
 
-  return <div ref={ref} className="w-full" style={{ height }} />;
+  return <ZoomSafeChartBox ref={ref} className="w-full" height={height} />;
 }

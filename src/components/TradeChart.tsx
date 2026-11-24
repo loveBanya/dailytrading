@@ -11,6 +11,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { Candle } from "@/lib/exchanges/klines";
+import { ZoomSafeChartBox } from "./ZoomSafeChartBox";
 
 export interface ChartLevels {
   entry: number;
@@ -82,7 +83,7 @@ export function TradeChart({ candles, levels, height = 440 }: TradeChartProps) {
     const pathColor = exitIsWin ? "#ef4444" : "#3b82f6";
 
     const chart = createChart(el, {
-      height,
+      autoSize: true,
       layout: {
         background: { type: ColorType.Solid, color: "#ffffff" },
         textColor: "#71717a",
@@ -261,25 +262,16 @@ export function TradeChart({ candles, levels, height = 440 }: TradeChartProps) {
       chart.timeScale().fitContent();
     }
 
-    const ro = new ResizeObserver(() => {
-      if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth });
-      }
-    });
-    ro.observe(el);
-    chart.applyOptions({ width: el.clientWidth });
-
     return () => {
-      ro.disconnect();
       chart.remove();
     };
   }, [candles, levels, height]);
 
   return (
-    <div
+    <ZoomSafeChartBox
       ref={containerRef}
+      height={height}
       className="w-full overflow-hidden rounded-md border border-zinc-200 bg-white"
-      style={{ height }}
     />
   );
 }

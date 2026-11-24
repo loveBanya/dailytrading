@@ -25,6 +25,7 @@ import type {
 } from "@/lib/hyperliquid/types";
 import { formatKst } from "@/lib/utils/format";
 import { importanceScore } from "@/lib/hyperliquid/perf";
+import { ZoomSafeChartBox } from "./ZoomSafeChartBox";
 
 type RangeKey = "24h" | "72h" | "7d";
 
@@ -69,10 +70,6 @@ function kstTick(sec: number): string {
   });
 }
 
-function normalizeCoinInput(raw: string): string {
-  return raw.trim().replace(/^\$/, "");
-}
-
 export function HlCoinBoardChart({
   traders,
   positions,
@@ -107,9 +104,8 @@ export function HlCoinBoardChart({
       .map(([coin, n]) => ({ coin, n }));
   }, [entries, positions]);
 
-  const [coinInput, setCoinInput] = useState("");
   const [coin, setCoin] = useState("");
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [coinMore, setCoinMore] = useState(false);
   const [range, setRange] = useState<RangeKey>("72h");
   const [interval, setInterval] = useState<HlCandleInterval>("1h");
   const [showOpenLines, setShowOpenLines] = useState(true);
@@ -128,22 +124,20 @@ export function HlCoinBoardChart({
     onNeedEntries();
   }, [onNeedEntries]);
 
-  const filteredSuggestions = useMemo(() => {
-    const q = normalizeCoinInput(coinInput).toLowerCase();
-    if (!q) return coinSuggestions.slice(0, 12);
-    return coinSuggestions
-      .filter((c) => c.coin.toLowerCase().includes(q))
-      .slice(0, 12);
-  }, [coinInput, coinSuggestions]);
+  useEffect(() => {
+    if (!coin && coinSuggestions.length > 0) {
+      setCoin(coinSuggestions[0]!.coin);
+    }
+  }, [coin, coinSuggestions]);
 
   const selectCoin = useCallback((next: string) => {
-    const c = normalizeCoinInput(next);
-    if (!c) return;
-    setCoin(c);
-    setCoinInput(c);
-    setPickerOpen(false);
+    setCoin(next);
     setSelectedEntryKey(null);
   }, []);
+
+  const visibleCoinButtons = coinMore
+    ? coinSuggestions
+    : coinSuggestions.slice(0, 14);
 
   const focusTraderIds = useMemo(() => {
     const ids = new Set<string>();
@@ -413,73 +407,52 @@ export function HlCoinBoardChart({
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-end gap-2 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
-        <div className="relative flex flex-col gap-1">
-          <span className="text-[11px] text-zinc-500">코인 선택</span>
-          <div className="flex gap-1">
-            <input
-              value={coinInput}
-              onChange={(e) => {
-                setCoinInput(e.target.value);
-                setPickerOpen(true);
-              }}
-              onFocus={() => setPickerOpen(true)}
-              onBlur={() => {
-                window.setTimeout(() => setPickerOpen(false), 150);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  selectCoin(coinInput);
-                }
-                if (e.key === "Escape") setPickerOpen(false);
-              }}
-              placeholder="BTC, HYPE, xyz:NVDA…"
-              className="w-44 rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-emerald-500/50 sm:w-52"
-            />
+      <div className="space-y-2 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-[11px] text-zinc-500">코인</span>
+          {visibleCoinButtons.length === 0 ? (
+            <span className="text-[11px] text-zinc-600">
+              {entriesLoading ? "불러오는 중…" : "선택 가능한 코인 없음"}
+            </span>
+          ) : (
+            visibleCoinButtons.map(({ coin: c, n }) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => selectCoin(c)}
+                className={`rounded border px-2 py-0.5 text-[11px] ${
+                  coin === c
+                    ? "border-emerald-600/60 text-emerald-300"
+                    : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {c}
+                {n > 0 ? (
+                  <span className="ml-1 text-zinc-600">{n}</span>
+                ) : null}
+              </button>
+            ))
+          )}
+          {coinSuggestions.length > 14 ? (
             <button
               type="button"
-              onClick={() => selectCoin(coinInput)}
-              disabled={!normalizeCoinInput(coinInput)}
-              className="rounded border border-emerald-700/50 px-2.5 py-1.5 text-xs text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-40"
+              onClick={() => setCoinMore((v) => !v)}
+              className="rounded border border-zinc-800 px-2 py-0.5 text-[11px] text-zinc-500 hover:text-zinc-300"
             >
-              보기
+              {coinMore ? "접기" : `더보기 +${coinSuggestions.length - 14}`}
             </button>
-          </div>
-          {pickerOpen && filteredSuggestions.length > 0 && (
-            <ul className="absolute left-0 top-full z-20 mt-1 max-h-48 w-full min-w-[14rem] overflow-auto rounded border border-zinc-700 bg-zinc-950 shadow-lg pretty-scroll">
-              {filteredSuggestions.map(({ coin: c, n }) => (
-                <li key={c}>
-                  <button
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => selectCoin(c)}
-                    className={`flex w-full items-center justify-between px-2.5 py-1.5 text-left text-sm hover:bg-zinc-800 ${
-                      c === coin ? "text-emerald-300" : "text-zinc-200"
-                    }`}
-                  >
-                    <span>{c}</span>
-                    {n > 0 ? (
-                      <span className="text-[11px] text-zinc-500">
-                        진입 {n}
-                      </span>
-                    ) : null}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          ) : null}
         </div>
 
-        <div className="flex flex-col gap-1">
-          <span className="text-[11px] text-zinc-500">기간</span>
-          <div className="flex gap-1">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1">
+            <span className="text-[11px] text-zinc-500">기간</span>
             {(["24h", "72h", "7d"] as const).map((r) => (
               <button
                 key={r}
                 type="button"
                 onClick={() => setRange(r)}
-                className={`rounded border px-2 py-1 text-[11px] ${
+                className={`rounded border px-2 py-0.5 text-[11px] ${
                   range === r
                     ? "border-emerald-600/60 text-emerald-300"
                     : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
@@ -489,17 +462,14 @@ export function HlCoinBoardChart({
               </button>
             ))}
           </div>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <span className="text-[11px] text-zinc-500">봉</span>
-          <div className="flex gap-1">
+          <div className="flex items-center gap-1">
+            <span className="text-[11px] text-zinc-500">봉</span>
             {INTERVALS.map((iv) => (
               <button
                 key={iv}
                 type="button"
                 onClick={() => setInterval(iv)}
-                className={`rounded border px-2 py-1 text-[11px] ${
+                className={`rounded border px-2 py-0.5 text-[11px] ${
                   interval === iv
                     ? "border-emerald-600/60 text-emerald-300"
                     : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
@@ -509,33 +479,31 @@ export function HlCoinBoardChart({
               </button>
             ))}
           </div>
+          <label className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+            <input
+              type="checkbox"
+              checked={showOpenLines}
+              onChange={(e) => setShowOpenLines(e.target.checked)}
+              className="size-3.5 accent-emerald-500"
+            />
+            보유 평단선
+          </label>
+          <label className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+            <input
+              type="checkbox"
+              checked={focusOnly}
+              onChange={(e) => setFocusOnly(e.target.checked)}
+              className="size-3.5 accent-sky-500"
+            />
+            주목 점수만
+          </label>
         </div>
-
-        <label className="flex items-center gap-1.5 self-end pb-1.5 text-[11px] text-zinc-500">
-          <input
-            type="checkbox"
-            checked={showOpenLines}
-            onChange={(e) => setShowOpenLines(e.target.checked)}
-            className="size-3.5 accent-emerald-500"
-          />
-          보유 평단선
-        </label>
-        <label className="flex items-center gap-1.5 self-end pb-1.5 text-[11px] text-zinc-500">
-          <input
-            type="checkbox"
-            checked={focusOnly}
-            onChange={(e) => setFocusOnly(e.target.checked)}
-            className="size-3.5 accent-sky-500"
-          />
-          주목 점수만
-        </label>
       </div>
 
       {!coin ? (
         <p className="rounded-md border border-zinc-800 bg-zinc-950/40 py-16 text-center text-sm text-zinc-500">
-          위에서 코인을 고른 뒤 <span className="text-zinc-300">보기</span>를
-          누르세요.
-          {entriesLoading ? " (진입 목록 불러오는 중…)" : ""}
+          코인 버튼을 눌러 차트를 보세요.
+          {entriesLoading ? " (목록 불러오는 중…)" : ""}
         </p>
       ) : (
         <>
@@ -576,7 +544,11 @@ export function HlCoinBoardChart({
                     {error}
                   </p>
                 ) : null}
-                <div ref={chartRef} className="h-[420px] w-full sm:h-[520px]" />
+                <ZoomSafeChartBox
+                  ref={chartRef}
+                  className="w-full"
+                  height={520}
+                />
               </>
             )}
           </div>

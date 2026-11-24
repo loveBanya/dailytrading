@@ -537,8 +537,13 @@ export function TradeJournal() {
       className="mx-auto w-full max-w-6xl px-6 py-10"
       style={
         pageScale < 0.999
-          ? { width: 1152, maxWidth: 1152, zoom: pageScale }
-          : undefined
+          ? {
+              width: 1152,
+              maxWidth: 1152,
+              zoom: pageScale,
+              ["--page-zoom" as string]: String(pageScale),
+            }
+          : { ["--page-zoom" as string]: "1" }
       }
     >
       <header className="relative z-40 mb-6 flex flex-wrap items-end justify-between gap-4">

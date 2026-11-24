@@ -26,6 +26,7 @@ import type {
 } from "@/lib/hyperliquid/types";
 import { formatKst } from "@/lib/utils/format";
 import { HlTraderPerfBadge } from "./HlTraderPerfBadge";
+import { ZoomSafeChartBox } from "./ZoomSafeChartBox";
 
 function pickInterval(ageMs: number): {
   interval: HlCandleInterval;
@@ -508,7 +509,7 @@ export function HlEntryChart({
       ) : error ? (
         <p className="py-16 text-center text-sm text-rose-300">{error}</p>
       ) : (
-        <div ref={ref} className="h-64 w-full" />
+        <ZoomSafeChartBox ref={ref} className="w-full" height={256} />
       )}
       <p className="mt-1 text-[10px] text-zinc-600">
         {interval} 캔들 · ①진입

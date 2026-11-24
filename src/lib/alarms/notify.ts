@@ -1,5 +1,7 @@
 import type { OpenPosition } from "@/lib/exchanges/wallet";
-import type { HlRecentEntry } from "@/lib/hyperliquid/types";
+import { readHlCache } from "@/lib/hyperliquid/cache";
+import { importanceScore } from "@/lib/hyperliquid/perf";
+import type { HlRecentEntry, HlTrader } from "@/lib/hyperliquid/types";
 import { playDoorbell } from "./ding";
 import { pushAlarmHistory } from "./history";
 import {
@@ -8,9 +10,26 @@ import {
   type AlarmSettings,
 } from "./settings";
 import { emitAlarmToast, targetTabForKind } from "./toast";
+import { alarmSpeechText, speakAlarm } from "./tts";
 import type { AlarmKind } from "./types";
 
 export type { AlarmKind } from "./types";
+
+const HL_PINS_KEY = "dailytrading.hl.pins.v1";
+const TRADERS_CACHE_KEY = "traders";
+
+function loadPinnedIds(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = localStorage.getItem(HL_PINS_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.filter((x): x is string => typeof x === "string"));
+  } catch {
+    return new Set();
+  }
+}
 
 function pctDistance(mark: number, target: number): number {
   if (!Number.isFinite(mark) || !Number.isFinite(target) || mark === 0) {
@@ -45,7 +64,11 @@ export async function fireAlarm(
 
   const targetTab = targetTabForKind(kind);
   const vol = Math.max(0, Math.min(100, s.volume ?? 70)) / 100;
-  void playDoorbell(vol);
+  if (s.dingEnabled !== false) void playDoorbell(vol);
+  if (s.ttsEnabled) {
+    const ttsVol = Math.max(0, Math.min(100, s.ttsVolume ?? 85)) / 100;
+    speakAlarm(alarmSpeechText(title, body), ttsVol);
+  }
   if (s.browserNotify) void notifyBrowser(title, body);
   const event = pushAlarmHistory(kind, title, body, targetTab);
   if (s.toastEnabled !== false) {
@@ -69,6 +92,35 @@ export async function fireAlarm(
   }
 
   return true;
+}
+
+function filterHlEntries(
+  entries: HlRecentEntry[],
+  s: AlarmSettings
+): HlRecentEntry[] {
+  const pins = loadPinnedIds();
+  const traders =
+    readHlCache<HlTrader[]>(TRADERS_CACHE_KEY)?.data ?? [];
+  const byId = new Map(traders.map((t) => [t.id, t]));
+
+  return entries.filter((e) => {
+    if (e.notional < s.hlEntryMinNotional) return false;
+    if (e.side === "LONG" && s.hlLongEnabled === false) return false;
+    if (e.side === "SHORT" && s.hlShortEnabled === false) return false;
+    if (s.hlPinnedOnly && !pins.has(e.traderId)) return false;
+    if (s.hlFocusOnly) {
+      if (pins.has(e.traderId)) return true;
+      const t = byId.get(e.traderId);
+      if (!t) return false;
+      const imp = importanceScore(t, {
+        pinned: false,
+        hasRecentEntry: true,
+        exposureUsd: e.notional,
+      });
+      return imp.tier === "focus";
+    }
+    return true;
+  });
 }
 
 export function checkPositionAlarms(
@@ -203,25 +255,30 @@ export function checkHlEntries(entries: HlRecentEntry[]): HlRecentEntry[] {
   if (prev == null || !s.enabled || !s.hlEntryEnabled) return [];
 
   const now = Date.now();
-  const fresh = entries.filter(
-    (e) =>
-      !prev.has(hlEntryKey(e)) &&
-      e.notional >= s.hlEntryMinNotional &&
-      now - e.lastTime <= HL_FRESH_MS
+  const freshRaw = entries.filter(
+    (e) => !prev.has(hlEntryKey(e)) && now - e.lastTime <= HL_FRESH_MS
+  );
+  const fresh = filterHlEntries(freshRaw, s).sort(
+    (a, b) => b.notional - a.notional
   );
   if (fresh.length === 0) return [];
 
+  const maxSpeak = Math.max(1, Math.min(5, s.hlMaxSpeak ?? 2));
   const line = (e: HlRecentEntry) =>
     `${e.label ?? e.address.slice(0, 8)} ${e.coin} ${e.side === "LONG" ? "롱" : "숏"} $${Math.round(e.notional).toLocaleString()}`;
   const top = fresh[0]!;
+  const hlCd = s.hlCooldownSec > 0 ? s.hlCooldownSec : s.cooldownSec;
+  // HL은 전용 쿨다운 키로 묶어서 연달아 울리는 것 완화
+  if (!tryAlarmCooldown("hl_entry:batch", hlCd)) return fresh;
+
   void fireAlarm(
     "hl_entry",
     hlEntryKey(top),
     fresh.length === 1
       ? `HL 신규 진입 · ${top.coin}`
       : `HL 신규 진입 ${fresh.length}건`,
-    fresh.slice(0, 3).map(line).join(" · "),
-    s
+    fresh.slice(0, maxSpeak).map(line).join(" · "),
+    { ...s, cooldownSec: 0 }
   );
   return fresh;
 }

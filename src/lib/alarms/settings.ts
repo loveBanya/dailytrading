@@ -18,12 +18,30 @@ export interface AlarmSettings {
   browserNotify: boolean;
   /** 딩 볼륨 0~100 */
   volume: number;
+  /** 딩 소리 */
+  dingEnabled: boolean;
   /** 화면 토스트 */
   toastEnabled: boolean;
   /** 관심 HL 트레이더 신규 진입 */
   hlEntryEnabled: boolean;
   /** 이 금액(USD) 이상 진입만 알림 */
   hlEntryMinNotional: number;
+  /** 핀 고정 트레이더만 */
+  hlPinnedOnly: boolean;
+  /** 주목 점수(핀 포함)만 */
+  hlFocusOnly: boolean;
+  /** 롱 진입 알림 */
+  hlLongEnabled: boolean;
+  /** 숏 진입 알림 */
+  hlShortEnabled: boolean;
+  /** HL 전용 쿨다운(초). 0이면 공통 쿨다운 */
+  hlCooldownSec: number;
+  /** 한 번에 TTS/토스트에 넣을 최대 건수 */
+  hlMaxSpeak: number;
+  /** 한국어 TTS */
+  ttsEnabled: boolean;
+  /** TTS 볼륨 0~100 */
+  ttsVolume: number;
 }
 
 export const DEFAULT_ALARM_SETTINGS: AlarmSettings = {
@@ -38,9 +56,18 @@ export const DEFAULT_ALARM_SETTINGS: AlarmSettings = {
   cooldownSec: 120,
   browserNotify: true,
   volume: 70,
+  dingEnabled: true,
   toastEnabled: true,
   hlEntryEnabled: true,
-  hlEntryMinNotional: 50_000,
+  hlEntryMinNotional: 100_000,
+  hlPinnedOnly: false,
+  hlFocusOnly: true,
+  hlLongEnabled: true,
+  hlShortEnabled: true,
+  hlCooldownSec: 180,
+  hlMaxSpeak: 2,
+  ttsEnabled: true,
+  ttsVolume: 85,
 };
 
 const KEY = "dailytrading.alarm.settings.v1";
@@ -83,7 +110,6 @@ export function tryAlarmCooldown(id: string, cooldownSec: number): boolean {
   const until = map[id] ?? 0;
   if (until > now) return false;
   map[id] = now + cooldownSec * 1000;
-  // 오래된 키 정리
   for (const [k, v] of Object.entries(map)) {
     if (v < now - 3600_000) delete map[k];
   }

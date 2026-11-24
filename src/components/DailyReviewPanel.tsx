@@ -39,7 +39,7 @@ export function DailyReviewPanel({
 }: {
   trades: Trade[];
   fx: number;
-  /** 트레이딩 게임 하루 손실 한도. 한 번에 이만큼 잃으면 과한 손실로 본다 */
+  /** 하루/건당 과한 손실로 볼 한도(USDT) */
   lossLimitUsdt: number;
   /** 댓글·알림에서 이 매매로 바로 간다 */
   focus?: { id: string; nonce: number } | null;

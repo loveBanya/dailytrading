@@ -24,10 +24,15 @@ import type {
   HlTrader,
 } from "@/lib/hyperliquid/types";
 import { formatKst } from "@/lib/utils/format";
-import { importanceScore } from "@/lib/hyperliquid/perf";
+import {
+  importanceScore,
+  type HlImportance,
+} from "@/lib/hyperliquid/perf";
 import { ZoomSafeChartBox } from "./ZoomSafeChartBox";
 
 type RangeKey = "24h" | "72h" | "7d";
+/** 주목=좋은 기록 위주, 전체=참고도 흐리게 포함 */
+type TraderView = "focus" | "all";
 
 const RANGE_MS: Record<RangeKey, number> = {
   "24h": 24 * 3600_000,
@@ -70,11 +75,26 @@ function kstTick(sec: number): string {
   });
 }
 
+function traderName(
+  e: { label?: string | null; address?: string; traderId?: string },
+  byId: Map<string, HlTrader>
+): string {
+  if (e.label) return e.label;
+  if (e.traderId) {
+    const t = byId.get(e.traderId);
+    if (t?.label) return t.label;
+    if (t?.address) return shortAddr(t.address);
+  }
+  if (e.address) return shortAddr(e.address);
+  return "트레이더";
+}
+
 export function HlCoinBoardChart({
   traders,
   positions,
   entries,
   entriesLoading,
+  pinnedIds,
   onNeedEntries,
   onOpenTrader,
 }: {
@@ -82,6 +102,7 @@ export function HlCoinBoardChart({
   positions: HlOpenPosition[];
   entries: HlRecentEntry[];
   entriesLoading: boolean;
+  pinnedIds: Set<string>;
   onNeedEntries: () => void;
   onOpenTrader: (id: string) => void;
 }) {
@@ -109,7 +130,7 @@ export function HlCoinBoardChart({
   const [range, setRange] = useState<RangeKey>("72h");
   const [interval, setInterval] = useState<HlCandleInterval>("1h");
   const [showOpenLines, setShowOpenLines] = useState(true);
-  const [focusOnly, setFocusOnly] = useState(false);
+  const [traderView, setTraderView] = useState<TraderView>("focus");
   const [candles, setCandles] = useState<HlCandle[]>([]);
   const [loading, setLoading] = useState(false);
   const [fromCache, setFromCache] = useState(false);
@@ -139,21 +160,31 @@ export function HlCoinBoardChart({
     ? coinSuggestions
     : coinSuggestions.slice(0, 14);
 
-  const focusTraderIds = useMemo(() => {
-    const ids = new Set<string>();
+  const traderMeta = useMemo(() => {
+    const m = new Map<string, { imp: HlImportance; focus: boolean }>();
     for (const t of traders) {
       const exposure = positions
         .filter((p) => p.trader_id === t.id)
         .reduce((s, p) => s + Math.abs(Number(p.position_value ?? 0)), 0);
       const hasRecent = entries.some((e) => e.traderId === t.id);
+      const pinned = pinnedIds.has(t.id);
       const imp = importanceScore(t, {
+        pinned,
         hasRecentEntry: hasRecent,
         exposureUsd: exposure,
       });
-      if (imp.tier === "focus") ids.add(t.id);
+      m.set(t.id, {
+        imp,
+        focus: pinned || imp.tier === "focus",
+      });
     }
-    return ids;
-  }, [traders, positions, entries]);
+    return m;
+  }, [traders, positions, entries, pinnedIds]);
+
+  const isFocus = useCallback(
+    (traderId: string) => traderMeta.get(traderId)?.focus === true,
+    [traderMeta]
+  );
 
   const coinEntries = useMemo(() => {
     if (!coin) return [];
@@ -161,22 +192,64 @@ export function HlCoinBoardChart({
     const from = now - RANGE_MS[range];
     return entries
       .filter((e) => e.coin === coin && e.lastTime >= from)
-      .filter((e) => !focusOnly || focusTraderIds.has(e.traderId))
-      .sort((a, b) => b.notional - a.notional);
-  }, [entries, coin, range, focusOnly, focusTraderIds]);
+      .filter((e) => traderView === "all" || isFocus(e.traderId))
+      .sort((a, b) => {
+        const fa = isFocus(a.traderId) ? 1 : 0;
+        const fb = isFocus(b.traderId) ? 1 : 0;
+        if (fa !== fb) return fb - fa;
+        const sa = traderMeta.get(a.traderId)?.imp.score ?? 0;
+        const sb = traderMeta.get(b.traderId)?.imp.score ?? 0;
+        if (sa !== sb) return sb - sa;
+        return b.notional - a.notional;
+      });
+  }, [entries, coin, range, traderView, isFocus, traderMeta]);
 
   const openOnCoin = useMemo(() => {
     if (!coin) return [];
     return positions
       .filter((p) => p.coin === coin)
-      .filter((p) => !focusOnly || focusTraderIds.has(p.trader_id))
+      .filter((p) => traderView === "all" || isFocus(p.trader_id))
       .map((p) => ({
         ...p,
         value: Math.abs(Number(p.position_value ?? 0)),
+        focus: isFocus(p.trader_id),
+        score: traderMeta.get(p.trader_id)?.imp.score ?? 0,
       }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 8);
-  }, [positions, coin, focusOnly, focusTraderIds]);
+      .sort((a, b) => {
+        if (a.focus !== b.focus) return a.focus ? -1 : 1;
+        if (a.score !== b.score) return b.score - a.score;
+        return b.value - a.value;
+      })
+      .slice(0, 12);
+  }, [positions, coin, traderView, isFocus, traderMeta]);
+
+  /** 이 코인에 등장한 트레이더 요약 (누가 누구인지) */
+  const roster = useMemo(() => {
+    if (!coin) return [];
+    const ids = new Set<string>();
+    for (const e of coinEntries) ids.add(e.traderId);
+    for (const p of openOnCoin) ids.add(p.trader_id);
+    return [...ids]
+      .map((id) => {
+        const t = traderById.get(id);
+        const meta = traderMeta.get(id);
+        const open = openOnCoin.filter((p) => p.trader_id === id);
+        const recent = coinEntries.filter((e) => e.traderId === id);
+        return {
+          id,
+          name: t?.label || shortAddr(t?.address ?? id),
+          focus: meta?.focus ?? false,
+          score: meta?.imp.score ?? 0,
+          label: meta?.imp.label ?? "참고",
+          open,
+          recentCount: recent.length,
+        };
+      })
+      .sort((a, b) => {
+        if (a.focus !== b.focus) return a.focus ? -1 : 1;
+        return b.score - a.score;
+      });
+  }, [coin, coinEntries, openOnCoin, traderById, traderMeta]);
 
   useEffect(() => {
     if (!coin) {
@@ -324,56 +397,88 @@ export function HlCoinBoardChart({
     if (showOpenLines) {
       for (const p of openOnCoin) {
         if (p.entry_price == null || !(Number(p.entry_price) > 0)) continue;
+        const focus = isFocus(p.trader_id);
         const tr = traderById.get(p.trader_id);
         const name = tr?.label || shortAddr(tr?.address ?? p.trader_id);
+        const tag = focus ? "★" : "·";
         series.createPriceLine({
           price: Number(p.entry_price),
           color:
             p.side === "LONG"
-              ? "rgba(52,211,153,0.45)"
-              : "rgba(248,113,113,0.45)",
-          lineWidth: 1,
-          lineStyle: LineStyle.Dotted,
-          axisLabelVisible: true,
-          title: `${name.slice(0, 10)} ${p.side === "LONG" ? "L" : "S"}`,
+              ? focus
+                ? "rgba(52,211,153,0.85)"
+                : "rgba(52,211,153,0.22)"
+              : focus
+                ? "rgba(248,113,113,0.85)"
+                : "rgba(248,113,113,0.22)",
+          lineWidth: focus ? 2 : 1,
+          lineStyle: focus ? LineStyle.Dashed : LineStyle.Dotted,
+          axisLabelVisible: focus,
+          title: `${tag}${name.slice(0, 8)} ${p.side === "LONG" ? "L" : "S"}`,
         });
       }
     }
 
-    const byBar = new Map<
-      string,
-      {
-        time: UTCTimestamp;
-        side: "LONG" | "SHORT";
-        count: number;
-        top: HlRecentEntry;
-      }
-    >();
+    type BarGroup = {
+      time: UTCTimestamp;
+      side: "LONG" | "SHORT";
+      count: number;
+      focusCount: number;
+      top: HlRecentEntry;
+      topFocus: boolean;
+    };
+    const byBar = new Map<string, BarGroup>();
     for (const e of coinEntries) {
       const time = snapTime(candles, e.lastTime);
+      const focus = isFocus(e.traderId);
       const key = `${time}:${e.side}`;
       const cur = byBar.get(key);
       if (!cur) {
-        byBar.set(key, { time, side: e.side, count: 1, top: e });
+        byBar.set(key, {
+          time,
+          side: e.side,
+          count: 1,
+          focusCount: focus ? 1 : 0,
+          top: e,
+          topFocus: focus,
+        });
       } else {
         cur.count += 1;
-        if (e.notional > cur.top.notional) cur.top = e;
+        if (focus) cur.focusCount += 1;
+        const betterFocus = focus && !cur.topFocus;
+        const sameTier =
+          focus === cur.topFocus && e.notional > cur.top.notional;
+        if (betterFocus || sameTier) {
+          cur.top = e;
+          cur.topFocus = focus;
+        }
       }
     }
 
     const markers = [...byBar.values()].map((g) => {
-      const name =
-        g.top.label ||
-        shortAddr(traderById.get(g.top.traderId)?.address ?? g.top.address);
-      const text =
-        g.count > 1
-          ? `${g.side === "LONG" ? "롱" : "숏"}×${g.count}`
-          : `${name.slice(0, 8)} ${g.side === "LONG" ? "롱" : "숏"}`;
+      const name = traderName(g.top, traderById);
+      const sideKo = g.side === "LONG" ? "롱" : "숏";
+      const prefix = g.topFocus ? "★" : "";
+      let text: string;
+      if (g.count > 1 && g.focusCount > 0 && g.focusCount < g.count) {
+        text = `${prefix}${name.slice(0, 7)} ${sideKo} ·주목${g.focusCount}`;
+      } else if (g.count > 1) {
+        text = `${prefix}${name.slice(0, 7)} ${sideKo}×${g.count}`;
+      } else {
+        text = `${prefix}${name.slice(0, 9)} ${sideKo}`;
+      }
+      const strong = g.topFocus || g.focusCount > 0;
       return {
         time: g.time,
         position:
           g.side === "LONG" ? ("belowBar" as const) : ("aboveBar" as const),
-        color: g.side === "LONG" ? "#34d399" : "#f87171",
+        color: strong
+          ? g.side === "LONG"
+            ? "#34d399"
+            : "#f87171"
+          : g.side === "LONG"
+            ? "rgba(52,211,153,0.35)"
+            : "rgba(248,113,113,0.35)",
         shape:
           g.side === "LONG" ? ("arrowUp" as const) : ("arrowDown" as const),
         text,
@@ -388,7 +493,15 @@ export function HlCoinBoardChart({
     return () => {
       chart.remove();
     };
-  }, [candles, coin, coinEntries, openOnCoin, showOpenLines, traderById]);
+  }, [
+    candles,
+    coin,
+    coinEntries,
+    openOnCoin,
+    showOpenLines,
+    traderById,
+    isFocus,
+  ]);
 
   const entryKey = (e: HlRecentEntry) =>
     `${e.traderId}-${e.coin}-${e.side}-${e.firstTime}`;
@@ -488,15 +601,28 @@ export function HlCoinBoardChart({
             />
             보유 평단선
           </label>
-          <label className="flex items-center gap-1.5 text-[11px] text-zinc-500">
-            <input
-              type="checkbox"
-              checked={focusOnly}
-              onChange={(e) => setFocusOnly(e.target.checked)}
-              className="size-3.5 accent-sky-500"
-            />
-            주목 점수만
-          </label>
+          <div className="flex items-center gap-1">
+            <span className="text-[11px] text-zinc-500">표시</span>
+            {(
+              [
+                ["focus", "주목만"],
+                ["all", "전체(+참고)"],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setTraderView(k)}
+                className={`rounded border px-2 py-0.5 text-[11px] ${
+                  traderView === k
+                    ? "border-sky-600/60 text-sky-300"
+                    : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -512,7 +638,9 @@ export function HlCoinBoardChart({
               <p className="text-sm text-zinc-200">
                 <span className="font-medium">{coin}</span>
                 <span className="ml-2 text-xs text-zinc-500">
-                  {interval} · {range} · 진입 {coinEntries.length}건
+                  {interval} · {range} ·{" "}
+                  {traderView === "focus" ? "주목" : "전체"} 진입{" "}
+                  {coinEntries.length}건
                   {openOnCoin.length > 0 ? ` · 보유 ${openOnCoin.length}` : ""}
                 </span>
                 {loading ? (
@@ -524,9 +652,48 @@ export function HlCoinBoardChart({
                 ) : null}
               </p>
               <p className="text-[11px] text-zinc-600">
-                초록↑ 롱 · 빨강↓ 숏 · 봉 전환은 캐시·디바운스 적용
+                ★주목 진하게 · 참고 흐리게 · 초록↑롱 · 빨강↓숏
               </p>
             </div>
+
+            {roster.length > 0 ? (
+              <div className="mb-2 flex flex-wrap gap-1.5 px-1">
+                {roster.map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => onOpenTrader(r.id)}
+                    title={`${r.label} · 점수 ${r.score}${
+                      r.open.length
+                        ? ` · 보유 ${r.open.map((p) => p.side).join("/")}`
+                        : ""
+                    }`}
+                    className={`rounded border px-2 py-0.5 text-[11px] ${
+                      r.focus
+                        ? "border-sky-700/70 bg-sky-950/40 text-sky-200"
+                        : "border-zinc-800 text-zinc-500"
+                    }`}
+                  >
+                    {r.focus ? "★ " : ""}
+                    {r.name}
+                    <span className="ml-1 tabular-nums text-zinc-600">
+                      {r.score}
+                    </span>
+                    {r.open.length > 0 ? (
+                      <span
+                        className={`ml-1 ${
+                          r.open[0]!.side === "LONG"
+                            ? "text-emerald-400/80"
+                            : "text-rose-400/80"
+                        }`}
+                      >
+                        {r.open[0]!.side === "LONG" ? "L" : "S"}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             {error && candles.length === 0 ? (
               <p className="py-24 text-center text-sm text-rose-300">{error}</p>
             ) : candles.length === 0 && loading ? (
@@ -556,13 +723,25 @@ export function HlCoinBoardChart({
           {selected && (
             <div className="rounded-md border border-zinc-700 bg-zinc-950/70 px-3 py-2 text-sm">
               <p className="text-zinc-200">
+                {isFocus(selected.traderId) ? (
+                  <span className="mr-1.5 rounded border border-sky-700/60 bg-sky-950/50 px-1.5 py-0.5 text-[10px] text-sky-300">
+                    ★주목
+                  </span>
+                ) : (
+                  <span className="mr-1.5 rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-500">
+                    참고
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={() => onOpenTrader(selected.traderId)}
                   className="font-medium text-emerald-300 hover:underline"
                 >
-                  {selected.label || shortAddr(selected.address)}
+                  {traderName(selected, traderById)}
                 </button>
+                <span className="ml-1.5 tabular-nums text-xs text-zinc-500">
+                  점수 {traderMeta.get(selected.traderId)?.imp.score ?? "—"}
+                </span>
                 {" · "}
                 <span
                   className={
@@ -584,11 +763,13 @@ export function HlCoinBoardChart({
           )}
 
           <div className="max-h-56 overflow-auto pretty-scroll rounded-md border border-zinc-800">
-            <table className="w-full min-w-[520px] text-left text-sm">
+            <table className="w-full min-w-[560px] text-left text-sm">
               <thead className="sticky top-0 border-b border-zinc-800 bg-zinc-950 text-[11px] uppercase tracking-wide text-zinc-500">
                 <tr>
                   <th className="px-2 py-1.5 font-medium">시각</th>
+                  <th className="px-2 py-1.5 font-medium">구분</th>
                   <th className="px-2 py-1.5 font-medium">트레이더</th>
+                  <th className="px-2 py-1.5 font-medium">점수</th>
                   <th className="px-2 py-1.5 font-medium">방향</th>
                   <th className="px-2 py-1.5 font-medium">규모</th>
                   <th className="px-2 py-1.5 font-medium">평균가</th>
@@ -598,61 +779,85 @@ export function HlCoinBoardChart({
                 {coinEntries.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={5}
+                      colSpan={7}
                       className="px-2 py-6 text-center text-zinc-500"
                     >
-                      이 구간에 표시할 진입이 없습니다.
+                      {traderView === "focus"
+                        ? "이 구간에 주목 트레이더 진입이 없습니다. 「전체(+참고)」로 바꿔 보세요."
+                        : "이 구간에 표시할 진입이 없습니다."}
                     </td>
                   </tr>
                 ) : (
-                  coinEntries.map((e) => (
-                    <tr
-                      key={entryKey(e)}
-                      onClick={() =>
-                        setSelectedEntryKey((k) =>
-                          k === entryKey(e) ? null : entryKey(e)
-                        )
-                      }
-                      className={`cursor-pointer border-b border-zinc-900/80 text-zinc-300 hover:bg-zinc-800/40 ${
-                        selectedEntryKey === entryKey(e)
-                          ? "bg-zinc-800/60"
-                          : ""
-                      }`}
-                    >
-                      <td className="px-2 py-1.5 text-xs text-zinc-500">
-                        {formatKst(e.lastTime)}
-                      </td>
-                      <td className="px-2 py-1.5">
-                        <button
-                          type="button"
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            onOpenTrader(e.traderId);
-                          }}
-                          className="text-left hover:text-emerald-300 hover:underline"
-                        >
-                          {e.label || shortAddr(e.address)}
-                        </button>
-                      </td>
-                      <td
-                        className={`px-2 py-1.5 ${
-                          e.side === "LONG"
-                            ? "text-emerald-400"
-                            : "text-rose-400"
-                        }`}
+                  coinEntries.map((e) => {
+                    const focus = isFocus(e.traderId);
+                    const score = traderMeta.get(e.traderId)?.imp.score;
+                    return (
+                      <tr
+                        key={entryKey(e)}
+                        onClick={() =>
+                          setSelectedEntryKey((k) =>
+                            k === entryKey(e) ? null : entryKey(e)
+                          )
+                        }
+                        className={`cursor-pointer border-b border-zinc-900/80 hover:bg-zinc-800/40 ${
+                          selectedEntryKey === entryKey(e)
+                            ? "bg-zinc-800/60"
+                            : ""
+                        } ${focus ? "text-zinc-200" : "text-zinc-500"}`}
                       >
-                        {e.side}
-                      </td>
-                      <td className="px-2 py-1.5 tabular-nums">
-                        {fmtUsd(e.notional)}
-                      </td>
-                      <td className="px-2 py-1.5 tabular-nums text-zinc-400">
-                        {e.avgPx.toLocaleString(undefined, {
-                          maximumSignificantDigits: 6,
-                        })}
-                      </td>
-                    </tr>
-                  ))
+                        <td className="px-2 py-1.5 text-xs text-zinc-500">
+                          {formatKst(e.lastTime)}
+                        </td>
+                        <td className="px-2 py-1.5 text-[11px]">
+                          {focus ? (
+                            <span className="text-sky-400">★주목</span>
+                          ) : (
+                            <span className="text-zinc-600">참고</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <button
+                            type="button"
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              onOpenTrader(e.traderId);
+                            }}
+                            className={`text-left hover:underline ${
+                              focus
+                                ? "hover:text-emerald-300"
+                                : "hover:text-zinc-300"
+                            }`}
+                          >
+                            {traderName(e, traderById)}
+                          </button>
+                        </td>
+                        <td className="px-2 py-1.5 tabular-nums text-xs text-zinc-500">
+                          {score ?? "—"}
+                        </td>
+                        <td
+                          className={`px-2 py-1.5 ${
+                            e.side === "LONG"
+                              ? focus
+                                ? "text-emerald-400"
+                                : "text-emerald-700"
+                              : focus
+                                ? "text-rose-400"
+                                : "text-rose-800"
+                          }`}
+                        >
+                          {e.side}
+                        </td>
+                        <td className="px-2 py-1.5 tabular-nums">
+                          {fmtUsd(e.notional)}
+                        </td>
+                        <td className="px-2 py-1.5 tabular-nums text-zinc-400">
+                          {e.avgPx.toLocaleString(undefined, {
+                            maximumSignificantDigits: 6,
+                          })}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

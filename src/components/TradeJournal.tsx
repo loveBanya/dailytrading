@@ -31,7 +31,6 @@ import { ReviewCommentsFeed } from "./ReviewCommentsFeed";
 import { GoalsPanel } from "./GoalsPanel";
 import { DailyReviewPanel } from "./DailyReviewPanel";
 import { StockMarketPanel } from "./StockMarketPanel";
-import { TradingGamePanel } from "./TradingGamePanel";
 import { AlarmSettingsButton } from "./AlarmSettingsButton";
 import { AlarmToastHost } from "./AlarmToastHost";
 import { AlertsPanel } from "./AlertsPanel";
@@ -838,17 +837,6 @@ export function TradeJournal() {
                     onCurrencyChange={(horizonCurrency) =>
                       patchGoalPrefs((p) => ({ ...p, horizonCurrency }))
                     }
-                  />
-                </Section>
-              );
-            }
-            if (id === "game") {
-              return (
-                <Section key={id} title="트레이딩 게임">
-                  <TradingGamePanel
-                    trades={trades}
-                    prefs={goalPrefs}
-                    onPrefsChange={patchGoalPrefs}
                   />
                 </Section>
               );

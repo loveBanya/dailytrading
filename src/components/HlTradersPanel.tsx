@@ -679,6 +679,7 @@ export function HlTradersPanel() {
           positions={positions}
           entries={entries}
           entriesLoading={entriesLoading}
+          pinnedIds={pinnedIds}
           onNeedEntries={() => {
             if (entries.length === 0) void loadEntries();
           }}

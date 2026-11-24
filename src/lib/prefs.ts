@@ -195,7 +195,7 @@ export interface GoalChallengePrefs {
   trackActual: Record<string, number>;
   /** 첫 복리 챌린지 말고 따로 굴리는 챌린지들 */
   extraTracks: ExtraTrack[];
-  /** 트레이딩 게임: 하루 손실 한도 (USDT). 여기까지 잃으면 HP 0 */
+  /** 매매 복기: 하루/건당 과한 손실로 볼 한도 (USDT) */
   gameLossLimitUsdt: number;
 }
 
@@ -364,7 +364,6 @@ export function saveGoalChallenge(prefs: GoalChallengePrefs): void {
 /** 한눈에 탭 섹션 순서 */
 export type OverviewSectionId =
   | "monthly_goal"
-  | "game"
   | "equity"
   | "pnl"
   | "cash"
@@ -372,7 +371,6 @@ export type OverviewSectionId =
 
 export const OVERVIEW_SECTION_LABELS: Record<OverviewSectionId, string> = {
   monthly_goal: "목표",
-  game: "트레이딩 게임",
   equity: "자산 그래프",
   pnl: "All-time PNL",
   cash: "현금 입출금",
@@ -381,7 +379,6 @@ export const OVERVIEW_SECTION_LABELS: Record<OverviewSectionId, string> = {
 
 export const DEFAULT_OVERVIEW_ORDER: OverviewSectionId[] = [
   "monthly_goal",
-  "game",
   "risk_calc",
   "equity",
   "pnl",
@@ -403,11 +400,8 @@ export function loadOverviewOrder(): OverviewSectionId[] {
     const missing = DEFAULT_OVERVIEW_ORDER.filter((id) => !valid.includes(id));
     const merged = [...valid];
     for (const id of missing) {
-      if (id === "game") {
+      if (id === "risk_calc") {
         const after = merged.indexOf("monthly_goal");
-        merged.splice(after >= 0 ? after + 1 : 0, 0, id);
-      } else if (id === "risk_calc") {
-        const after = Math.max(merged.indexOf("game"), merged.indexOf("monthly_goal"));
         merged.splice(after >= 0 ? after + 1 : 0, 0, id);
       } else {
         merged.push(id);

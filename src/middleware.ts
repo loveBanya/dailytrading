@@ -43,8 +43,27 @@ function isPublicPath(pathname: string): boolean {
     pathname.startsWith("/_next/") ||
     pathname.startsWith("/favicon") ||
     pathname.startsWith("/icon-") ||
-    pathname === "/api/auth/login"
+    pathname === "/api/auth/login" ||
+    pathname === "/api/paper/tick"
   );
+}
+
+function cronSecretFrom(req: NextRequest): string {
+  return (
+    req.headers.get("x-cron-secret")?.trim() ||
+    req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim() ||
+    req.nextUrl.searchParams.get("secret")?.trim() ||
+    ""
+  );
+}
+
+/** 외부 무료 Cron → 모의투자 틱 (로그인 쿠키 없음) */
+function isPaperCronTick(req: NextRequest, pathname: string): boolean {
+  if (pathname !== "/api/paper/tick") return false;
+  const expected = process.env.PAPER_CRON_SECRET?.trim();
+  if (!expected) return false;
+  const got = cronSecretFrom(req);
+  return got.length > 0 && got === expected;
 }
 
 export async function middleware(req: NextRequest) {
@@ -63,6 +82,13 @@ export async function middleware(req: NextRequest) {
     pathname.startsWith("/icon-")
   ) {
     return NextResponse.next();
+  }
+
+  // Cron은 쿠키 로그인 없이 시크릿만으로 통과 (봇 UA/빈 UA 차단보다 먼저)
+  if (isPaperCronTick(req, pathname)) {
+    const res = NextResponse.next();
+    res.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
+    return res;
   }
 
   if (BOT_UA.test(ua) || (ua.trim() === "" && pathname.startsWith("/api/"))) {

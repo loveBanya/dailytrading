@@ -317,7 +317,7 @@ export function DemandSupplyPanel() {
                     </div>
                     <div className="mt-0.5 font-mono text-[11px] text-zinc-500">
                       {exchangeLabel(r.exchange)} · {r.symbol}
-                      {r.assetKind === "stock" ? " · 주식" : ""}
+                      {r.assetKind === "stock" ? " · TradFi" : " · Crypto"}
                     </div>
                   </td>
                   <td className="px-3 py-2.5 font-mono text-zinc-200">

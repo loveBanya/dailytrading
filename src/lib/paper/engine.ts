@@ -8,9 +8,11 @@ import {
   hlCoinToBinanceSymbol,
   type PaperInterval,
 } from "./market";
+import { fetchMarketMovers } from "@/lib/market/movers";
 import type {
   CopyStrategyConfig,
   IndicatorStrategyConfig,
+  MoversStrategyConfig,
   PaperTickResult,
   PaperSide,
 } from "./types";
@@ -469,6 +471,137 @@ async function runCopyStrategy(
   return fills;
 }
 
+async function runMoversStrategy(
+  supabase: SupabaseClient,
+  strategy: {
+    id: string;
+    account_id: string;
+    config: MoversStrategyConfig;
+  }
+): Promise<number> {
+  const cfg = strategy.config;
+  const period = cfg.period ?? "4h";
+  const topN = Math.max(1, Math.min(10, cfg.topN ?? 5));
+  const maxPositions = Math.max(1, Math.min(15, cfg.maxPositions ?? 5));
+  const followSurge = cfg.followSurge !== false;
+  const followOi = cfg.followOi !== false;
+  const tp = cfg.takeProfitPct ?? 4;
+  const sl = cfg.stopLossPct ?? 2;
+  const riskPct = Math.min(1, Math.max(0.01, cfg.riskPct ?? 0.08));
+  const leverage = Math.max(1, cfg.leverage ?? 1);
+
+  const board = await fetchMarketMovers(period);
+  const signals: { symbol: string; reason: string; price: number }[] = [];
+  if (followSurge) {
+    for (const m of board.surges.slice(0, topN)) {
+      signals.push({
+        symbol: m.symbol,
+        reason: `급상승 ${period} ${m.changePct.toFixed(1)}%`,
+        price: m.lastPrice,
+      });
+    }
+  }
+  if (followOi) {
+    for (const m of board.oiRises.slice(0, topN)) {
+      if (signals.some((s) => s.symbol === m.symbol)) continue;
+      signals.push({
+        symbol: m.symbol,
+        reason: `OI↑ ${period} ${(m.oiChangePct ?? 0).toFixed(1)}%`,
+        price: m.lastPrice,
+      });
+    }
+  }
+
+  const { data: opens } = await supabase
+    .from("paper_positions")
+    .select("*")
+    .eq("account_id", strategy.account_id)
+    .eq("strategy_id", strategy.id)
+    .eq("status", "open");
+
+  let fills = 0;
+  const openList = (opens ?? []) as Array<{
+    id: string;
+    account_id: string;
+    strategy_id: string | null;
+    exchange: string;
+    symbol: string;
+    side: PaperSide;
+    qty: number;
+    entry_price: number;
+  }>;
+
+  // TP / SL
+  for (const open of openList) {
+    let mark = num(open.entry_price);
+    try {
+      mark = await fetchMarkPrice("binance", open.symbol);
+    } catch {
+      const hit = signals.find((s) => s.symbol === open.symbol);
+      if (hit) mark = hit.price;
+    }
+    const entry = num(open.entry_price);
+    const ret =
+      open.side === "LONG"
+        ? ((mark - entry) / entry) * 100
+        : ((entry - mark) / entry) * 100;
+    if (tp > 0 && ret >= tp) {
+      await closePosition(supabase, open, mark, `TP ${tp}%`);
+      fills += 1;
+      continue;
+    }
+    if (sl > 0 && ret <= -sl) {
+      await closePosition(supabase, open, mark, `SL ${sl}%`);
+      fills += 1;
+    }
+  }
+
+  const { data: opensAfter } = await supabase
+    .from("paper_positions")
+    .select("symbol")
+    .eq("account_id", strategy.account_id)
+    .eq("strategy_id", strategy.id)
+    .eq("status", "open");
+  const held = new Set((opensAfter ?? []).map((p) => String(p.symbol)));
+  let slots = Math.max(0, maxPositions - held.size);
+
+  const { data: acc } = await supabase
+    .from("paper_accounts")
+    .select("cash")
+    .eq("id", strategy.account_id)
+    .single();
+
+  for (const sig of signals) {
+    if (slots <= 0) break;
+    if (held.has(sig.symbol)) continue;
+    const price =
+      sig.price > 0
+        ? sig.price
+        : await fetchMarkPrice("binance", sig.symbol).catch(() => 0);
+    if (!(price > 0)) continue;
+    const notional = num(acc?.cash) * riskPct * leverage;
+    const opened = await openPosition(supabase, {
+      accountId: strategy.account_id,
+      strategyId: strategy.id,
+      exchange: "binance",
+      symbol: sig.symbol,
+      side: "LONG",
+      price,
+      notional,
+      leverage,
+      reason: sig.reason,
+      meta: { source: "coinglass-movers", period },
+    });
+    if (opened) {
+      fills += 1;
+      held.add(sig.symbol);
+      slots -= 1;
+    }
+  }
+
+  return fills;
+}
+
 export async function runPaperTick(
   supabase: SupabaseClient,
   opts?: { accountId?: string; snapshot?: boolean }
@@ -521,6 +654,12 @@ export async function runPaperTick(
             account_id: st.account_id,
             config: (st.config ?? {}) as CopyStrategyConfig,
             last_run_at: st.last_run_at,
+          });
+        } else if (st.mode === "movers") {
+          n = await runMoversStrategy(supabase, {
+            id: st.id,
+            account_id: st.account_id,
+            config: (st.config ?? {}) as MoversStrategyConfig,
           });
         }
         fillsCreated += n;

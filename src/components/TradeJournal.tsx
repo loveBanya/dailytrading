@@ -81,15 +81,22 @@ type Tab =
   | "overview"
   | "market"
   | "mindset"
-  | "screener"
-  | "screener-perf"
   | "paper"
   | "alerts"
   | "hl-traders";
-/** 스크리너 탭 안에서 고르는 화면 */
+/** 모의투자 탭 안의 화면 */
+type PaperHubView = "desk" | "scan" | "perf";
+/** 스크리너(scan) 안에서 고르는 화면 */
 type ScreenerView = "demand-supply" | "screener" | "watch";
 
 const SCREENER_VIEW_KEY = "dailytrading.ui.screener.view.v1";
+const PAPER_HUB_VIEW_KEY = "dailytrading.ui.paper.hub.v1";
+
+const PAPER_HUB_VIEWS: { id: PaperHubView; label: string }[] = [
+  { id: "desk", label: "모의투자" },
+  { id: "scan", label: "스크리너" },
+  { id: "perf", label: "스크리너 성과" },
+];
 
 const SCREENER_VIEWS: { id: ScreenerView; label: string }[] = [
   { id: "demand-supply", label: "수요·공급" },
@@ -107,13 +114,23 @@ function loadScreenerView(): ScreenerView {
     return "demand-supply";
   }
 }
+
+function loadPaperHubView(): PaperHubView {
+  try {
+    const saved = localStorage.getItem(PAPER_HUB_VIEW_KEY);
+    return PAPER_HUB_VIEWS.some((v) => v.id === saved)
+      ? (saved as PaperHubView)
+      : "desk";
+  } catch {
+    return "desk";
+  }
+}
+
 const TAB_IDS: Tab[] = [
   "review",
   "overview",
   "market",
   "mindset",
-  "screener",
-  "screener-perf",
   "paper",
   "alerts",
   "hl-traders",
@@ -124,11 +141,30 @@ function migrateTab(saved: string): Tab {
   if (saved === "chart") return "review";
   if (saved === "cash" || saved === "live") return "overview";
   if (saved === "posts" || saved === "bookmarks") return "mindset";
-  if (saved === "demand-supply" || saved === "screener-watch") return "screener";
+  if (
+    saved === "demand-supply" ||
+    saved === "screener-watch" ||
+    saved === "screener" ||
+    saved === "screener-perf"
+  ) {
+    return "paper";
+  }
   return (TAB_IDS as string[]).includes(saved) ? (saved as Tab) : "review";
 }
 
-/** 예전 탭 이름으로 스크리너 탭 안의 화면을 고른다 */
+/** 예전 탭 이름으로 모의투자 허브 / 스크리너 화면을 고른다 */
+function paperHubFromOldTab(saved: string): PaperHubView | null {
+  if (saved === "screener-perf") return "perf";
+  if (
+    saved === "screener" ||
+    saved === "demand-supply" ||
+    saved === "screener-watch"
+  ) {
+    return "scan";
+  }
+  return null;
+}
+
 function screenerViewFromOldTab(saved: string): ScreenerView | null {
   if (saved === "demand-supply") return "demand-supply";
   if (saved === "screener-watch") return "watch";
@@ -148,6 +184,7 @@ function isMissingTable(msg: string | null): boolean {
 export function TradeJournal() {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("review");
+  const [paperHubView, setPaperHubView] = useState<PaperHubView>("desk");
   const [screenerView, setScreenerView] =
     useState<ScreenerView>("demand-supply");
   const [tabReady, setTabReady] = useState(false);
@@ -222,8 +259,11 @@ export function TradeJournal() {
         "bookmarks",
         "demand-supply",
         "screener-watch",
+        "screener",
+        "screener-perf",
       ]);
       setTab(migrateTab(savedTab));
+      setPaperHubView(paperHubFromOldTab(savedTab) ?? loadPaperHubView());
       setScreenerView(screenerViewFromOldTab(savedTab) ?? loadScreenerView());
       setOverviewOrder(loadOverviewOrder());
       setGoalPrefs(loadGoalChallenge());
@@ -248,6 +288,15 @@ export function TradeJournal() {
       /* ignore */
     }
   }, [screenerView, tabReady]);
+
+  useEffect(() => {
+    if (!tabReady) return;
+    try {
+      localStorage.setItem(PAPER_HUB_VIEW_KEY, paperHubView);
+    } catch {
+      /* ignore */
+    }
+  }, [paperHubView, tabReady]);
 
   useEffect(() => {
     if (!tabReady) return;
@@ -305,8 +354,13 @@ export function TradeJournal() {
       setTab("review");
       return;
     }
+    if (target === "screener") {
+      setTab("paper");
+      setPaperHubView("scan");
+      setScreenerView("screener");
+      return;
+    }
     if ((TAB_IDS as string[]).includes(target)) {
-      if (target === "screener") setScreenerView("screener");
       setTab(target as Tab);
     }
   }, []);
@@ -649,8 +703,6 @@ export function TradeJournal() {
             ["review", "매매 복기"],
             ["overview", "한눈에"],
             ["market", "시장 현황"],
-            ["screener", "스크리너"],
-            ["screener-perf", "스크리너 성과"],
             ["paper", "모의투자"],
             ["hl-traders", "HL 트레이더"],
             ["alerts", "알림"],
@@ -869,19 +921,17 @@ export function TradeJournal() {
         </div>
       )}
 
-      {tab === "screener" && (
+      {tab === "paper" && (
         <div className="space-y-4">
           <div className="flex flex-wrap gap-1.5">
-            {SCREENER_VIEWS.map((view) => (
+            {PAPER_HUB_VIEWS.map((view) => (
               <button
                 key={view.id}
                 type="button"
-                onClick={() => setScreenerView(view.id)}
+                onClick={() => setPaperHubView(view.id)}
                 className={`rounded-full border px-3.5 py-1.5 text-sm transition ${
-                  screenerView === view.id
-                    ? view.id === "demand-supply"
-                      ? "border-amber-500/60 bg-amber-500/15 text-amber-200"
-                      : "border-emerald-500/60 bg-emerald-500/15 text-emerald-200"
+                  paperHubView === view.id
+                    ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-200"
                     : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
                 }`}
               >
@@ -889,34 +939,49 @@ export function TradeJournal() {
               </button>
             ))}
           </div>
-          {screenerView === "demand-supply" && (
-            <Section title="수요·공급 (고수요·저공급)">
-              <DemandSupplyPanel />
-            </Section>
+
+          {paperHubView === "desk" && <PaperTradingPanel />}
+
+          {paperHubView === "scan" && (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-1.5">
+                {SCREENER_VIEWS.map((view) => (
+                  <button
+                    key={view.id}
+                    type="button"
+                    onClick={() => setScreenerView(view.id)}
+                    className={`rounded border px-3 py-1 text-[12px] transition ${
+                      screenerView === view.id
+                        ? view.id === "demand-supply"
+                          ? "border-amber-500/60 bg-amber-500/15 text-amber-200"
+                          : "border-sky-600/50 bg-sky-950/40 text-sky-200"
+                        : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                    }`}
+                  >
+                    {view.label}
+                  </button>
+                ))}
+              </div>
+              {screenerView === "demand-supply" && (
+                <Section title="수요·공급 (고수요·저공급)">
+                  <DemandSupplyPanel />
+                </Section>
+              )}
+              {screenerView === "screener" && (
+                <Section title="코인 스크리너">
+                  <ScreenerPanel />
+                </Section>
+              )}
+              {screenerView === "watch" && (
+                <Section title="지정 종목 평가">
+                  <WatchEvaluatePanel />
+                </Section>
+              )}
+            </div>
           )}
-          {screenerView === "screener" && (
-            <Section title="코인 스크리너">
-              <ScreenerPanel />
-            </Section>
-          )}
-          {screenerView === "watch" && (
-            <Section title="지정 종목 평가">
-              <WatchEvaluatePanel />
-            </Section>
-          )}
+
+          {paperHubView === "perf" && <ScreenerPerfPanel />}
         </div>
-      )}
-
-      {tab === "screener-perf" && (
-        <Section title="스크리너 성과">
-          <ScreenerPerfPanel />
-        </Section>
-      )}
-
-      {tab === "paper" && (
-        <Section title="모의투자">
-          <PaperTradingPanel />
-        </Section>
       )}
 
       {tab === "hl-traders" && (

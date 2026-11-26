@@ -22,6 +22,7 @@ import {
   saveScreenerUniverse,
   type ScreenerUniversePrefs,
 } from "@/lib/prefs";
+import { BinanceKindBadge } from "@/components/BinanceKindBadge";
 
 type SortKey = keyof ScreenerCandidate | "rank";
 
@@ -852,11 +853,11 @@ export function ScreenerPanel() {
                   <span className="mr-1 text-zinc-600">{i + 1}.</span>
                   {favKeys.has(`${c.exchange}:${c.symbol}`) ? "★ " : ""}
                   {c.displayName ?? c.baseAsset}
-                  {c.assetKind === "stock" && (
-                    <span className="ml-1 rounded bg-amber-500/15 px-1 py-0.5 text-[10px] font-normal text-amber-200/90">
-                      주식
-                    </span>
-                  )}
+                  <span className="ml-1 inline-block align-middle">
+                    <BinanceKindBadge
+                      kind={c.assetKind === "stock" ? "tradifi" : "crypto"}
+                    />
+                  </span>
                   <span className="ml-1 text-[11px] font-normal text-zinc-600">
                     {exchangeLabel(c.exchange)}
                   </span>
@@ -960,11 +961,11 @@ export function ScreenerPanel() {
                     {favKeys.has(`${c.exchange}:${c.symbol}`) ? "★ " : ""}
                     {c.displayName ?? c.baseAsset}
                   </span>
-                  {c.assetKind === "stock" && (
-                    <span className="ml-1 rounded bg-amber-500/15 px-1 text-[10px] text-amber-200/90">
-                      주식
-                    </span>
-                  )}
+                  <span className="ml-1 inline-block align-middle">
+                    <BinanceKindBadge
+                      kind={c.assetKind === "stock" ? "tradifi" : "crypto"}
+                    />
+                  </span>
                   <span className="ml-1 text-zinc-600">
                     {exchangeLabel(c.exchange)}
                   </span>

@@ -5,6 +5,7 @@ import { errorMessage } from "@/lib/utils/labels";
 import type {
   CopyStrategyConfig,
   IndicatorStrategyConfig,
+  MoversStrategyConfig,
   PaperStrategyMode,
 } from "@/lib/paper/types";
 
@@ -52,6 +53,7 @@ export async function GET() {
     const [
       { data: strategies, error: sErr },
       { data: positions, error: pErr },
+      { data: closedRows, error: cErr },
       { data: fills, error: fErr },
       { data: equity, error: eErr },
       { data: ticks, error: tErr },
@@ -68,11 +70,19 @@ export async function GET() {
         .eq("status", "open")
         .order("opened_at", { ascending: false }),
       supabase
+        .from("paper_positions")
+        .select(
+          "id, account_id, strategy_id, exchange, symbol, side, entry_price, opened_at, closed_at, close_price, realised_pnl"
+        )
+        .in("account_id", accountIds)
+        .eq("status", "closed")
+        .order("closed_at", { ascending: false }),
+      supabase
         .from("paper_fills")
         .select("*")
         .in("account_id", accountIds)
         .order("observed_at", { ascending: false })
-        .limit(80),
+        .limit(200),
       supabase
         .from("paper_equity_snapshots")
         .select("*")
@@ -87,17 +97,28 @@ export async function GET() {
     ]);
     if (sErr) throw sErr;
     if (pErr) throw pErr;
+    if (cErr) throw cErr;
     if (fErr) throw fErr;
     if (eErr) throw eErr;
     if (tErr) throw tErr;
+
+    const realizedByAccount: Record<string, number> = {};
+    for (const id of accountIds) realizedByAccount[id] = 0;
+    for (const row of closedRows ?? []) {
+      const id = String(row.account_id);
+      realizedByAccount[id] =
+        (realizedByAccount[id] ?? 0) + Number(row.realised_pnl ?? 0);
+    }
 
     return NextResponse.json({
       accounts: accounts ?? [],
       strategies: strategies ?? [],
       positions: positions ?? [],
       fills: fills ?? [],
+      closedPositions: closedRows ?? [],
       equity: equity ?? [],
       ticks: ticks ?? [],
+      realizedByAccount,
     });
   } catch (err) {
     const m = migrationPayload(errorMessage(err));
@@ -128,7 +149,10 @@ type Body =
       accountId: string;
       name: string;
       mode: PaperStrategyMode;
-      config: IndicatorStrategyConfig | CopyStrategyConfig;
+      config:
+        | IndicatorStrategyConfig
+        | CopyStrategyConfig
+        | MoversStrategyConfig;
       note?: string;
       enabled?: boolean;
     }
@@ -137,7 +161,10 @@ type Body =
       strategyId: string;
       name?: string;
       enabled?: boolean;
-      config?: IndicatorStrategyConfig | CopyStrategyConfig;
+      config?:
+        | IndicatorStrategyConfig
+        | CopyStrategyConfig
+        | MoversStrategyConfig;
       note?: string | null;
     }
   | {

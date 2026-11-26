@@ -7,7 +7,10 @@ import { formatPrice } from "@/lib/utils/format";
 import { fearGreedKo } from "@/lib/utils/labels";
 import { AltHeatPanel } from "./AltHeatPanel";
 import { AltSeasonPanel } from "./AltSeasonPanel";
+import { BinanceKindBadge } from "./BinanceKindBadge";
+import { CoinGlassBoard } from "./CoinGlassBoard";
 import { TradeChart } from "./TradeChart";
+import { kindOf, useBinanceKinds } from "@/hooks/useBinanceKinds";
 
 interface MarketPanelProps {
   tickers: MarketTicker[];
@@ -23,6 +26,7 @@ export function MarketPanel({
   error,
 }: MarketPanelProps) {
   const [selected, setSelected] = useState<MarketTicker | null>(null);
+  const kindMap = useBinanceKinds(tickers.map((t) => t.symbol));
 
   if (loading) {
     return <p className="text-sm text-zinc-500">시장을 불러오는 중…</p>;
@@ -58,6 +62,22 @@ export function MarketPanel({
         </div>
       )}
 
+      <CoinGlassBoard
+        onPickSymbol={(symbol) => {
+          const hit = tickers.find((t) => t.symbol === symbol);
+          setSelected(
+            hit ?? {
+              symbol,
+              lastPrice: 0,
+              change24h: 0,
+              high24h: 0,
+              low24h: 0,
+              turnover24h: 0,
+            }
+          );
+        }}
+      />
+
       <AltHeatPanel
         btcPrice={tickers.find((ticker) => ticker.symbol === "BTCUSDT")?.lastPrice}
         btcChange={tickers.find((ticker) => ticker.symbol === "BTCUSDT")?.change24h}
@@ -89,10 +109,13 @@ export function MarketPanel({
                   : "border-zinc-800/80 hover:border-zinc-600"
               }`}
             >
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-zinc-200">{name}</span>
+              <div className="flex items-center justify-between gap-1">
+                <span className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-zinc-200">
+                  <span className="truncate">{name}</span>
+                  <BinanceKindBadge kind={kindOf(kindMap, t.symbol)} />
+                </span>
                 <span
-                  className={`text-xs tabular-nums ${
+                  className={`shrink-0 text-xs tabular-nums ${
                     up ? "text-emerald-400" : "text-rose-400"
                   }`}
                 >
@@ -104,7 +127,8 @@ export function MarketPanel({
                 {formatPrice(t.lastPrice)}
               </p>
               <p className="mt-0.5 text-[10px] text-zinc-600">
-                고가 {formatPrice(t.high24h)} · 저가 {formatPrice(t.low24h)}
+                바이낸스 · 고가 {formatPrice(t.high24h)} · 저가{" "}
+                {formatPrice(t.low24h)}
               </p>
             </button>
           );
@@ -133,6 +157,7 @@ function SymbolChartPanel({
   const [error, setError] = useState<string | null>(null);
   const [interval, setIntervalTf] = useState("15");
   const name = ticker.symbol.replace(/USDT$/i, "");
+  const kindMap = useBinanceKinds([ticker.symbol]);
 
   useEffect(() => {
     let cancelled = false;
@@ -190,10 +215,11 @@ function SymbolChartPanel({
     <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h4 className="text-sm font-medium text-zinc-100">
+          <h4 className="flex flex-wrap items-center gap-1.5 text-sm font-medium text-zinc-100">
             {name}
-            <span className="ml-2 text-xs font-normal text-zinc-500">
-              {ticker.symbol}
+            <BinanceKindBadge kind={kindOf(kindMap, ticker.symbol)} />
+            <span className="text-xs font-normal text-zinc-500">
+              바이낸스 · {ticker.symbol}
             </span>
           </h4>
           <p className="text-xs text-zinc-500">

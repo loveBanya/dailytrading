@@ -4,6 +4,7 @@ export type AlarmTargetTab =
   | "trades"
   | "live"
   | "screener"
+  | "paper"
   | "alerts"
   | "overview"
   | "hl-traders";

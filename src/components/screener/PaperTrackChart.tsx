@@ -15,6 +15,9 @@ export interface PaperChartTarget {
   last_price: number | null;
   ret_pct: number | null;
   track_type?: string;
+  /** 청산 시각 — 있으면 진입~청산 구간 표시 */
+  exit_at?: string | null;
+  live?: boolean;
 }
 
 interface PaperTrackChartProps {
@@ -30,7 +33,10 @@ export function PaperTrackChart({ paper, onClose }: PaperTrackChartProps) {
   const side = paper.direction.startsWith("SHORT") ? "SHORT" : "LONG";
   const asset = paper.symbol.replace(/USDT$/i, "");
   const entryMs = new Date(paper.entry_at).getTime();
-  const now = Date.now();
+  const exitMs = paper.exit_at
+    ? new Date(paper.exit_at).getTime()
+    : Date.now();
+  const live = paper.live ?? !paper.exit_at;
   const exitPrice = paper.last_price ?? paper.entry_price;
 
   useEffect(() => {
@@ -39,11 +45,17 @@ export function PaperTrackChart({ paper, onClose }: PaperTrackChartProps) {
       setLoading(true);
       setError(null);
       try {
-        const holdMin = Math.max(30, (now - entryMs) / 60_000);
+        const holdMin = Math.max(30, (exitMs - entryMs) / 60_000);
         const interval =
-          holdMin <= 90 ? "1" : holdMin <= 360 ? "5" : holdMin <= 1440 ? "15" : "60";
+          holdMin <= 90
+            ? "1"
+            : holdMin <= 360
+              ? "5"
+              : holdMin <= 1440
+                ? "15"
+                : "60";
         const start = entryMs - 2 * 60 * 60 * 1000;
-        const end = now + 30 * 60 * 1000;
+        const end = exitMs + 30 * 60 * 1000;
         const qs = new URLSearchParams({
           symbol: paper.symbol,
           start: String(start),
@@ -88,8 +100,15 @@ export function PaperTrackChart({ paper, onClose }: PaperTrackChartProps) {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh when paper id changes
-  }, [paper.id, paper.symbol, paper.exchange, paper.entry_at]);
+  }, [
+    paper.id,
+    paper.symbol,
+    paper.exchange,
+    paper.entry_at,
+    paper.exit_at,
+    entryMs,
+    exitMs,
+  ]);
 
   const ret = paper.ret_pct != null ? Number(paper.ret_pct) : null;
 
@@ -105,13 +124,17 @@ export function PaperTrackChart({ paper, onClose }: PaperTrackChartProps) {
           >
             {side === "LONG" ? "롱" : "숏"}
           </span>
-          <span className="ml-2 text-zinc-500">가상투자 차트</span>
+          <span className="ml-2 text-zinc-500">
+            {live ? "보유 차트" : "청산 차트"}
+          </span>
           {paper.track_type && (
             <span className="ml-2 text-xs text-zinc-600">{paper.track_type}</span>
           )}
           <p className="mt-0.5 text-xs text-zinc-500">
-            진입 {formatKst(paper.entry_at)} · {Number(paper.entry_price)} →{" "}
-            {exitPrice}
+            진입 {formatKst(paper.entry_at)}
+            {paper.exit_at ? ` → 청산 ${formatKst(paper.exit_at)}` : ""}
+            {" · "}
+            {Number(paper.entry_price)} → {exitPrice}
             {ret != null && (
               <span
                 className={`ml-2 font-medium ${
@@ -136,7 +159,9 @@ export function PaperTrackChart({ paper, onClose }: PaperTrackChartProps) {
       </div>
       <div className="p-3">
         {loading && (
-          <p className="py-16 text-center text-sm text-zinc-500">차트 불러오는 중…</p>
+          <p className="py-16 text-center text-sm text-zinc-500">
+            차트 불러오는 중…
+          </p>
         )}
         {error && (
           <p className="py-8 text-center text-sm text-amber-300/80">{error}</p>
@@ -144,14 +169,14 @@ export function PaperTrackChart({ paper, onClose }: PaperTrackChartProps) {
         {!loading && !error && candles.length > 0 && (
           <TradeChart
             candles={candles}
-            height={360}
+            height={320}
             levels={{
               entry: Number(paper.entry_price),
               exit: Number(exitPrice),
               entryTime: Math.floor(entryMs / 1000),
-              exitTime: Math.floor(now / 1000),
+              exitTime: Math.floor(exitMs / 1000),
               side,
-              live: true,
+              live,
             }}
           />
         )}

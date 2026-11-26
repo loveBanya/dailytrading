@@ -1,9 +1,10 @@
 export type PaperAccountStatus = "active" | "paused" | "archived";
-export type PaperStrategyMode = "indicator" | "copy";
+export type PaperStrategyMode = "indicator" | "copy" | "movers";
 export type PaperSide = "LONG" | "SHORT";
 export type PaperFillAction = "OPEN" | "CLOSE" | "INCREASE" | "DECREASE";
 
 export type IndicatorRule = "ema_cross" | "rsi_reclaim" | "macd_cross";
+export type MoversPeriod = "5m" | "30m" | "4h";
 
 export interface IndicatorStrategyConfig {
   exchange?: "binance" | "bybit";
@@ -32,6 +33,20 @@ export interface CopyStrategyConfig {
   coins?: string[];
 }
 
+/** Coinglass 스타일 급상승 / OI 상승 추종 */
+export interface MoversStrategyConfig {
+  period?: MoversPeriod;
+  followSurge?: boolean;
+  followOi?: boolean;
+  /** 각 리스트에서 상위 N */
+  topN?: number;
+  riskPct?: number;
+  leverage?: number;
+  takeProfitPct?: number;
+  stopLossPct?: number;
+  maxPositions?: number;
+}
+
 export interface PaperAccount {
   id: string;
   name: string;
@@ -51,7 +66,11 @@ export interface PaperStrategy {
   name: string;
   mode: PaperStrategyMode;
   enabled: boolean;
-  config: IndicatorStrategyConfig | CopyStrategyConfig | Record<string, unknown>;
+  config:
+    | IndicatorStrategyConfig
+    | CopyStrategyConfig
+    | MoversStrategyConfig
+    | Record<string, unknown>;
   note: string | null;
   last_run_at: string | null;
   last_error: string | null;
